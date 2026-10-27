@@ -846,7 +846,16 @@ router.get("/api/sync/status", (req, res) => {
 // writes are idempotent upserts, so this is safe to run repeatedly.
 async function reconcileTeller(days = 90) {
   const backfillDays = Math.max(1, Math.min(365, parseInt(days, 10) || 90));
-  return syncAllEnrollments({ backfillDays });
+  const result = await syncAllEnrollments({ backfillDays });
+  // Rows a reconcile recovers get the merchant rename rules (cycle-8 F43) —
+  // not the post-sync anomaly check (INV-05). Without it a recovered charge
+  // kept its bank name, and the next detection run split a renamed
+  // subscription again.
+  if (result && result.transactions_added > 0) {
+    try { await require("./merchant-rename").applyRenameRules(); }
+    catch (e) { console.error("rename rules after the Teller reconcile failed:", e.message); }
+  }
+  return result;
 }
 
 // runReconcile — the actual backfill work, shared by the synchronous and

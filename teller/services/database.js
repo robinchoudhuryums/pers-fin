@@ -190,6 +190,12 @@ async function runMigrationsOnce() {
     // from (teller / plaid / csv / manual). NULL on a tombstone written before.
     await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS snapshot JSONB");
     await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS source TEXT");
+    // Cycle-8 F6: the bank changed (Plaid `modified`) or removed (Plaid
+    // `removed`) a transaction while it was deleted here. The cursor has moved
+    // past it, so Plaid won't send it again: Restore refuses a removed one and
+    // flags a changed one (its snapshot is stale).
+    await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS bank_changed_at TIMESTAMPTZ");
+    await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS bank_removed_at TIMESTAMPTZ");
     await client.query(`CREATE TABLE IF NOT EXISTS detected_subscriptions (
       id             SERIAL PRIMARY KEY,
       merchant_key   TEXT NOT NULL,

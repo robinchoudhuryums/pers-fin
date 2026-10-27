@@ -386,11 +386,43 @@ router.post("/api/transactions/csv-overlap/resolve", async (req, res) => {
       return res.json({ would_delete: ids.length, dry_run: true });
     }
     if (!ids.length) return res.json({ deleted: 0 });
-    const del = await pool.query(
-      `DELETE FROM transactions WHERE transaction_id = ANY($1::text[]) RETURNING transaction_id`,
-      [ids]
-    );
-    res.json({ deleted: del.rows.length });
+    // Tombstone each deleted CSV row with its snapshot, like a single DELETE
+    // (cycle-8 F4): without it, re-importing a statement that overlaps the
+    // resolved range brought every duplicate back (the CSV dedup ids are
+    // deterministic), and none of them could be restored from Settings.
+    const client = await pool.connect();
+    let deleted;
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO deleted_transactions (transaction_id, snapshot, source)
+         SELECT t.transaction_id,
+                jsonb_build_object(
+                  'row', to_jsonb(t),
+                  'splits', COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id)
+                                      FROM transaction_splits s
+                                      WHERE s.parent_transaction_id = t.transaction_id), '[]'::jsonb)
+                ),
+                ${SOURCE_SQL}
+         FROM transactions t
+         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+         LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+         WHERE t.transaction_id = ANY($1::text[])
+         ON CONFLICT (transaction_id) DO UPDATE
+           SET snapshot = EXCLUDED.snapshot, source = EXCLUDED.source, deleted_at = now()`,
+        [ids]
+      );
+      const del = await client.query(
+        `DELETE FROM transactions WHERE transaction_id = ANY($1::text[]) RETURNING transaction_id`,
+        [ids]
+      );
+      await client.query("COMMIT");
+      deleted = del.rows.length;
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally { client.release(); }
+    res.json({ deleted });
   } catch (err) {
     console.error("csv-overlap resolve error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -728,11 +760,16 @@ async function insertableColumns(client, table) {
 // { status, body }; nothing is written unless status is 200.
 async function restoreDeleted(client, id) {
   const t = await client.query(
-    "SELECT snapshot, source FROM deleted_transactions WHERE transaction_id = $1 FOR UPDATE",
+    "SELECT snapshot, source, bank_changed_at, bank_removed_at FROM deleted_transactions WHERE transaction_id = $1 FOR UPDATE",
     [id]
   );
   if (!t.rows.length) return { status: 404, body: { error: "No deleted transaction with that id" } };
   const { snapshot } = t.rows[0];
+  // The bank removed it after it was deleted here (a reversal, a voided
+  // charge): it isn't brought back (cycle-8 F6).
+  if (t.rows[0].bank_removed_at) {
+    return { status: 409, body: { error: "Your bank has since removed this transaction (reversed or voided), so it isn't restored.", reason: "removed_by_bank" } };
+  }
 
   if (!snapshot || !snapshot.row) {
     const source = legacySource(id);
@@ -761,6 +798,25 @@ async function restoreDeleted(client, id) {
   );
   const inserted = ins.rows.length > 0;
 
+  // The snapshot's merchant rename came from a rule that may have been
+  // deleted, switched off or renamed while the row was deleted — and the
+  // revert / rename only reached rows that existed then (cycle-8 F5, INV-124).
+  // The rule's CURRENT name applies; a gone or inactive rule's rename is
+  // cleared. Then every rule applies, so an unnamed row is renamed now rather
+  // than at the next sync that happens to add a row.
+  if (inserted) {
+    if (row.user_merchant_rule_id != null) {
+      const rr = await client.query("SELECT rename_to, is_active FROM merchant_rename_rules WHERE id = $1", [row.user_merchant_rule_id]);
+      const rule = rr.rows[0];
+      if (rule && rule.is_active) {
+        await client.query("UPDATE transactions SET user_merchant_name = $2 WHERE transaction_id = $1", [id, rule.rename_to]);
+      } else {
+        await client.query("UPDATE transactions SET user_merchant_name = NULL, user_merchant_rule_id = NULL WHERE transaction_id = $1", [id]);
+      }
+    }
+    await require("./merchant-rename").applyRenameRules(client);
+  }
+
   let splits = 0;
   const splitRows = Array.isArray(snapshot.splits) ? snapshot.splits : [];
   if (inserted && splitRows.length) {
@@ -775,7 +831,11 @@ async function restoreDeleted(client, id) {
   }
 
   await client.query("DELETE FROM deleted_transactions WHERE transaction_id = $1", [id]);
-  return { status: 200, body: { restored: true, transaction_id: id, already_present: !inserted, splits } };
+  // The bank changed it after it was deleted here (a tip, a corrected amount):
+  // Plaid won't send it again, so the restored copy is the old one until a
+  // Plaid reconcile re-reads the history (cycle-8 F6).
+  const stale = inserted && !!t.rows[0].bank_changed_at;
+  return { status: 200, body: { restored: true, transaction_id: id, already_present: !inserted, splits, ...(stale ? { stale: true } : {}) } };
 }
 
 // POST /api/deleted-transactions/:id/restore — put a deleted transaction back

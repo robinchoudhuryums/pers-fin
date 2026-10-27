@@ -312,6 +312,43 @@ async function runSubscriptionWatchdog(db = pool) {
     await db.query("UPDATE detected_subscriptions SET price_alerted_amount = amount WHERE id = $1", [r.id]);
     out.price_rises++;
   }
+
+  // An expected charge that came in more than 10% higher (cycle-8 F47). Such a
+  // charge is outside detection's ±10% amount band, so it isn't part of the
+  // series and the subscription keeps its old price until three charges at the
+  // new one form a cluster (DC-7) — about two billing cycles late for a monthly
+  // plan, and never for a yearly one. A later charge from the same merchant key,
+  // within 45 days, between 10% and 50% above the subscription's amount, is read
+  // as the new price. Utilities are left out (a winter bill isn't a price rise).
+  // Once per price: price_alerted_amount holds the charged amount, which the
+  // rule above then matches when detection re-anchors on it.
+  const early = await db.query(`
+    SELECT ds.id, ds.display_name, ds.amount, c.amount AS charged
+    FROM detected_subscriptions ds
+    JOIN LATERAL (
+      SELECT t.amount, t.date
+      FROM transactions t
+      WHERE t.amount > 0 AND t.pending = false
+        AND ${SUB_MERCHANT_KEY_SQL} = ds.merchant_key
+        AND t.date > ds.last_charged AND t.date >= CURRENT_DATE - 45
+        AND t.amount > ds.amount * 1.10 AND t.amount <= ds.amount * 1.5
+      ORDER BY t.date DESC, t.transaction_id DESC
+      LIMIT 1
+    ) c ON true
+    WHERE ds.is_active AND NOT ds.is_dismissed AND ds.cancelled_at IS NULL
+      AND ds.amount > 0 AND ds.category <> 'utility'
+      AND ds.price_alerted_amount IS DISTINCT FROM c.amount`);
+  for (const r of early.rows) {
+    const sent = await sendToAll({
+      title: `${r.display_name} went up from ${money(r.amount)} to ${money(r.charged)}`,
+      body: `${r.display_name}'s latest charge is ${money(r.charged)} (was ${money(r.amount)}).`,
+      tag: "sub-price-" + r.id,
+      data: { url: "/subscriptions" },
+    });
+    if (!sent.logged) continue;
+    await db.query("UPDATE detected_subscriptions SET price_alerted_amount = $2 WHERE id = $1", [r.id, r.charged]);
+    out.price_rises++;
+  }
   return out;
 }
 

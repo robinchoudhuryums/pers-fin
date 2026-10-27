@@ -2411,7 +2411,7 @@ async function syncIncome(sheets, pool) {
 
   // Top sources (last 12 months) — group by merchant
   const sources = await pool.query(`
-    SELECT COALESCE(t.merchant_name, t.name) AS source,
+    SELECT COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS source, -- a rename wins (cycle-8 F54)
            SUM(${INCOME_AMOUNT}) AS total,
            COUNT(*) AS deposits,
            MAX(t.date) AS most_recent
@@ -2421,7 +2421,7 @@ async function syncIncome(sheets, pool) {
       AND t.date >= ${sqlDate(sheetsMonth(-11) + "-01")}  -- 12 whole months (SXE-12)
       AND t.amount < 0
       AND ${INCOME_PREDICATE_T}
-    GROUP BY COALESCE(t.merchant_name, t.name)
+    GROUP BY COALESCE(t.user_merchant_name, t.merchant_name, t.name)
     ORDER BY total DESC
     LIMIT 50
   `);

@@ -99,8 +99,9 @@ async function createRenameRule({ pattern, matchType = "exact", renameTo }, db =
   if (perr) return { error: perr };
   const pat = String(pattern).trim();
 
-  // Old detection keys of the rows this rule will cover (before renaming).
-  const old = await db.query(
+  // The rows this rule may cover — unnamed, or named by a rule (a hand rename
+  // always wins) — with their detection keys before the change.
+  const before = await db.query(
     `SELECT DISTINCT ${DETECT_KEY} AS k FROM transactions t
      WHERE (t.user_merchant_name IS NULL OR t.user_merchant_rule_id IS NOT NULL) AND ${ruleCondition(type)}`,
     [pat]);
@@ -115,8 +116,31 @@ async function createRenameRule({ pattern, matchType = "exact", renameTo }, db =
   await db.query(
     "UPDATE transactions SET user_merchant_name = $2 WHERE user_merchant_rule_id = $1",
     [rule.id, name]);
+  // Rows ANOTHER rule renamed that this one also matches are released, so every
+  // rule applies again most specific first (cycle-8 F41): applyRenameRules only
+  // fills unnamed rows, so a new, more specific "AMAZON PRIME" rule never took
+  // the rows a broad "amazon" rule already owned — yet the re-key below moved
+  // the "Amazon" subscription (cancelled state and all) to the new name, and
+  // the next detection run re-created "Amazon" as a fresh ACTIVE subscription.
+  await db.query(
+    `UPDATE transactions t SET user_merchant_name = NULL, user_merchant_rule_id = NULL
+     WHERE t.user_merchant_rule_id IS NOT NULL AND t.user_merchant_rule_id <> $2 AND ${ruleCondition(type)}`,
+    [pat, rule.id]);
   const renamed = await applyRenameRules(db);
-  const rekeyed = await rekeyDetectedRows(db, old.rows.map((r) => r.k), name, name);
+  // Re-key only the old keys no transaction carries any more — every row under
+  // them moved to the new name. A key some rows still use (the broad rule's
+  // other merchants, a more specific rule that kept its rows) keeps its
+  // detection row and user state.
+  const oldKeys = [...new Set(before.rows.map((r) => r.k))].filter((k) => k && k !== name);
+  let vacated = [];
+  if (oldKeys.length) {
+    const still = await db.query(
+      `SELECT DISTINCT ${DETECT_KEY} AS k FROM transactions t WHERE ${DETECT_KEY} = ANY($1::text[])`,
+      [oldKeys]);
+    const inUse = new Set(still.rows.map((r) => r.k));
+    vacated = oldKeys.filter((k) => !inUse.has(k));
+  }
+  const rekeyed = await rekeyDetectedRows(db, vacated, name, name);
   return { rule, renamed, rekeyed };
 }
 

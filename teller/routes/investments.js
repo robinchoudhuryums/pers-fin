@@ -908,7 +908,13 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
     for (const txn of data.modified || []) {
       if (txn.pending) continue;
       try {
-        await upsertTxn(txn);
+        const up = await upsertTxn(txn);
+        // Nothing written: the user deleted it here (the tombstone blocked the
+        // insert). Note that the bank changed it, so a Restore says the
+        // snapshot is stale (cycle-8 F6).
+        if (up && up.rowCount === 0) {
+          await pool.query("UPDATE deleted_transactions SET bank_changed_at = now() WHERE transaction_id = $1", [txn.transaction_id]);
+        }
         totalModified++;
       } catch (err) {
         console.error("Plaid txn update error:", err.message, txn.transaction_id);
@@ -920,6 +926,9 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
     for (const txn of data.removed || []) {
       try {
         await pool.query("DELETE FROM transactions WHERE transaction_id = $1", [txn.transaction_id]);
+        // A transaction the user had deleted here is now gone at the bank too:
+        // Restore must not bring it back (cycle-8 F6).
+        await pool.query("UPDATE deleted_transactions SET bank_removed_at = now() WHERE transaction_id = $1", [txn.transaction_id]);
         totalRemoved++;
       } catch (err) {
         console.error("Plaid txn delete error:", err.message, txn.transaction_id);
@@ -1353,6 +1362,9 @@ async function reconcilePlaidTransactions() {
   return withPlaidTxnLock(async () => {
     await pool.query("UPDATE sync_cursors SET cursor = ''").catch(e => console.error("cursor reset error:", e.message));
     const result = await syncAllPlaidTransactionsOnce();
+    // Recovered rows get the merchant rename rules, never the anomaly check
+    // (cycle-8 F43, INV-05).
+    await renameNewRows(result && result.transactions_added);
     return { ok: true, reconciled: true, ...result };
   });
 }

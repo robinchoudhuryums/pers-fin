@@ -18,8 +18,19 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 8 broad scan — Batch 2 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
-  Block: `.cycle/blocks/8-batch2-broad-implement.md`.
+- **Status:** **Cycle 8 broad scan — Batch 3 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
+  Block: `.cycle/blocks/8-batch3-broad-implement.md`.
+  - **Shipped (Batch 3 — detection / rename / restore):** F41 a new rename rule takes rows other rules
+    renamed and re-keys only fully vacated keys; F46 prior_amount / amount_changed kept until a later
+    charge; F47 the watchdog's early rise (10–50%, non-utility, once per amount); F5 a restore follows its
+    rule's current state; F43 a reconcile applies the rename rules; F4 CSV-overlap Resolve tombstones what
+    it deletes; F6 bank_changed_at / bank_removed_at (Plaid) → restore 409s a removed row, flags a changed
+    one stale; F54 income top sources by display name (route + Sheets mirror).
+  - **Verified:** npm test 2613/2613 (15 new; one run hit the known x2a IPC flake); contract 262/262
+    (8 new); Playwright 72/72; mutation 10/10.
+  - **Docs NOT yet synced** — the block's DOCUMENTATION UPDATES NEEDED list is pending `/sync-docs`.
+  - **Where I left off:** Batch 3 committed and pushed. Next: `/sync-docs`, then `/broad-implement Batch 4`.
+- **Batch 2 (DONE):** block `.cycle/blocks/8-batch2-broad-implement.md`.
   - **Shipped (Batch 2 — money accuracy):** F7 internal transfers between spendable accounts not billed
     (mirror credit ±5 days); F8 only card autopays skipped (linked-card credit / card phrase / issuer);
     F9 fee rows not netted against investment income; F10 unlogged "Paycheck landed" holds the watermark;
@@ -30,7 +41,6 @@ implement and reflect sessions only set Phase.)
   - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (cash-flow / cash-alerts / payday / tax entries,
     the forecast and low cash alert features, cash_alert_state, test counts, Known Open Issues + Batch 2
     follow-ons) and README.
-  - **Where I left off:** Batch 2 committed, pushed and documented. Next: `/broad-implement Batch 3`.
 - **Batch 1 (DONE):** block `.cycle/blocks/8-batch1-broad-implement.md`.
   - **Shipped (Batch 1 — scheduler + auth safety):** F27 boot run for every scheduled job; F29 not-due /
     off memos for bank auto-sync, the reconcile and the insights trigger (PATCH /api/settings invalidates);
@@ -46,7 +56,7 @@ implement and reflect sessions only set Phase.)
     Known Open Issues section), README, apps/per-sistant/CLAUDE.md. F45 (the two stale Known Open Issues
     bullets) was closed by that sync.
   - **Remaining scan batches** (the scan report is in the session transcript; IDs for a fresh session):
-    - Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54
+    - ~~Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54~~ (done)
     - Batch 4 watermarks + webhook hardening: F1 F51 F3
     - Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21
     - Batch 6 AI trust + Knowledge privacy: F42 F49 F44 F24 F50 F53

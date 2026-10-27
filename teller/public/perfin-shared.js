@@ -360,7 +360,9 @@
     r = r || {};
     if (r.restored) {
       if (r.already_present) return 'That transaction is already in your list.';
-      return 'Transaction restored' + (r.splits ? ' with its ' + r.splits + ' split' + (r.splits === 1 ? '' : 's') + '.' : '.');
+      return 'Transaction restored' + (r.splits ? ' with its ' + r.splits + ' split' + (r.splits === 1 ? '' : 's') + '.' : '.') +
+        // Cycle-8 F6: the bank changed it while it was deleted.
+        (r.stale ? ' Your bank changed it since you deleted it — run Reconcile Now (Plaid) in Settings → Sync Health to bring in the current version.' : '');
     }
     return 'Undeleted. ' + (RESTORE_RETURNS_ON[r.returns_on] || 'It comes back the next time its source is read.');
   }

@@ -229,7 +229,15 @@ async function detectSubscriptions(externalPool) {
          ON CONFLICT (merchant_key, cadence_days)
          DO UPDATE SET
            display_name   = EXCLUDED.display_name,
-           prior_amount   = detected_subscriptions.amount,
+           -- A price change is recorded when the price CHANGES and kept until a
+           -- later charge at the same price arrives (cycle-8 F46): every run
+           -- re-upserts each series, so "prior = stored, changed = differs"
+           -- erased the change on the next run with no new charge — the
+           -- watchdog's failed price-rise alert was never retried and the
+           -- PRICE UP badge lasted one detection run.
+           prior_amount   = CASE WHEN EXCLUDED.amount <> detected_subscriptions.amount
+                                 THEN detected_subscriptions.amount
+                                 ELSE detected_subscriptions.prior_amount END,
            amount         = EXCLUDED.amount,
            last_charged   = EXCLUDED.last_charged,
            next_expected  = EXCLUDED.next_expected,
@@ -243,7 +251,9 @@ async function detectSubscriptions(externalPool) {
                               WHEN detected_subscriptions.is_dismissed = true THEN false
                               ELSE true
                             END,
-           amount_changed = (EXCLUDED.amount != detected_subscriptions.amount),
+           amount_changed = CASE WHEN EXCLUDED.amount <> detected_subscriptions.amount THEN true
+                                 WHEN EXCLUDED.last_charged > detected_subscriptions.last_charged THEN false
+                                 ELSE detected_subscriptions.amount_changed END,
            is_new         = false,
            updated_at     = now()`,
         [

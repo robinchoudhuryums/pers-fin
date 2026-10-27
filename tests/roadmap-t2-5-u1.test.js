@@ -128,7 +128,7 @@ describe("T2.5 U1 — restore", () => {
 
   it("re-inserts the snapshot's current columns (no id, no dropped column), its splits, and lifts the tombstone", async () => {
     const c = fakeClient((sql, params) => {
-      if (/SELECT snapshot, source FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "teller" }] };
+      if (/SELECT snapshot, source, bank_changed_at, bank_removed_at FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "teller" }] };
       if (/SELECT 1 FROM linked_accounts/.test(sql)) return { rows: [{}] };
       if (/INSERT INTO transactions/.test(sql)) return { rows: [{ transaction_id: "txn_abc" }], rowCount: 1 };
       if (/INSERT INTO transaction_splits/.test(sql)) return { rows: [], rowCount: 2 };
@@ -154,7 +154,7 @@ describe("T2.5 U1 — restore", () => {
 
   it("a row already present isn't duplicated and its splits aren't re-added", async () => {
     const c = fakeClient((sql, params) => {
-      if (/SELECT snapshot, source FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "csv" }] };
+      if (/SELECT snapshot, source, bank_changed_at, bank_removed_at FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "csv" }] };
       if (/SELECT 1 FROM linked_accounts/.test(sql)) return { rows: [{}] };
       return catalog(sql, params);
     });
@@ -165,7 +165,7 @@ describe("T2.5 U1 — restore", () => {
 
   it("409 with nothing written when the account is no longer connected", async () => {
     const c = fakeClient((sql) => {
-      if (/SELECT snapshot, source FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "plaid" }] };
+      if (/SELECT snapshot, source, bank_changed_at, bank_removed_at FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "plaid" }] };
       return null;
     });
     const out = await txns.restoreDeleted(c, "txn_abc");
