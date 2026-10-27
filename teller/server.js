@@ -335,6 +335,7 @@ app.use(require("./routes/ask"));
 app.use(require("./routes/housing"));
 app.use(require("./routes/tax")); // roadmap T3.3: the tax documents checklist (K2)
 app.use(require("./routes/dashboard-summary")); // design D3: GET /api/dashboard/summary
+app.use(require("./routes/advice")); // roadmap T4.1 A2: GET /api/advice
 
 // ---------------------------------------------------------------------------
 // Prevent browser caching of HTML pages and API mutation responses

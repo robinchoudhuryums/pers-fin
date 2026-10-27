@@ -194,6 +194,27 @@ async function toolFireProjection() {
   return proj;
 }
 
+// Roadmap T4.1 A2: the "where should my extra money go?" plan — every figure
+// is services/advice.js's (decision 1); the model only words it. Trimmed to
+// what an answer needs (the surplus months stay, for "why").
+async function toolCashPlan() {
+  const p = await require("../services/advice").getAdvicePlan(pool);
+  if (!p.ok) return { ok: false, error: p.error, disclaimer: p.disclaimer };
+  return {
+    ok: true,
+    disclaimer: p.disclaimer,
+    period: p.period,
+    headline: p.headline,
+    why: p.why,
+    steps: p.steps,
+    surplus: p.surplus,
+    cash: p.cash,
+    debts: p.debts.map((d) => ({ name: d.name, type: d.type, balance: d.balance, apr: d.apr, apr_assumed: d.apr_assumed, minimum: d.minimum, carried: d.carried, tier: d.tier, utilization_pct: d.utilization_pct, utilization_tip: d.utilization_tip && d.utilization_tip.text })),
+    allocation: p.allocation,
+    notes: p.notes,
+  };
+}
+
 const TOOL_EXECUTORS = {
   get_monthly_overview: toolMonthlyOverview,
   get_category_spending: toolCategorySpending,
@@ -202,6 +223,7 @@ const TOOL_EXECUTORS = {
   get_subscriptions: toolSubscriptions,
   get_budget_status: toolBudgetStatus,
   get_fire_projection: toolFireProjection,
+  get_cash_plan: toolCashPlan,
 };
 
 const TOOLS = [
@@ -212,6 +234,7 @@ const TOOLS = [
   { name: "get_subscriptions", description: "Active detected subscriptions with monthly costs.", input_schema: { type: "object", properties: {} } },
   { name: "get_budget_status", description: "This month's budgets: effective limit (base + rolled-over amount), spent, remaining and percent used — the Budgets page's numbers.", input_schema: { type: "object", properties: {} } },
   { name: "get_fire_projection", description: "FIRE number, progress, time to FIRE, and spending runway under the user's saved assumptions.", input_schema: { type: "object", properties: {} } },
+  { name: "get_cash_plan", description: "The user's plan for extra money — the dashboard's \"Your plan\": the current step (cash buffer, high-interest debt, emergency fund, medium debt, investing), the amount per paycheck, why, the per-debt payments and payoff months, and the disclaimer. Use its figures as given.", input_schema: { type: "object", properties: {} } },
 ];
 
 // POST /api/ask — single-turn NL question over the user's finance data.
@@ -271,6 +294,10 @@ router.post("/api/ask", async (req, res) => {
       "ALWAYS use the tools for any number — never estimate or invent figures. The tools return the same " +
       "split-adjusted, reimbursed-excluded values the dashboard shows. Be concise and concrete; state the " +
       "period a figure covers. If the data can't answer the question, say so plainly. " +
+      // Roadmap T4.1 A2: the plan's numbers are the engine's, never the model's.
+      "For questions about what to do with extra money, paying down debt, an emergency fund or how much to " +
+      "invest, call get_cash_plan and give its figures as they are; say it is educational, not financial " +
+      "advice, and never name a specific security or fund. " +
       // APP_TIMEZONE date (F66 — UTC's date made "this month" the next month
       // on the last evening of a month west of UTC).
       `Today's date is ${todayStr()}.`;

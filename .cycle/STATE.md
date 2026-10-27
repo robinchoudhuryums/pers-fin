@@ -18,6 +18,12 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A2 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a2-broad-implement.md`.
+  - **Shipped:** `teller/routes/advice.js` (GET /api/advice), the dashboard "Your plan" card (widget key
+    `advice`, between Review Uncategorized and the charts; steps, per-debt table, tips, disclaimer,
+    emptyState), Ask's `get_cash_plan` (8th tool) + the prompt line. The A1 choices stand unchanged.
+  - **Verified:** npm test 2767/2767 (17 new); contract 275/275 (1 new); mutation 2/2.
+  - **Where I left off:** A2 committed and pushed. Next: `/sync-docs`, then `/broad-implement A3`.
 - **Roadmap T4.1 A1 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a1-broad-implement.md`.
   - **Shipped:** `teller/services/advice.js` — getAdviceInputs (seven fail-soft reads), the pure buildAdvicePlan
     (steps, carried-balance detection, avalanche + snowball line, surplus gate, cash-floor cap, per paycheck) and

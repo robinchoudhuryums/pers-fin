@@ -862,8 +862,9 @@ describe("Mobile UX: tables reflow to cards (responsive-cards)", () => {
   it("all four dashboard mini-tables opt in and label their cells", () => {
     const dash = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
     // 4 tables: monthly, category, merchants, upcoming. (Recent Transactions
-    // moved to the Activity page — UI polish round 2.)
-    assert.equal((dash.match(/responsive-cards/g) || []).length, 4);
+    // moved to the Activity page — UI polish round 2.) Plus the "Your plan"
+    // debt table (roadmap T4.1 A2), built by renderAdvice.
+    assert.equal((dash.match(/responsive-cards/g) || []).length, 5);
     assert.match(dash, /data-label="Total"/);
     assert.match(dash, /data-label="Share"/);
     assert.match(dash, /data-label="Next"/);

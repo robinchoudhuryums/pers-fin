@@ -50,6 +50,7 @@ describe("decision 6 — the dashboard order", () => {
       'id="sync-health-strip"',       // 2. the sync strip
       'id="whats-new-widget"',        // 3. Since you last looked
       'id="review-queue-section"',    // 4. Review Uncategorized
+      'id="advice-section"',          // 4b. Your plan (roadmap T4.1 A2 — after the summary, before the charts)
       'class="charts-grid"',          // 5. the two charts
       'id="accounts-section"',        // 6. Accounts
       'id="cashflow-section"',        // 7. Cash Flow + Upcoming Bills
@@ -76,7 +77,7 @@ describe("decision 6 — the dashboard order", () => {
     const at = W.map((w) => { const i = posOf(w.selector); assert.ok(i >= 0, w.key + " " + w.selector); return [w.key, i]; });
     for (let k = 1; k < at.length; k++) assert.ok(at[k - 1][1] < at[k][1], at[k - 1][0] + " before " + at[k][0]);
     assert.equal(W[0].key, "whatsNew");
-    assert.equal(W.length, 20, "no widget added or dropped");
+    assert.equal(W.length, 21, "no widget added or dropped (T4.1 A2 added advice)");
     assert.doesNotMatch(shared, /selector: '#dash-summary'/, "the summary isn't a toggle");
   });
 

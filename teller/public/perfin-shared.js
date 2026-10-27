@@ -504,6 +504,7 @@
   var DASHBOARD_WIDGETS = [
     { key: 'whatsNew', label: 'Since You Last Looked', selector: '#whats-new-widget' },
     { key: 'reviewQueue', label: 'Review Uncategorized', selector: '#review-queue-section' },
+    { key: 'advice', label: 'Your Plan', selector: '#advice-section' },
     { key: 'charts', label: 'Charts', selector: '.charts-grid' },
     { key: 'accounts', label: 'Account Balances', selector: '#accounts-section' },
     { key: 'cashFlow', label: 'Cash Flow', selector: '#cashflow-section' },

@@ -97,7 +97,7 @@ advice changes.
 | Batch | Scope | Status |
 |-------|-------|--------|
 | A1 | `services/advice.js`: `getAdviceInputs(pool)` (one read per source, each fail-soft) and the pure `buildAdvicePlan` (decisions 2–6). Carried-balance detection. Unit tests over canned inputs: each step as headline, per-card avalanche with overflow, unknown APR, 0% card, the surplus gate, transfers already moving money, the cash-floor cap, per-paycheck rounding. A contract test on real rows. | done (block `.cycle/blocks/8-t4-1-a1-broad-implement.md`) |
-| A2 | `GET /api/advice` plus the dashboard "Your plan" card (empty state through `emptyState`, money colours per INV-148), the `DASHBOARD_WIDGETS` entry in page order, and the Ask `get_cash_plan` tool. | queued |
+| A2 | `GET /api/advice` plus the dashboard "Your plan" card (empty state through `emptyState`, money colours per INV-148), the `DASHBOARD_WIDGETS` entry in page order, and the Ask `get_cash_plan` tool. | done (2026-10-27) |
 | A3 | The `cash_plan` insight module: the engine's output goes in the prompt and the model words it. The audit's arithmetic tier checks the figures against the engine. Running-summary `pending_actions` are seeded from the plan's steps. | queued |
 | A4 | The notify checkbox, the `advice-plan` away job (INV-77 pattern, signature dedup, marked only when logged), the migration, and reset-fresh classification. | queued |
 | A5 | Emergency-fund tracker (months of spending covered, progress bar, target-date projection) and the goal catch-up amount (a goal behind its target date → "add $X per paycheck to finish on time", from `deriveGoalProgress`). | queued |

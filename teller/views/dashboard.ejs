@@ -23,6 +23,19 @@
     .dash-attention .all-clear .tick { color: var(--green); margin-right: 6px; }
     .dash-attention .note { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
     .dash-summary-error { color: var(--text-muted); font-size: 13px; margin-top: 8px; }
+    /* Roadmap T4.1 A2: the "Your plan" card. */
+    .advice-headline { font-size: 16px; font-weight: 500; margin: 0 0 6px; }
+    .advice-why, .advice-note { color: var(--text-muted); font-size: 13px; margin: 0 0 10px; }
+    .advice-steps { list-style: none; margin: 8px 0 12px; padding: 0; font-size: 13px; }
+    .advice-steps li { display: flex; gap: 8px; padding: 3px 0; color: var(--text-muted); }
+    .advice-steps li.is-current { color: var(--text); font-weight: 500; }
+    .advice-steps .advice-mark { width: 14px; flex: none; text-align: center; }
+    .advice-steps li.is-done .advice-mark { color: var(--green); }
+    .advice-table { width: 100%; font-size: 13px; margin: 4px 0 10px; }
+    .advice-table td.num, .advice-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .advice-list { margin: 6px 0 10px; padding-left: 18px; font-size: 13px; color: var(--text-muted); }
+    .advice-disclaimer { color: var(--text-muted); font-size: 11px; margin: 8px 0 0; }
+    .advice-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .skel { display: block; border-radius: 6px; background: var(--surface-2); animation: skelPulse 1.4s ease-in-out infinite; }
     .skel.line { height: 12px; margin-top: 8px; }
     .skel.big { height: 26px; width: 60%; margin-top: 8px; }
@@ -424,6 +437,13 @@
       </div>
     </details>
   </div>
+
+  <!-- Roadmap T4.1 A2: "Your plan" — GET /api/advice. services/advice.js works
+       out every figure; the card only formats them. -->
+  <section class="section" id="advice-section" aria-labelledby="advice-title" style="margin-bottom:28px;">
+    <h2 id="advice-title">Your plan</h2>
+    <div id="advice-body" aria-busy="true"><span class="skel line" style="width:60%;"></span><span class="skel line" style="width:40%;"></span></div>
+  </section>
 
   <!-- Charts -->
   <div class="charts-grid">
@@ -1509,6 +1529,78 @@
       editManualBalance(parseInt(this.dataset.editBalance));
     });
 
+    // Roadmap T4.1 A2: "Your plan" (GET /api/advice). Pure renderers (tested in
+    // a vm): every figure is the engine's (services/advice.js), only formatted
+    // here; red only where something is wrong (a minimum that never pays a debt
+    // off), a debt in the default colour (INV-148).
+    var ADVICE_DISCLAIMER = 'Educational, based on your data \u2014 not financial advice.';
+    var ADVICE_MARKS = { done: '\u2713', current: '\u25B6', upcoming: '\u00B7' };
+    var ADVICE_STATUS = { done: 'Done: ', current: 'Now: ', upcoming: 'Later: ' };
+    function adviceMonth(ym) {
+      var m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''));
+      if (!m) return '\u2014';
+      return new Date(Number(m[1]), Number(m[2]) - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    }
+    function adviceDebtRows(p) {
+      var unit = (p.period && p.period.unit) || 'month';
+      var rows = (p.allocation && p.allocation.debts) || [];
+      if (!rows.length) return '';
+      var head = '<table class="advice-table responsive-cards"><thead><tr><th scope="col">Debt</th><th scope="col" class="num">APR</th>' +
+        '<th scope="col" class="num">Balance</th><th scope="col" class="num">Pay per ' + esc(unit) + '</th>' +
+        '<th scope="col" class="num">Paid off</th><th scope="col" class="num">Interest saved</th></tr></thead><tbody>';
+      return head + rows.map(function (d) {
+        var apr = d.apr == null ? '\u2014' : esc(String(d.apr)) + '%' + (d.apr_assumed ? ' (assumed)' : '');
+        var paidOff = d.months_to_payoff == null
+          ? '<span class="amt-bad">' + (d.minimum_never_pays_off ? 'Minimum never pays it off' : 'Not in 50 years') + '</span>'
+          : esc(adviceMonth(d.payoff_month));
+        var saved = d.interest_saved == null || !(d.extra_monthly > 0) ? '\u2014' : fmt(d.interest_saved);
+        return '<tr><td class="cell-primary" data-label="Debt">' + esc(d.name) + '</td>' +
+          '<td class="num" data-label="APR">' + apr + '</td>' +
+          '<td class="num" data-label="Balance">' + fmt(d.balance) + '</td>' +
+          '<td class="num" data-label="Pay per ' + esc(unit) + '">' + fmt(d.per_period) + '</td>' +
+          '<td class="num" data-label="Paid off">' + paidOff + '</td>' +
+          '<td class="num" data-label="Interest saved">' + saved + '</td></tr>';
+      }).join('') + '</tbody></table>';
+    }
+    function adviceList(items) {
+      items = (items || []).filter(Boolean);
+      return items.length ? '<ul class="advice-list">' + items.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('') + '</ul>' : '';
+    }
+    function renderAdvice(p) {
+      var disclaimer = '<p class="advice-disclaimer">' + esc((p && p.disclaimer) || ADVICE_DISCLAIMER) + '</p>';
+      if (!p || !p.ok) return '<p class="advice-note">' + esc((p && p.error) || 'Your plan couldn\'t be worked out.') + '</p>' + disclaimer;
+      var months = (p.surplus && p.surplus.months) || [];
+      var history = months.filter(function (m) { return m.has_data; }).length;
+      if (!history && !(p.debts || []).length) {
+        return emptyState({ title: 'Your plan needs more history', text: p.why || 'Link an account and check back after a full month.', action: { label: 'Link an account', href: '/accounts' } }) + disclaimer;
+      }
+      var html = '<p class="advice-headline">' + esc(p.headline && p.headline.text) + '</p>';
+      if (p.why) html += '<p class="advice-why">' + esc(p.why) + '</p>';
+      html += '<ol class="advice-steps">' + (p.steps || []).map(function (st) {
+        return '<li class="is-' + esc(st.status) + '"' + (st.status === 'current' ? ' aria-current="step"' : '') + '>' +
+          '<span class="advice-mark" aria-hidden="true">' + (ADVICE_MARKS[st.status] || '') + '</span>' +
+          '<span><span class="advice-sr">' + (ADVICE_STATUS[st.status] || '') + '</span>' + esc(st.title) + '</span></li>';
+      }).join('') + '</ol>';
+      html += adviceDebtRows(p);
+      html += adviceList([p.allocation && p.allocation.snowball && p.allocation.snowball.text]
+        .concat((p.debts || []).map(function (d) { return d.utilization_tip && d.utilization_tip.text; })));
+      html += adviceList(p.notes);
+      return html + disclaimer;
+    }
+    async function loadAdvice() {
+      var body = document.getElementById('advice-body');
+      if (!body) return;
+      try {
+        var res = await apiFetch('/api/advice');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        body.innerHTML = renderAdvice(await res.json());
+      } catch (e) {
+        body.innerHTML = '<p class="advice-note">Your plan couldn\'t be loaded.</p>';
+      } finally {
+        body.removeAttribute('aria-busy');
+      }
+    }
+
     // Design D3: the Summary card + Needs attention (GET /api/dashboard/summary).
     // Pure renderers (tested in a vm); every figure arrives from the server's
     // shared helpers and is only formatted here.
@@ -1594,6 +1686,7 @@
     loadAccounts();
     loadSpendingSummary();
     loadForecast();
+    loadAdvice();
 
     // Load upcoming bills for calendar widget
     (async function loadCalendarWidget() {

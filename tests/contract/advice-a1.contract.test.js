@@ -1,5 +1,6 @@
 // Real-Postgres contract test for roadmap T4.1 A1 — the advice engine on real
-// rows, the app's own migrations:
+// rows, the app's own migrations (and, since A2, GET /api/advice through the
+// production mount order answering the same plan):
 //  - getAdviceInputs reads every source with no error (the income / spending
 //    months, the pay stream, the cash forecast, the floor, the cards and
 //    loans, card activity and the savings transfers)
@@ -10,7 +11,8 @@
 //    highest-APR card, per (monthly) paycheck rounded down to $25
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { SKIP, perfinDb } = require("./_setup");
+const supertest = require("supertest");
+const { SKIP, perfinDb, perfinApp } = require("./_setup");
 
 describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
   let pool, today, advice, keys;
@@ -83,5 +85,13 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     assert.ok(plan.allocation.debts[0].interest_saved > 0);
     assert.equal(plan.period.unit, "paycheck");
     assert.equal(plan.period.cadence, "monthly");
+  });
+
+  it("A2: GET /api/advice answers the same plan through the production mount order", async () => {
+    const res = await supertest(perfinApp()).get("/api/advice");
+    assert.equal(res.status, 200);
+    const plan = await advice.getAdvicePlan(pool);
+    assert.deepEqual(res.body, JSON.parse(JSON.stringify(plan)));
+    assert.equal(res.body.headline.text, "Pay down Visa first: $1,000.00 per paycheck on top of its minimum.");
   });
 });
