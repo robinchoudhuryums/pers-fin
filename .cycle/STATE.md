@@ -76,9 +76,11 @@ implement and reflect sessions only set Phase.)
     - Batch 8 platform hygiene: F31 F32 F33 F52 (F45 done in /sync-docs)
     - Expansion: E1 (G1, G5), E2 (ST1, ST3), E3 (G2, ST2), E4 (ST5, G3), E5 (ST4); G4 → /roadmap
   - **Queued after cycle 8 (Batches 5–8 + /reflect):** roadmap T4.1 "Where should my extra money go?" —
-    plan `.cycle/plan-t4-1-advisory.md` (batches A1–A4: the advice engine with debt-first per-card avalanche,
+    plan `.cycle/plan-t4-1-advisory.md` (batches A1–A10: the advice engine with debt-first per-card avalanche,
     emergency fund, then a per-paycheck invest amount; dashboard card + insight module + Ask tool; one opt-in
-    notify checkbox). Decisions there are proposed — confirm at its first /broad-implement.
+    notify checkbox; A5–A10 the twelve further advisors — emergency fund, goal catch-up, raise split,
+    spending creep, idle cash, rebalancing, statement-date utilization, loan extra payments, sinking funds,
+    subscription consolidation, tax-advantaged room, what-if in Ask). Decisions there are proposed — confirm at its first /broad-implement.
 - **Previous status (D7):** **Design & UX pass — D7 DONE; the pass is complete (D1–D7)** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d7-broad-implement.md`.

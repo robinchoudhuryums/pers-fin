@@ -3,6 +3,8 @@
 Status: QUEUED. Starts after the cycle-8 batches (Batches 5–8, then the cycle-8
 `/reflect`). Not started; nothing below is built yet.
 
+Scope: the debt-first surplus plan (A1–A4) plus twelve further advisors (A5–A10).
+
 Goal: when you consistently end the month with money left over, Perfin says what to do
 with it, in order. Debt first when that is the better advice, with an amount per credit
 card. Then the emergency fund. Then investing, as "$X more per paycheck". The advice
@@ -98,31 +100,17 @@ advice changes.
 | A2 | `GET /api/advice` plus the dashboard "Your plan" card (empty state through `emptyState`, money colours per INV-148), the `DASHBOARD_WIDGETS` entry in page order, and the Ask `get_cash_plan` tool. | queued |
 | A3 | The `cash_plan` insight module: the engine's output goes in the prompt and the model words it. The audit's arithmetic tier checks the figures against the engine. Running-summary `pending_actions` are seeded from the plan's steps. | queued |
 | A4 | The notify checkbox, the `advice-plan` away job (INV-77 pattern, signature dedup, marked only when logged), the migration, and reset-fresh classification. | queued |
+| A5 | Emergency-fund tracker (months of spending covered, progress bar, target-date projection) and the goal catch-up amount (a goal behind its target date → "add $X per paycheck to finish on time", from `deriveGoalProgress`). | queued |
+| A6 | Raise / bonus split (a stream's amount steps up into a new cluster, or a one-off large deposit lands → split it by the plan's order) and spending creep (a category whose 3-month average grew faster than income over 6 months). | queued |
+| A7 | Idle cash (checking above floor + buffer for 60+ days while a savings or brokerage account exists → "move $X") and rebalancing directions (Target Allocation drift > 5 points → "move ~$X from bonds to equities"; directions only, never securities). | queued |
+| A8 | Statement-date utilization (store Plaid Liabilities `last_statement_issue_date` / statement balance, then "pay $Y before <date> to report under 30%") and loan extra payments ("an extra $100/month saves $Y and ends it Z months early", `computeLoanPayoff`). | queued |
+| A9 | Sinking funds for yearly / quarterly bills ("set aside $X/month") and subscription consolidation (overlapping services, ones with no related activity — builds on the subscription audit). | queued |
+| A10 | Tax-advantaged room (yearly limits entered by hand, compared with contributions seen in investment flows; no account types assumed) and what-if questions in Ask (`get_cash_plan` with overrides: "pay $300 more on card X", "rent goes up $150" — the same engine on changed inputs). | queued |
 
-## Later candidates (not in T4.1 — pick any into a T4.x)
-- **Emergency-fund tracker:** months of spending covered, with a progress bar and a
-  target-date projection.
-- **Lifestyle creep:** a category whose 3-month average grew faster than income over 6
-  months.
-- **Raise or bonus split:** when a stream's amount steps up (a new cluster) or a one-off
-  large deposit lands, suggest how to split it using the same plan order.
-- **Goal catch-up:** a goal behind its target date gets "add $X per paycheck to finish
-  on time" (from `deriveGoalProgress` and the target date).
-- **Idle cash:** checking above floor + buffer for 60+ days while a savings or brokerage
-  account exists. Suggests moving $X.
-- **Rebalancing:** Target Allocation drift above 5 points shows as "move ~$X from bonds
-  to equities". Directions only, never securities.
-- **Statement-date utilization:** paying before the statement closes lowers reported
-  utilization. This needs the statement date (Plaid Liabilities `last_statement_issue_date`,
-  not stored today).
-- **Sinking funds:** yearly and quarterly bills (insurance, registrations) get a
-  "set aside $X/month" suggestion so they don't land as a spike.
-- **Loan extra payments:** "an extra $100/month on the auto loan saves $Y and ends it Z
-  months early" (`computeLoanPayoff`).
-- **Subscription consolidation:** overlapping services and unused ones (no related
-  activity), building on the subscription audit.
-- **Tax-advantaged room:** a reminder of the yearly contribution limits against
-  contributions seen in the investment flows. Limits are entered by hand, and no account
-  types are assumed.
-- **What-if in Ask:** "what if I paid $300 more on card X" or "what if my rent goes up
-  $150", answered by the same engine with changed inputs.
+A5–A10 surface through the same three places as the plan (the "Your plan" card's
+secondary list, the `cash_plan` insight module, Ask) and the same notify checkbox — no
+new Settings sections. Each advisor is a pure function in `services/advice.js` over
+`getAdviceInputs`, computes its own figures (decision 1), carries the disclaimer
+(decision 10) and keeps its thresholds as named constants (decision 9). A8's statement
+fields need a migration and a liabilities-sync change.
+

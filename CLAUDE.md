@@ -6919,7 +6919,10 @@ perfin_url) and its contract-coverage gap were fixed by the follow-on batch
    plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
    high-APR card debt first with a per-card avalanche split, a 3-month emergency fund, then
    "invest $X more per paycheck" from a sustained surplus — on the dashboard, in AI insights and
-   in Ask, with one opt-in "tell me when my plan changes" checkbox.
+   in Ask, with one opt-in "tell me when my plan changes" checkbox; then (A5–A10) emergency-fund
+   and goal catch-up, raise / bonus split, spending creep, idle cash, rebalancing directions,
+   statement-date utilization, loan extra payments, sinking funds, subscription consolidation,
+   tax-advantaged room and what-if questions in Ask.
 
 Shipped (June 2026): **Job Radar (Per-sistant)** — a personal job-listing radar
 built INTO Per-sistant (the Health & Habits module recipe: `db/021_jobs.sql` +
