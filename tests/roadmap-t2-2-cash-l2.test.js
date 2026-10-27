@@ -278,7 +278,7 @@ describe("Settings — cash alert fields", () => {
     for (const id of ["cash-alert-toggle", "cash-alert-threshold", "cash-alert-horizon"]) {
       assert.match(v, new RegExp('id="' + id + '"[^>]*aria-label="'), id + " is labelled");
     }
-    assert.match(v, /\['cash-alert-toggle', 'change', function\(\) \{ updateSetting\('cash_alert_enabled', this\.checked\); \}\]/);
+    assert.match(v, /\['cash-alert-toggle', 'change', function\(\) \{ saveToggle\(this, 'cash_alert_enabled'\); \}\]/);
     assert.match(v, /updateSetting\('cash_alert_horizon_days', parseInt\(this\.value, 10\)\)/);
     assert.match(v, /var n = parseAmountInput\(document\.getElementById\('cash-alert-threshold'\)\.value\);[\s\S]{0,140}updateSetting\('cash_alert_threshold', n\)/);
   });

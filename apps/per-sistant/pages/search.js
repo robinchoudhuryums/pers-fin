@@ -45,6 +45,7 @@ async function runSearch(q) {
   if (seq !== searchSeq) return; // a newer search is on its way
   if (!res) { status.textContent = 'Search failed — check your connection.'; out.innerHTML = ''; return; }
   var data = await res.json().catch(function() { return null; });
+  if (seq !== searchSeq) return; // cycle-8 F36: a newer search started while this body was read
   if (!res.ok) { status.textContent = (data && data.error) || 'Search failed.'; out.innerHTML = ''; return; }
   var n = Array.isArray(data) ? data.length : 0;
   status.textContent = n ? n + ' result' + (n === 1 ? '' : 's') : '';

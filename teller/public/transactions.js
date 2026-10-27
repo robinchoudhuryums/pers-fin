@@ -169,7 +169,10 @@
       try {
         var res = await apiFetch('/api/transactions/' + encodeURIComponent(txnId), { method: 'DELETE' });
         if (!(await writeOk(res, 'Delete'))) return;
-        showMsg('Transaction deleted.', true, { action: { label: 'Undo', run: function() { undoDelete(txnId); } } });
+        // Cycle-8 F56: focus goes to Undo (the pressed Delete button is about
+        // to be redrawn away) and the text says where else to restore it.
+        showMsg('Transaction deleted. You can also restore it from Settings → Sync Health → Deleted transactions.', true,
+          { action: { label: 'Undo', focus: true, run: function() { undoDelete(txnId); } } });
         reloadAfterDelete();
       } catch (e) { showMsg("Couldn't delete the transaction — check your connection.", false); }
     }

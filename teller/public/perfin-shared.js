@@ -122,9 +122,13 @@
     el.classList.add('toast-leaving');
     setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
   }
-  // opts.action = { label, run } adds a button to the toast (e.g. "Undo" —
-  // roadmap T2.5 U2): pressing it closes the toast and calls run(). A toast
-  // with an action stays 10 s and is never merged with an earlier one.
+  // opts.action = { label, run, focus? } adds a button to the toast (e.g.
+  // "Undo" — roadmap T2.5 U2): pressing it closes the toast and calls run(). A
+  // toast with an action stays 10 s and is never merged with an earlier one.
+  // Cycle-8 F56: such a toast waits while it is hovered or holds focus, only its
+  // buttons close it (a near miss on its text no longer dismisses it — it has a
+  // labelled Dismiss button instead), and action.focus moves focus to the
+  // action button so a keyboard user can reach it.
   function showMsg(text, ok, opts) {
     if (!text) return;
     var action = opts && opts.action && typeof opts.action.run === 'function' ? opts.action : null;
@@ -164,12 +168,36 @@
         action.run();
       });
       toast.appendChild(btn);
+      var close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'toast-close';
+      close.setAttribute('aria-label', 'Dismiss');
+      close.textContent = '×';
+      close.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        if (toast._timer) clearTimeout(toast._timer);
+        removeToast(toast);
+      });
+      toast.appendChild(close);
+      var hovered = false, focused = false;
+      var hold = function() {
+        if (toast._timer) clearTimeout(toast._timer);
+        toast._timer = (hovered || focused) ? null : setTimeout(function() { removeToast(toast); }, 10000);
+      };
+      toast.addEventListener('mouseenter', function() { hovered = true; hold(); });
+      toast.addEventListener('mouseleave', function() { hovered = false; hold(); });
+      toast.addEventListener('focusin', function() { focused = true; hold(); });
+      toast.addEventListener('focusout', function(ev) {
+        if (ev && ev.relatedTarget && toast.contains && toast.contains(ev.relatedTarget)) return;
+        focused = false; hold();
+      });
     } else {
       toast.textContent = text;
+      toast.addEventListener('click', function() { removeToast(toast); });
     }
-    toast.addEventListener('click', function() { removeToast(toast); });
     stack.appendChild(toast);
     toast._timer = setTimeout(function() { removeToast(toast); }, ok && !action ? 5000 : 10000);
+    if (action && action.focus && btn.focus) { try { btn.focus({ preventScroll: true }); } catch (e) { /* an old browser: no focus move */ } }
     // Cap at 5 visible toasts — anything older gets dropped so the stack
     // doesn't grow unbounded during a rapid background-task burst. Count only
     // toasts that aren't already animating out, and drop the excess

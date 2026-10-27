@@ -243,7 +243,7 @@ describe("Settings → Sync Health → Deleted transactions (settings.ejs)", () 
     assert.match(t.els["deleted-transactions-body"].innerHTML, /<button class="btn" data-deleted-more>Show more<\/button>/);
     assert.equal(t.els["deleted-transactions-count"].textContent, "(1+)");
     const more = await t.click("data-deleted-more");
-    assert.equal(more.disabled, true);
+    assert.equal(more.disabled, false, "put back after the load (cycle-8 F37); the list was redrawn anyway");
     assert.equal(t.calls[1], "/api/deleted-transactions?limit=50&before=" + encodeURIComponent("2026-10-20T12:00:00.000000Z|csv_1"));
     const html = t.els["deleted-transactions-body"].innerHTML;
     assert.ok(html.indexOf("csv_1") < html.indexOf("txn_old"), "the next page appends");
@@ -308,7 +308,7 @@ describe("Activity page delete → Undo (transactions.js)", () => {
     await t.ctx.deleteDuplicate("txn_1");
     assert.deepEqual(t.calls, [["/api/transactions/txn_1", "DELETE"]]);
     const [text, ok, opts] = t.msgs[0];
-    assert.equal(text, "Transaction deleted.");
+    assert.equal(text, "Transaction deleted. You can also restore it from Settings → Sync Health → Deleted transactions.");
     assert.equal(ok, true);
     assert.equal(opts.action.label, "Undo");
     assert.deepEqual(t.reloads, ["dups", "search:100"]);

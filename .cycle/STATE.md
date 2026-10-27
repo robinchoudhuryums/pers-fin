@@ -18,23 +18,23 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 8 broad scan — Batch 6 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
-  Block: `.cycle/blocks/8-batch6-broad-implement.md`.
-  - **Shipped (Batch 6 — AI trust + Knowledge privacy):** F42 the audit treats year / week / quarter
-    periods and a prior-year month ("last November", "November 2025", "In 2025") as cross-period; F49 a
-    quoted frontmatter key is read and an unreadable privacy-key line fails closed (VAULT_PARSE_VERSION 3);
-    F44 Ask returns a finished answer when its charge write fails (the finally retries); F24 a refusal on a
-    routes/ai.js feature is charged then answered 422 { ai_refusal }; F50 the prompt's credit-score deltas
-    compare the same score type (creditScoreSummary); F53 the weekly digest waits for 07:00 local.
-  - **Verified:** npm test 2666/2666 (16 new); contract 270/270 (1 new); mutation 7/7; Playwright not re-run
-    (no page / mount change).
-  - **Operator:** one full Knowledge reindex after deploy (parse version 3).
-  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (ask.js entry F44, credit-score prompt F50, the
-    audit's other years / weeks / quarters F42, weekly digest + its scheduled-task bullet F53, the
-    Knowledge reindex operator note, INV-27 / INV-113 / INV-143, test counts 2666 / 141 + contract 270,
-    Known Open Issues + Batch 6 follow-ons), apps/per-sistant/CLAUDE.md (frontmatter parsing F49, the
-    refusal 422 F24, db/029's current value, counts + the new test file) and README.
-  - **Where I left off:** Batch 6 committed, pushed and documented. Next: `/broad-implement Batch 7`.
+- **Status:** **Cycle 8 broad scan — Batch 7 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
+  Block: `.cycle/blocks/8-batch7-broad-implement.md`.
+  - **Shipped (Batch 7 — UI correctness + accessibility):** F34 search Pin / Unpin sends the opposite state;
+    F36 the search widget / page draw only the newest reply and the widget shows errors; F40 Per-sistant's
+    session-expiry redirect carries return_to; F48 heatmap days are calendar days west of UTC; F35 a Tax
+    checklist reload keeps unsaved notes + focus; F39 Tax reloads sequenced, writes single-flight, one Plaid
+    update open at a time; F37 Show more re-enabled after a failure; F38 refused Settings switches revert +
+    the floor Save handles failures; F55 keys inside a collapsible heading's select don't collapse it; F56
+    the Undo toast pauses on hover / focus, closes only by its buttons, can take focus; F57 the Accounts row
+    buttons name their institution.
+  - **Verified:** npm test 2697/2697 (31 new); contract 270/270; mutation 13/13; Playwright not re-run (the
+    container's Playwright build isn't installed — Batch 1 follow-on).
+  - **Where I left off:** Batch 7 committed and pushed. Next: `/sync-docs`, then `/broad-implement Batch 8`
+    (F31 frozen CHECK lists, F32 error-log pruning, F33 landing-status queries, F52 Per-sistant DATE parsing).
+- **Batch 6 (DONE):** block `.cycle/blocks/8-batch6-broad-implement.md`.
+  - **Shipped (Batch 6 — AI trust + Knowledge privacy):** F42 F49 F44 F24 F50 F53. npm 2666/2666, contract
+    270/270, mutation 7/7. Operator: one full Knowledge reindex after deploy (parse version 3). Docs synced.
 - **Batch 5 (DONE):** block `.cycle/blocks/8-batch5-broad-implement.md`.
   - **Shipped (Batch 5 — linked tasks semantics):** F16 tombstones for a task deleted for good (db/031);
     F17 aged unpaid manual-bill tasks retained, not closed; F18 an auto-close announces nothing and is left

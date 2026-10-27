@@ -754,8 +754,15 @@
             var raw = el.querySelector('[data-floor-input="' + id + '"]').value;
             var floor = raw.trim() === '' ? null : parseAmountInput(raw);
             if (floor !== null && (!isFinite(floor) || floor < 0)) { showMsg('Enter a floor of $0 or more, or leave it blank', false); return; }
-            var r = await apiFetch('/api/accounts/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ low_balance_floor: floor }) });
-            if (await writeOk(r, 'Save floor')) showMsg(floor === null ? 'Floor removed.' : 'Floor saved.', true);
+            // Cycle-8 F38: a network failure is reported (it used to be an
+            // unhandled rejection with no message), and a double tap saves once.
+            if (btn.disabled) return;
+            btn.disabled = true;
+            try {
+              var r = await apiFetch('/api/accounts/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ low_balance_floor: floor }) });
+              if (await writeOk(r, 'Save floor')) showMsg(floor === null ? 'Floor removed.' : 'Floor saved.', true);
+            } catch (e) { showMsg("Couldn't save the floor — check your connection.", false); }
+            finally { btn.disabled = false; }
           });
         });
       } catch (e) { el.textContent = 'Unavailable'; }
@@ -936,13 +943,23 @@
         }
       } catch {}
     }
+    // Resolves true when the setting was saved (callers that changed a control
+    // first put it back on false — see saveToggle).
     async function updateSetting(key, value) {
       try {
         const body = {}; body[key] = value;
         const res = await apiFetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (res.ok) { showMsg('Setting saved.', true); if (key === 'theme') applyTheme(value); }
-        else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed', false); }
+        if (res.ok) { showMsg('Setting saved.', true); if (key === 'theme') applyTheme(value); return true; }
+        const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed', false);
       } catch (e) { showMsg(e.message, false); }
+      return false;
+    }
+    // Cycle-8 F38: a switch whose save was refused (or never reached the server)
+    // goes back to what is stored — it used to stay flipped, showing a setting
+    // that wasn't on.
+    async function saveToggle(box, key) {
+      var want = box.checked;
+      if (!(await updateSetting(key, want))) box.checked = !want;
     }
     // Monthly AI budget cap — dollars in the input, cents over the wire.
     (function wireBudgetCap() {
@@ -961,11 +978,13 @@
     })();
     async function toggleModule(key, enabled) {
       try {
-        const res = await apiFetch('/api/settings'); const s = await res.json();
+        const res = await apiFetch('/api/settings');
+        if (!res.ok) { showMsg("Couldn't read your settings — try again.", false); return false; }
+        const s = await res.json();
         var mods = s.insight_modules || {};
         mods[key] = enabled;
-        await updateSetting('insight_modules', mods);
-      } catch (e) { showMsg(e.message, false); }
+        return await updateSetting('insight_modules', mods);
+      } catch (e) { showMsg(e.message, false); return false; }
     }
     async function logout() {
       // W2: under the unified shell (BASE_PATH set) logout is owned by the shell:
@@ -1653,7 +1672,7 @@
       ['logout-btn', 'click', logout],
       ['logout-all-btn', 'click', logoutEverywhere],
       ['biometric-register-btn', 'click', registerBiometric],
-      ['insights-toggle', 'change', function() { updateSetting('insights_enabled', this.checked); }],
+      ['insights-toggle', 'change', function() { saveToggle(this, 'insights_enabled'); }],
       ['insights-btn', 'click', generateInsights],
       ['model-select', 'change', function() { updateSetting('insights_model', this.value); }],
       ['cadence-select', 'change', function() { updateSetting('insights_cadence_days', parseInt(this.value)); }],
@@ -1665,26 +1684,26 @@
       ['cat-verify-btn', 'click', loadAccuracySample],
       ['push-btn', 'click', togglePush],
       ['test-push-btn', 'click', testPush],
-      ['keepalive-toggle', 'change', function() { updateSetting('keep_alive_enabled', this.checked); }],
+      ['keepalive-toggle', 'change', function() { saveToggle(this, 'keep_alive_enabled'); }],
       ['keepalive-start', 'change', function() { updateSetting('keep_alive_start', parseInt(this.value)); }],
       ['keepalive-end', 'change', function() { updateSetting('keep_alive_end', parseInt(this.value)); }],
       ['keepalive-tz', 'change', function() { updateSetting('keep_alive_timezone', this.value); }],
       ['pyramid-source-select', 'change', function() { updateSetting('pyramid_data_source', this.value); }],
       ['pyramid-color-select', 'change', function() { updateSetting('pyramid_color_mode', this.value); }],
       ['snapshot-btn', 'click', saveSnapshot],
-      ['csv-reminder-toggle', 'change', function() { updateSetting('csv_reminder_enabled', this.checked); }],
+      ['csv-reminder-toggle', 'change', function() { saveToggle(this, 'csv_reminder_enabled'); }],
       ['csv-reminder-days', 'change', function() { updateSetting('csv_reminder_days', parseInt(this.value)); }],
-      ['sheets-auto-toggle', 'change', function() { updateSetting('sheets_auto_sync_enabled', this.checked); }],
+      ['sheets-auto-toggle', 'change', function() { saveToggle(this, 'sheets_auto_sync_enabled'); }],
       ['sheets-interval-select', 'change', function() { updateSetting('sheets_auto_sync_interval', this.value); }],
-      ['auto-sync-toggle', 'change', function() { updateSetting('auto_sync_enabled', this.checked); }],
+      ['auto-sync-toggle', 'change', function() { saveToggle(this, 'auto_sync_enabled'); }],
       ['auto-sync-interval-select', 'change', function() { updateSetting('auto_sync_interval_hours', parseInt(this.value)); }],
-      ['sync-notif-toggle', 'change', function() { updateSetting('sync_notifications_enabled', this.checked); }],
-      ['weekly-digest-toggle', 'change', function() { updateSetting('weekly_digest_enabled', this.checked); }],
+      ['sync-notif-toggle', 'change', function() { saveToggle(this, 'sync_notifications_enabled'); }],
+      ['weekly-digest-toggle', 'change', function() { saveToggle(this, 'weekly_digest_enabled'); }],
       ['weekly-digest-day-select', 'change', function() { updateSetting('weekly_digest_day', parseInt(this.value)); }],
-      ['daily-digest-toggle', 'change', function() { updateSetting('daily_digest_enabled', this.checked); }],
-      ['critical-alert-toggle', 'change', function() { updateSetting('critical_alert_emails_enabled', this.checked); }],
-      ['cash-alert-toggle', 'change', function() { updateSetting('cash_alert_enabled', this.checked); }],
-      ['payday-alert-toggle', 'change', function() { updateSetting('payday_alerts_enabled', this.checked); }],
+      ['daily-digest-toggle', 'change', function() { saveToggle(this, 'daily_digest_enabled'); }],
+      ['critical-alert-toggle', 'change', function() { saveToggle(this, 'critical_alert_emails_enabled'); }],
+      ['cash-alert-toggle', 'change', function() { saveToggle(this, 'cash_alert_enabled'); }],
+      ['payday-alert-toggle', 'change', function() { saveToggle(this, 'payday_alerts_enabled'); }],
       ['cash-alert-horizon', 'change', function() { updateSetting('cash_alert_horizon_days', parseInt(this.value, 10)); }],
       ['cash-alert-threshold-save', 'click', function() {
         var n = parseAmountInput(document.getElementById('cash-alert-threshold').value);
@@ -1699,7 +1718,7 @@
       ['linked-src-tax_documents', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { tax_documents: this.checked } }); }],
       ['linked-tasks-lead-save', 'click', function() { saveLinkedLead(); }],
       ['linked-tasks-run', 'click', function() { runLinkedTasksNow(this); }],
-      ['insight-email-toggle', 'change', function() { updateSetting('insight_emails_enabled', this.checked); }],
+      ['insight-email-toggle', 'change', function() { saveToggle(this, 'insight_emails_enabled'); }],
       ['install-btn', 'click', async function() {
         const result = await perfinPromptInstall();
         if (result && result.outcome === 'accepted') showMsg('Installing Perfin…', true);
@@ -1734,19 +1753,26 @@
     })();
     // Event delegation for dynamically generated module checkboxes
     onDelegate('modules-container', 'change', 'input[data-module]', function() {
-      toggleModule(this.dataset.module, this.checked);
+      var box = this, want = box.checked;
+      toggleModule(box.dataset.module, want).then(function(ok) { if (!ok) box.checked = !want; });
     });
     // Event delegation for widget toggles
     onDelegate('widget-toggles', 'change', 'input[data-widget]', function() {
-      var key = this.dataset.widget;
+      var box = this, key = this.dataset.widget;
       var enabled = this.checked;
       (async function() {
+        var ok = false;
         try {
-          var res = await apiFetch('/api/settings'); var s = await res.json();
-          var widgets = s.dashboard_widgets || {};
-          widgets[key] = enabled;
-          await updateSetting('dashboard_widgets', widgets);
+          var res = await apiFetch('/api/settings');
+          if (!res.ok) showMsg("Couldn't read your settings — try again.", false);
+          else {
+            var s = await res.json();
+            var widgets = s.dashboard_widgets || {};
+            widgets[key] = enabled;
+            ok = await updateSetting('dashboard_widgets', widgets);
+          }
         } catch (e) { showMsg(e.message, false); }
+        if (!ok) box.checked = !enabled;
       })();
     });
     onDelegate('biometric-list', 'click', '[data-bio-remove]', function() {
@@ -1963,7 +1989,9 @@
       if (!el) return;
       el.addEventListener('click', async function (ev) {
         var more = ev.target.closest('[data-deleted-more]');
-        if (more) { more.disabled = true; await loadDeletedTransactions(true); return; }
+        // Cycle-8 F37: put the button back after a failed load (a successful one
+        // redraws the list) — it used to stay disabled, so Show more was dead.
+        if (more) { more.disabled = true; try { await loadDeletedTransactions(true); } finally { more.disabled = false; } return; }
         var btn = ev.target.closest('[data-restore-deleted]');
         if (!btn) return;
         var id = btn.getAttribute('data-restore-deleted');

@@ -3794,6 +3794,10 @@
           toggle();
         });
         h2.addEventListener('keydown', function(e) {
+          // Cycle-8 F55: only a key pressed ON the heading toggles it — Space /
+          // Enter inside a control in the heading (Spending by Category's month
+          // select) used to collapse the section instead of opening the select.
+          if (e.target !== h2) return;
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
         });
       });

@@ -296,6 +296,6 @@ describe("Settings — payday_alerts_enabled", () => {
     assert.equal((await supertest(app()).get("/api/settings").expect(200)).body.payday_alerts_enabled, false);
     const v = fs.readFileSync(path.join(__dirname, "../teller/views/settings.ejs"), "utf8");
     assert.match(v, /id="payday-alert-toggle" aria-label="Payday alerts"/);
-    assert.match(v, /\['payday-alert-toggle', 'change', function\(\) \{ updateSetting\('payday_alerts_enabled', this\.checked\); \}\]/);
+    assert.match(v, /\['payday-alert-toggle', 'change', function\(\) \{ saveToggle\(this, 'payday_alerts_enabled'\); \}\]/);
   });
 });

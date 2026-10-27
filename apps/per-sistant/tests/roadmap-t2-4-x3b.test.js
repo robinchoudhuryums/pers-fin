@@ -239,7 +239,7 @@ describe("the links and the wiring", () => {
     const dash = require("../pages/dashboard-script");
     new Function(dash);
     new Function(JS);
-    assert.ok(dash.includes("renderSearchResults(results, { actions: true })"));
+    assert.ok(dash.includes("renderSearchResults(data, { actions: true })"));
     assert.ok(!dash.includes("data-action=\"search-complete\""), "the row markup lives in views/js.js only");
   });
 });

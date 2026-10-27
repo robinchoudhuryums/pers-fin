@@ -149,7 +149,7 @@ describe("F81 — insight emails and the webhook text", () => {
   it("Settings has the toggle; no text points at a Settings section that doesn't exist", () => {
     const ejs = read("teller", "views", "settings.ejs");
     assert.match(ejs, /id="insight-email-toggle"/);
-    assert.match(ejs, /updateSetting\('insight_emails_enabled', this\.checked\)/);
+    assert.match(ejs, /saveToggle\(this, 'insight_emails_enabled'\)/);
     assert.match(ejs, /s\.insight_emails_enabled !== false/);
     for (const f of [["teller", "views", "settings.ejs"], ["teller", "routes", "persistent.js"]]) {
       assert.doesNotMatch(read(...f), /Per-sistant integration below|Settings → Per-sistant integration/, f.join("/"));

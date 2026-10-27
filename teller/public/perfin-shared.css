@@ -298,6 +298,14 @@ select option { background: var(--surface-solid); color: var(--text); }
                 border-radius: 6px; border: 1px solid currentColor;
                 background: transparent; color: inherit; font: inherit;
                 font-weight: 600; cursor: pointer; }
+/* Cycle-8 F56: an action toast closes only through its buttons — Dismiss is
+   this one, and its text isn't a click target. */
+.toast-close { margin-left: 6px; padding: 4px 8px; min-width: 32px;
+               border-radius: 6px; border: 1px solid transparent;
+               background: transparent; color: inherit; font: inherit;
+               font-size: 16px; line-height: 1; cursor: pointer; }
+.toast-close:hover { border-color: currentColor; }
+.toast:has(.toast-action) { cursor: default; }
 @keyframes toastIn  { from { transform: translateY(var(--tdir)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 @keyframes toastOut { to { transform: translateY(var(--tdir)); opacity: 0; } }
 

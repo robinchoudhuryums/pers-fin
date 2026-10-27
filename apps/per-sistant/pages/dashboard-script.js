@@ -14,7 +14,7 @@
 // redirects) need explicit window.BASE_PATH concatenation here.
 module.exports = `
 var BP = window.BASE_PATH || '';
-var searchTimeout = null;
+var searchTimeout = null, searchWidgetSeq = 0;
 
 // ---------------------------------------------------------------------------
 // Reminder notification ledger + snooze
@@ -75,12 +75,24 @@ function toggleSnoozeReminders() {
 }
 function doSearch(q) {
   clearTimeout(searchTimeout);
-  if (!q || q.length < 2) { document.getElementById('search-results').style.display='none'; return; }
+  if (!q || q.length < 2) { searchWidgetSeq++; document.getElementById('search-results').style.display='none'; return; }
   searchTimeout = setTimeout(async function() {
-    var results = await fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json()).catch(function(){ return []; });
-    // T2.4 X3b: the shared renderer (views/js.js) — Perfin rows link into Perfin.
-    document.getElementById('search-results').innerHTML = renderSearchResults(results, { actions: true });
-    document.getElementById('search-results').style.display='block';
+    // Cycle-8 F36: only the newest search may draw (a slow older reply used to
+    // overwrite a newer one), and a refused query or a network failure says so
+    // instead of reading as "No results".
+    var seq = ++searchWidgetSeq;
+    var out = document.getElementById('search-results');
+    var res = await tryFetch('/api/search?q='+encodeURIComponent(q));
+    if (seq !== searchWidgetSeq) return;
+    var data = res ? await res.json().catch(function(){ return null; }) : null;
+    if (seq !== searchWidgetSeq) return;
+    if (!res || !res.ok) {
+      out.innerHTML = '<div class="empty-msg" role="alert">'+esc(!res ? 'Search failed — check your connection.' : ((data && data.error) || 'Search failed.'))+'</div>';
+    } else {
+      // T2.4 X3b: the shared renderer (views/js.js) — Perfin rows link into Perfin.
+      out.innerHTML = renderSearchResults(data, { actions: true });
+    }
+    out.style.display='block';
   }, 300);
 }
 
@@ -178,8 +190,10 @@ async function searchSendEmail(id) {
   document.getElementById('global-search').value='';
   load();
 }
+// Cycle-8 F34: pinned is the note's CURRENT state (the button's data-pinned),
+// so the PATCH sends its opposite — it used to send the same value back.
 async function searchTogglePin(id, pinned) {
-  if (!(await writeOk(await tryFetch('/api/notes/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({pinned:pinned})}), 'Could not update the note'))) return;
+  if (!(await writeOk(await tryFetch('/api/notes/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({pinned:!pinned})}), 'Could not update the note'))) return;
   document.getElementById('search-results').style.display='none';
   document.getElementById('global-search').value='';
   load();

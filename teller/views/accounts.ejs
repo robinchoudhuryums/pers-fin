@@ -228,8 +228,11 @@
           var upd = '';
           if (plaidKind) {
             var attrs = ' data-id="' + i.id + '" data-kind="' + plaidKind + '" data-name="' + esc(i.institution_name || '') + '"';
-            if (i.last_error_code) upd += '<button class="btn-unlink" style="border-color:var(--warm);color:var(--warm);" data-action="plaid-update" data-mode="reauth" data-e2e-skip' + attrs + '>Re-authenticate</button> ';
-            upd += '<button class="btn-unlink" style="border-color:var(--border);color:var(--teal);" data-action="plaid-update" data-mode="add" data-e2e-skip' + attrs + '>Add accounts</button> ';
+            // Cycle-8 F57: each row's buttons name their institution — a screen
+            // reader's button list used to read "Re-authenticate, Add accounts,
+            // Unlink" once per row with nothing to tell them apart.
+            if (i.last_error_code) upd += '<button class="btn-unlink" style="border-color:var(--warm);color:var(--warm);" data-action="plaid-update" data-mode="reauth" data-e2e-skip' + attrs + ' aria-label="Re-authenticate ' + esc(i.institution_name || 'this connection') + '">Re-authenticate</button> ';
+            upd += '<button class="btn-unlink" style="border-color:var(--border);color:var(--teal);" data-action="plaid-update" data-mode="add" data-e2e-skip' + attrs + ' aria-label="Add accounts at ' + esc(i.institution_name || 'this connection') + '">Add accounts</button> ';
           }
           return '<div class="item">' +
             '<div class="item-info"><strong>' + esc(i.institution_name) + '</strong>' +
@@ -237,7 +240,7 @@
             (i.provider === 'plaid_investment' ? 'investment accounts' : i.accounts.length + ' account(s)') +
             ' \u2014 Status: ' + esc(i.status) +
             (i.last_error_code ? ' \u2014 <span style="color:var(--red,#eb6b6b);">needs re-authentication</span>' : '') + '</div>' +
-            '<div class="item-actions">' + upd + '<button class="btn-unlink" data-action="unlink" data-id="' + i.id + '" data-provider="' + esc(i.provider || 'teller') + '" data-name="' + esc(i.institution_name || '') + '">Unlink</button></div>' +
+            '<div class="item-actions">' + upd + '<button class="btn-unlink" data-action="unlink" data-id="' + i.id + '" data-provider="' + esc(i.provider || 'teller') + '" data-name="' + esc(i.institution_name || '') + '" aria-label="Unlink ' + esc(i.institution_name || 'this connection') + '">Unlink</button></div>' +
           '</div>';
         }).join('');
       } catch (e) {
@@ -696,7 +699,15 @@
         if (kind === 'investments') loadInvestments();
       } catch (e) { showStatus('Could not refresh ' + name + ': ' + e.message, false); }
     }
+    // Cycle-8 F39: one update at a time — a double tap used to request two Link
+    // tokens and open Plaid twice.
+    var plaidUpdateOpening = false;
     async function updatePlaidItem(id, kind, name) {
+      if (plaidUpdateOpening) return;
+      plaidUpdateOpening = true;
+      try { await openPlaidUpdate(id, kind, name); } finally { plaidUpdateOpening = false; }
+    }
+    async function openPlaidUpdate(id, kind, name) {
       var hosted = prefersHostedPlaidLink(window);
       try {
         var body = { item_id: id, kind: kind };
