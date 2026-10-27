@@ -30,6 +30,7 @@ const path = require("path");
 const auth = require("./middleware/auth");
 const webauthn = require("./middleware/webauthn");
 const errorHandler = require("./middleware/error-handler");
+const { sharedDatabaseProblem } = require("./boot-checks");
 const { landingStatus } = require("./landing-status");
 const { startKeepAlive } = require("../teller/services/keep-alive");
 const errorLog = require("../teller/services/error-log");
@@ -110,13 +111,23 @@ const authLimiter = rateLimit({
   skipSuccessfulRequests: true,
   message: { error: "Too many attempts, please try again later." },
 });
+// The pre-auth biometric probes (F28): every request counts.
+const webauthnProbeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: "Too many attempts, please try again later." },
+});
 // Only counts FAILED requests that present an x-api-key header — so browser
 // traffic (no header) and cron clients with a valid key (successful) are
-// unaffected, while api-key guessing is throttled.
+// unaffected, while api-key guessing is throttled. "Failed" means a wrong key,
+// not an HTTP status: a valid-key request answered 409 (a sync already
+// running, a reconcile in progress) or 400 used to count, and twenty of them
+// locked the backstop workflows out for 15 minutes (cycle-8 F30).
 const apiKeyLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   skipSuccessfulRequests: true,
+  requestWasSuccessful: (req) => auth.isValidApiKey(req),
   skip: (req) => !req.headers["x-api-key"],
   message: { error: "Too many attempts, please try again later." },
 });
@@ -214,13 +225,18 @@ app.get("/login", (req, res) => {
 app.post("/login", authLimiter, auth.handleLogin);
 app.post("/logout", auth.handleLogout);
 
-// Throttle the biometric authenticate endpoints. Both paths are listed
-// explicitly because app.use prefix-matching breaks at "/" boundaries, so
-// "/authenticate" would NOT cover "/authenticate-options". The GET /available
-// probe the login page polls is intentionally left untouched. Registered
-// before webauthn.attach so it runs ahead of those handlers.
+// Throttle the biometric endpoints. The paths are listed explicitly because
+// app.use prefix-matching breaks at "/" boundaries, so "/authenticate" would
+// NOT cover "/authenticate-options". Registered before webauthn.attach so it
+// runs ahead of those handlers. /authenticate (a credential check) counts only
+// failures; the two pre-auth probes — /authenticate-options and /available —
+// answer 200 to anyone once a credential exists, so authLimiter's
+// skipSuccessfulRequests never counted them and each anonymous call ran a
+// query on Perfin's small pool (cycle-8 F28). They get a plain per-IP cap; the
+// login page calls each once per load or button press.
 app.use("/api/shell/webauthn/authenticate", authLimiter);
-app.use("/api/shell/webauthn/authenticate-options", authLimiter);
+app.use("/api/shell/webauthn/authenticate-options", webauthnProbeLimiter);
+app.use("/api/shell/webauthn/available", webauthnProbeLimiter);
 
 // Biometric login — mounted BEFORE requireAuth so users can authenticate via
 // FaceID / passkey without first entering the PIN. The endpoints query
@@ -320,6 +336,13 @@ async function start() {
   if (!process.env.SHELL_SECRET) {
     throw new Error("SHELL_SECRET is not set — refusing to start (it signs the shell session cookie; generate one with `openssl rand -hex 32`).");
   }
+  // Cycle-8 F26: Per-sistant falls back to NEON_DATABASE_URL (its standalone
+  // default), so a shell missing PERSISTENT_DATABASE_URL used to migrate both
+  // apps into ONE database — their user_settings rows merged, and the two
+  // separate AI caps (INV-143) became one — without a word. Refuse to start;
+  // ALLOW_SHARED_DATABASE=true is the explicit opt-in for a one-database setup.
+  const dbProblem = sharedDatabaseProblem(process.env);
+  if (dbProblem) throw new Error(dbProblem);
   if (!process.env.SHELL_PIN) {
     console.warn("WARNING: SHELL_PIN is not set — PIN login is disabled (biometric and x-api-key access still work).");
   } else if (process.env.SHELL_PIN.length < 6) {

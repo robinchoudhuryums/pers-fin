@@ -53,6 +53,21 @@ const _awaySettled = {};
 function localDay() { return require("./services/financial-queries").todayStr(); }
 function awaySettledToday(job) { return _awaySettled[job] === localDay(); }
 function markAwaySettled(job) { _awaySettled[job] = localDay(); }
+
+// ---- Not-due memo (cycle-8 F29) ----
+// bank-auto-sync, the self-healing reconcile and the insights auto-trigger are
+// not activity-gated, and each read user_settings on every tick only to find
+// itself switched off or not due — waking Neon hourly around the clock. A job
+// that found itself off settles for the local day (markAwaySettled); one that
+// is merely not due remembers WHEN it will be (setNextDue) and skips its read
+// until then. PATCH /api/settings drops both memos when a field that moves the
+// due time changes (invalidateJobMemos), so the next tick looks again.
+const _nextDueAt = {};
+function notDueYet(job) { return _nextDueAt[job] > Date.now(); }
+function setNextDue(job, at) { if (Number.isFinite(at)) _nextDueAt[job] = at; }
+function invalidateJobMemos(jobs = Object.keys({ ..._nextDueAt, ..._awaySettled })) {
+  for (const job of jobs) { delete _nextDueAt[job]; delete _awaySettled[job]; }
+}
 function localHourNow() {
   const { APP_TIMEZONE } = require("./services/financial-queries");
   try {
@@ -323,17 +338,25 @@ async function runInsightsAutoTriggerTick() {
   jobHealth.tick("insights-auto-trigger");
   try {
     if (!process.env.ANTHROPIC_API_KEY) return;
+    // Off for the day, or not due yet: no settings read (cycle-8 F29).
+    if (awaySettledToday("insights-auto-trigger") || notDueYet("insights-auto-trigger")) return;
     const settings = await pool.query(
       "SELECT insights_enabled, insights_cadence_days, insights_last_run, insights_last_attempt_at FROM user_settings WHERE id = 1"
     );
     const s = settings.rows[0];
-    if (!s || !s.insights_enabled) return;
+    if (!s || !s.insights_enabled) { markAwaySettled("insights-auto-trigger"); return; }
     const cadenceDays = s.insights_cadence_days || 30;
     const lastRun = s.insights_last_run ? new Date(s.insights_last_run) : null;
     const now = new Date();
-    if (lastRun && (now - lastRun) / 86400000 < cadenceDays) return;
+    if (lastRun && (now - lastRun) / 86400000 < cadenceDays) {
+      setNextDue("insights-auto-trigger", lastRun.getTime() + cadenceDays * 86400000);
+      return;
+    }
     const lastAttempt = s.insights_last_attempt_at ? new Date(s.insights_last_attempt_at) : null;
-    if (lastAttempt && (!lastRun || lastAttempt > lastRun) && (now - lastAttempt) < INSIGHTS_RETRY_MS) return;
+    if (lastAttempt && (!lastRun || lastAttempt > lastRun) && (now - lastAttempt) < INSIGHTS_RETRY_MS) {
+      setNextDue("insights-auto-trigger", lastAttempt.getTime() + INSIGHTS_RETRY_MS);
+      return;
+    }
 
     const { generateInsights, getAiBudgetCents, monthAiSpendCents } = require("./routes/insights");
     if (await monthAiSpendCents() >= await getAiBudgetCents()) {
@@ -378,10 +401,180 @@ async function runInsightsAutoTriggerTick() {
   }
 }
 
+// Bank auto-sync (every hour, throttled by the user's auto_sync_interval_hours).
+// Not activity-gated. Off → settled for the local day; not due → no settings
+// read until it is (cycle-8 F29). A Settings change drops both memos.
+async function runBankAutoSyncTick() {
+  jobHealth.tick("bank-auto-sync");
+  if (awaySettledToday("bank-auto-sync") || notDueYet("bank-auto-sync")) return;
+  try {
+    const settings = await pool.query(
+      // sync_notifications_enabled MUST be selected — the toggle checks below
+      // read it, and without it they were always "on" (PSC-1).
+      "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_sync_result, sync_notifications_enabled FROM user_settings WHERE id = 1"
+    );
+    const s = settings.rows[0];
+    if (!s || !s.auto_sync_enabled) { markAwaySettled("bank-auto-sync"); return; }
+    const intervalHours = Math.max(1, Math.min(168, parseInt(s.auto_sync_interval_hours) || 6));
+    const lastSync = s.last_auto_sync_at ? new Date(s.last_auto_sync_at) : null;
+    const now = new Date();
+    const dueMs = intervalHours * 60 * 60 * 1000;
+    if (lastSync && (now - lastSync) < dueMs) { setNextDue("bank-auto-sync", lastSync.getTime() + dueMs); return; }
+
+    const { syncAllTransactions, syncAllBalances, recordSyncResult, thrownSyncResult } = require("./routes/enrollments");
+    const { syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
+    let txnResult = null, balResult = null, plaidResult = null, holdingsResult = null, flowsResult = null;
+    // A step that THROWS is recorded as an error for its provider (cycle-7
+    // F23) — it used to be recorded as nothing, keeping a stale clean entry.
+    const threw = {};
+    // Teller + Plaid via the shared entry point so the anomaly check runs
+    // ONCE over the combined added count — Plaid charges get anomaly alerts
+    // too (DD-1). Each provider is failure-isolated inside it.
+    try {
+      const all = await syncAllTransactions();
+      txnResult = all.teller;
+      plaidResult = all.plaid;
+    } catch (e) { console.error("Auto-sync transaction error:", e.message); threw.teller_txn = e; }
+    try { holdingsResult = await syncAllPlaidHoldings(); }
+    catch (e) { console.error("Auto-sync holdings error:", e.message); threw.plaid_holdings = e; }
+    // External cash flows for TWR/XIRR — full-window idempotent re-pull,
+    // cheap (≤1 page for a personal account) and failure-isolated.
+    try { flowsResult = await syncAllPlaidInvestmentFlows(); }
+    catch (e) { console.error("Auto-sync investment-flows error:", e.message); threw.plaid_flows = e; }
+    try { balResult = await syncAllBalances(); }
+    catch (e) { console.error("Auto-sync balances error:", e.message); threw.teller_balance = e; }
+
+    // Auto-categorize freshly-synced transactions so the user doesn't have
+    // to click "Categorize" after every sync. runCategorize sweeps the FULL
+    // backlog through the free rule + Teller-map paths and sends a bounded
+    // batch to AI (budget-capped) — so this is cheap and keeps the
+    // uncategorized count from piling up. Runs on the user's chosen auto-sync
+    // cadence, giving the daily categorization sweep.
+    try {
+      const { runCategorize } = require("./routes/categorize");
+      const catRes = await runCategorize();
+      if (catRes && catRes.ok) {
+        console.log(`Auto-sync categorize: ${catRes.categorized || 0} categorized, ${catRes.remaining ?? "?"} remaining.`);
+      } else if (catRes && catRes.error) {
+        console.log("Auto-sync categorize skipped:", catRes.error);
+      }
+    } catch (e) { console.error("Auto-sync categorize error:", e.message); }
+
+    await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
+      .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
+    setNextDue("bank-auto-sync", Date.now() + dueMs);
+
+    // Persist a structured sync-result so per-item errors (decryption_failed,
+    // per-institution failures) surface in the Sync Health card even on a
+    // scheduled run nobody is watching (addition D). The auto-sync covers all
+    // providers, so its record is the comprehensive one.
+    const orThrew = (provider, result) => threw[provider] ? thrownSyncResult(threw[provider]) : result;
+    const syncRecord = await recordSyncResult([
+      { provider: "teller_txn", result: orThrew("teller_txn", txnResult) },
+      { provider: "plaid_txn", result: plaidResult },
+      { provider: "plaid_holdings", result: orThrew("plaid_holdings", holdingsResult) },
+      // Investment-flow errors were never recorded (DD-10); "Plaid not
+      // configured" is skipped inside recordSyncResult.
+      { provider: "plaid_flows", result: orThrew("plaid_flows", flowsResult) },
+      { provider: "teller_balance", result: orThrew("teller_balance", balResult) },
+    ]);
+    // Notify ONLY when the error set changes (new errors appeared) so a
+    // persistent passphrase mismatch doesn't spam a notification every hour.
+    const errSig = (errs) => (errs || []).map(e => `${e.provider}:${e.institution || ""}:${e.error}`).sort().join("|");
+    const prevErrSig = errSig(s.last_sync_result && s.last_sync_result.errors);
+    const newErrSig = errSig(syncRecord.errors);
+    if (syncRecord.errors.length > 0 && newErrSig !== prevErrSig && s.sync_notifications_enabled !== false) {
+      try {
+        const { sendToAll } = require("./routes/notifications");
+        const summary = syncRecord.errors.slice(0, 4)
+          .map(e => `${e.institution || e.provider}: ${e.error}`).join("; ");
+        await sendToAll({
+          title: "Sync error",
+          body: `${syncRecord.errors.length} sync error(s) — ${summary}. See Settings → Sync Health.`,
+          tag: "sync-error",
+          data: { url: "/settings" },
+        });
+      } catch (e) { console.error("Sync error notification failed:", e.message); }
+    }
+    const tellerTxns = txnResult ? txnResult.transactions_added : 0;
+    const plaidTxns = plaidResult && plaidResult.ok ? plaidResult.transactions_added : 0;
+    const syncMsg = `${tellerTxns + plaidTxns} txns (${tellerTxns} Teller, ${plaidTxns} Plaid)` +
+      ", " + (balResult ? `${balResult.accounts_updated} balances` : "balance sync failed");
+    console.log("Auto-sync complete: " + syncMsg);
+    const txnsAdded = tellerTxns + plaidTxns;
+    // A balance that was re-fetched but didn't move is not news (PSC-1):
+    // accounts_changed, not accounts_updated, gates the notification.
+    const balancesChanged = balResult ? (balResult.accounts_changed || 0) : 0;
+    const anyFailed = !txnResult || txnResult.failed === true || !balResult;
+    const anyChanged = txnsAdded > 0 || balancesChanged > 0;
+    jobHealth.result("bank-auto-sync", anyFailed
+      ? { ok: false, error: !txnResult || txnResult.failed === true ? "transaction sync failed" : "balance sync failed" }
+      : { ok: true });
+    if (s.sync_notifications_enabled !== false && (anyChanged || anyFailed)) {
+      try {
+        const { sendToAll } = require("./routes/notifications");
+        await sendToAll({
+          title: anyFailed ? "Auto-sync issue" : "Auto-sync complete",
+          body: syncMsg,
+          tag: "auto-sync",
+          data: { url: "/dashboard" },
+        });
+      } catch (e) { console.error("Auto-sync notification failed:", e.message); }
+    }
+  } catch (err) {
+    console.error("Auto-sync scheduler error:", err.message);
+    jobHealth.result("bank-auto-sync", { ok: false, error: err.message });
+  }
+}
+
+// Self-healing reconcile (every hour, acts at most weekly). Re-fetches the
+// trailing 90 days from every Teller enrollment regardless of the incremental
+// watermark, so any transactions a prior sync dropped (same-day late arrivals,
+// a failed-sibling-account skip) are recovered via idempotent upserts. Teller
+// only — it's free and cheap; Plaid reconcile is heavier (full cursor re-walk)
+// and stays a manual POST /api/sync/reconcile action. Not gated on user
+// activity: a weekly background heal should run even while the user is away.
+async function runSelfHealingReconcileTick() {
+  jobHealth.tick("self-healing-reconcile");
+  // Not due → no read until it is (cycle-8 F29). A manual reconcile in the
+  // meantime only moves the real due time later, so the memo can't run early.
+  if (notDueYet("self-healing-reconcile")) return;
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  try {
+    const r = await pool.query("SELECT last_reconcile_at FROM user_settings WHERE id = 1");
+    const last = r.rows[0]?.last_reconcile_at ? new Date(r.rows[0].last_reconcile_at) : null;
+    if (last && (Date.now() - last.getTime()) < WEEK_MS) { setNextDue("self-healing-reconcile", last.getTime() + WEEK_MS); return; }
+    const { reconcileTeller, reconcileBusy, withReconcileGuard } = require("./routes/enrollments");
+    // A reconcile already running (e.g. weekly-reconcile.yml's background
+    // one) covers this week; retry on the next tick (seams audit #3).
+    if (reconcileBusy()) return;
+    const result = await withReconcileGuard(() => reconcileTeller(90));
+    await pool.query("UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1")
+      .catch(e => console.error("last_reconcile_at update failed:", e.message));
+    setNextDue("self-healing-reconcile", Date.now() + WEEK_MS);
+    // Record the outcome so a failing weekly heal is visible (BSI-11).
+    const { recordSyncResult } = require("./routes/enrollments");
+    await recordSyncResult([{ provider: "teller_reconcile", result }]);
+    console.log("Self-healing Teller reconcile complete:", JSON.stringify(result));
+    const reconcileErrors = result && Array.isArray(result.errors) ? result.errors.length : 0;
+    jobHealth.result("self-healing-reconcile", reconcileErrors
+      ? { ok: false, error: `${reconcileErrors} enrollment error(s)` }
+      : { ok: true });
+  } catch (err) {
+    console.error("Self-healing reconcile error:", err.message);
+    jobHealth.result("self-healing-reconcile", { ok: false, error: err.message });
+    // A thrown reconcile used to leave no trace in last_sync_result (F23).
+    try {
+      const { recordSyncResult, thrownSyncResult } = require("./routes/enrollments");
+      await recordSyncResult([{ provider: "teller_reconcile", result: thrownSyncResult(err) }]);
+    } catch (e) { console.error("Could not record the reconcile failure:", e.message); }
+  }
+}
+
 function startBackgroundJobs() {
   // Sheets auto-sync check (every hour). Gated: skips when no user has
   // been active for 15+ minutes so Neon can auto-suspend.
-  intervalHandles.push(setInterval(async () => {
+  const runSheetsAutoSyncTick = async () => {
     jobHealth.tick("sheets-auto-sync");
     if (!isUserActive()) return;
     try {
@@ -416,13 +609,14 @@ function startBackgroundJobs() {
       console.error("Sheets auto-sync error:", err.message);
       jobHealth.result("sheets-auto-sync", { ok: false, error: err.message });
     }
-  }, 60 * 60 * 1000));
+  };
+  intervalHandles.push(setInterval(runSheetsAutoSyncTick, 60 * 60 * 1000));
 
   // Hourly net worth auto-snapshot. Gated: skips when no user is active
   // so Neon can auto-suspend. The INSERT uses ON CONFLICT (snapshot_date)
   // DO UPDATE so a same-day re-run rewrites the row with the latest
   // balances.
-  intervalHandles.push(setInterval(async () => {
+  const runNetWorthSnapshotTick = async () => {
     jobHealth.tick("net-worth-snapshot");
     if (!isUserActive()) return;
     try {
@@ -449,10 +643,11 @@ function startBackgroundJobs() {
       console.error("Net worth auto-snapshot error:", err.message);
       jobHealth.result("net-worth-snapshot", { ok: false, error: err.message });
     }
-  }, 60 * 60 * 1000));
+  };
+  intervalHandles.push(setInterval(runNetWorthSnapshotTick, 60 * 60 * 1000));
 
   // Goal milestone notifications (every 6 hours). Gated on user activity.
-  intervalHandles.push(setInterval(async () => {
+  const runGoalMilestonesTick = async () => {
     jobHealth.tick("goal-milestones");
     if (!isUserActive()) return;
     try {
@@ -506,7 +701,8 @@ function startBackgroundJobs() {
       console.error("Goal milestone check error:", err.message);
       jobHealth.result("goal-milestones", { ok: false, error: err.message });
     }
-  }, 6 * 60 * 60 * 1000));
+  };
+  intervalHandles.push(setInterval(runGoalMilestonesTick, 6 * 60 * 60 * 1000));
 
   // Auto-trigger AI insights based on cadence (every 6 hours).
   // Pre-syncs transactions + balances + detection so AI sees fresh data.
@@ -533,7 +729,7 @@ function startBackgroundJobs() {
   // is complete regardless of which day we run" didn't hold for bank posting
   // lag); after that it only creates a missing snapshot (catch-up) and
   // otherwise no-ops. Still gated on user activity.
-  intervalHandles.push(setInterval(async () => {
+  const runBudgetSnapshotTick = async () => {
     jobHealth.tick("budget-snapshot");
     if (!isUserActive()) return;
     try {
@@ -549,169 +745,14 @@ function startBackgroundJobs() {
       console.error("Budget snapshot auto-trigger error:", err.message);
       jobHealth.result("budget-snapshot", { ok: false, error: err.message });
     }
-  }, 6 * 60 * 60 * 1000));
+  };
+  intervalHandles.push(setInterval(runBudgetSnapshotTick, 6 * 60 * 60 * 1000));
 
-  // Bank auto-sync (every hour, throttled by user setting)
-  intervalHandles.push(setInterval(async () => {
-    jobHealth.tick("bank-auto-sync");
-    try {
-      const settings = await pool.query(
-        // sync_notifications_enabled MUST be selected — the toggle checks below
-        // read it, and without it they were always "on" (PSC-1).
-        "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_sync_result, sync_notifications_enabled FROM user_settings WHERE id = 1"
-      );
-      const s = settings.rows[0];
-      if (!s || !s.auto_sync_enabled) return;
-      const intervalHours = Math.max(1, Math.min(168, parseInt(s.auto_sync_interval_hours) || 6));
-      const lastSync = s.last_auto_sync_at ? new Date(s.last_auto_sync_at) : null;
-      const now = new Date();
-      const dueMs = intervalHours * 60 * 60 * 1000;
-      if (lastSync && (now - lastSync) < dueMs) return;
+  // Bank auto-sync (every hour, throttled by user setting) — runBankAutoSyncTick.
+  intervalHandles.push(setInterval(() => runBankAutoSyncTick(), 60 * 60 * 1000));
 
-      const { syncAllTransactions, syncAllBalances, recordSyncResult, thrownSyncResult } = require("./routes/enrollments");
-      const { syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
-      let txnResult = null, balResult = null, plaidResult = null, holdingsResult = null, flowsResult = null;
-      // A step that THROWS is recorded as an error for its provider (cycle-7
-      // F23) — it used to be recorded as nothing, keeping a stale clean entry.
-      const threw = {};
-      // Teller + Plaid via the shared entry point so the anomaly check runs
-      // ONCE over the combined added count — Plaid charges get anomaly alerts
-      // too (DD-1). Each provider is failure-isolated inside it.
-      try {
-        const all = await syncAllTransactions();
-        txnResult = all.teller;
-        plaidResult = all.plaid;
-      } catch (e) { console.error("Auto-sync transaction error:", e.message); threw.teller_txn = e; }
-      try { holdingsResult = await syncAllPlaidHoldings(); }
-      catch (e) { console.error("Auto-sync holdings error:", e.message); threw.plaid_holdings = e; }
-      // External cash flows for TWR/XIRR — full-window idempotent re-pull,
-      // cheap (≤1 page for a personal account) and failure-isolated.
-      try { flowsResult = await syncAllPlaidInvestmentFlows(); }
-      catch (e) { console.error("Auto-sync investment-flows error:", e.message); threw.plaid_flows = e; }
-      try { balResult = await syncAllBalances(); }
-      catch (e) { console.error("Auto-sync balances error:", e.message); threw.teller_balance = e; }
-
-      // Auto-categorize freshly-synced transactions so the user doesn't have
-      // to click "Categorize" after every sync. runCategorize sweeps the FULL
-      // backlog through the free rule + Teller-map paths and sends a bounded
-      // batch to AI (budget-capped) — so this is cheap and keeps the
-      // uncategorized count from piling up. Runs on the user's chosen auto-sync
-      // cadence, giving the daily categorization sweep.
-      try {
-        const { runCategorize } = require("./routes/categorize");
-        const catRes = await runCategorize();
-        if (catRes && catRes.ok) {
-          console.log(`Auto-sync categorize: ${catRes.categorized || 0} categorized, ${catRes.remaining ?? "?"} remaining.`);
-        } else if (catRes && catRes.error) {
-          console.log("Auto-sync categorize skipped:", catRes.error);
-        }
-      } catch (e) { console.error("Auto-sync categorize error:", e.message); }
-
-      await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
-        .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
-
-      // Persist a structured sync-result so per-item errors (decryption_failed,
-      // per-institution failures) surface in the Sync Health card even on a
-      // scheduled run nobody is watching (addition D). The auto-sync covers all
-      // providers, so its record is the comprehensive one.
-      const orThrew = (provider, result) => threw[provider] ? thrownSyncResult(threw[provider]) : result;
-      const syncRecord = await recordSyncResult([
-        { provider: "teller_txn", result: orThrew("teller_txn", txnResult) },
-        { provider: "plaid_txn", result: plaidResult },
-        { provider: "plaid_holdings", result: orThrew("plaid_holdings", holdingsResult) },
-        // Investment-flow errors were never recorded (DD-10); "Plaid not
-        // configured" is skipped inside recordSyncResult.
-        { provider: "plaid_flows", result: orThrew("plaid_flows", flowsResult) },
-        { provider: "teller_balance", result: orThrew("teller_balance", balResult) },
-      ]);
-      // Notify ONLY when the error set changes (new errors appeared) so a
-      // persistent passphrase mismatch doesn't spam a notification every hour.
-      const errSig = (errs) => (errs || []).map(e => `${e.provider}:${e.institution || ""}:${e.error}`).sort().join("|");
-      const prevErrSig = errSig(s.last_sync_result && s.last_sync_result.errors);
-      const newErrSig = errSig(syncRecord.errors);
-      if (syncRecord.errors.length > 0 && newErrSig !== prevErrSig && s.sync_notifications_enabled !== false) {
-        try {
-          const { sendToAll } = require("./routes/notifications");
-          const summary = syncRecord.errors.slice(0, 4)
-            .map(e => `${e.institution || e.provider}: ${e.error}`).join("; ");
-          await sendToAll({
-            title: "Sync error",
-            body: `${syncRecord.errors.length} sync error(s) — ${summary}. See Settings → Sync Health.`,
-            tag: "sync-error",
-            data: { url: "/settings" },
-          });
-        } catch (e) { console.error("Sync error notification failed:", e.message); }
-      }
-      const tellerTxns = txnResult ? txnResult.transactions_added : 0;
-      const plaidTxns = plaidResult && plaidResult.ok ? plaidResult.transactions_added : 0;
-      const syncMsg = `${tellerTxns + plaidTxns} txns (${tellerTxns} Teller, ${plaidTxns} Plaid)` +
-        ", " + (balResult ? `${balResult.accounts_updated} balances` : "balance sync failed");
-      console.log("Auto-sync complete: " + syncMsg);
-      const txnsAdded = tellerTxns + plaidTxns;
-      // A balance that was re-fetched but didn't move is not news (PSC-1):
-      // accounts_changed, not accounts_updated, gates the notification.
-      const balancesChanged = balResult ? (balResult.accounts_changed || 0) : 0;
-      const anyFailed = !txnResult || txnResult.failed === true || !balResult;
-      const anyChanged = txnsAdded > 0 || balancesChanged > 0;
-      jobHealth.result("bank-auto-sync", anyFailed
-        ? { ok: false, error: !txnResult || txnResult.failed === true ? "transaction sync failed" : "balance sync failed" }
-        : { ok: true });
-      if (s.sync_notifications_enabled !== false && (anyChanged || anyFailed)) {
-        try {
-          const { sendToAll } = require("./routes/notifications");
-          await sendToAll({
-            title: anyFailed ? "Auto-sync issue" : "Auto-sync complete",
-            body: syncMsg,
-            tag: "auto-sync",
-            data: { url: "/dashboard" },
-          });
-        } catch (e) { console.error("Auto-sync notification failed:", e.message); }
-      }
-    } catch (err) {
-      console.error("Auto-sync scheduler error:", err.message);
-      jobHealth.result("bank-auto-sync", { ok: false, error: err.message });
-    }
-  }, 60 * 60 * 1000));
-
-  // Self-healing reconcile (every hour, acts at most weekly). Re-fetches the
-  // trailing 90 days from every Teller enrollment regardless of the incremental
-  // watermark, so any transactions a prior sync dropped (same-day late arrivals,
-  // a failed-sibling-account skip) are recovered via idempotent upserts. Teller
-  // only — it's free and cheap; Plaid reconcile is heavier (full cursor re-walk)
-  // and stays a manual POST /api/sync/reconcile action. Not gated on user
-  // activity: a weekly background heal should run even while the user is away.
-  intervalHandles.push(setInterval(async () => {
-    jobHealth.tick("self-healing-reconcile");
-    try {
-      const r = await pool.query("SELECT last_reconcile_at FROM user_settings WHERE id = 1");
-      const last = r.rows[0]?.last_reconcile_at ? new Date(r.rows[0].last_reconcile_at) : null;
-      const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-      if (last && (Date.now() - last.getTime()) < WEEK_MS) return;
-      const { reconcileTeller, reconcileBusy, withReconcileGuard } = require("./routes/enrollments");
-      // A reconcile already running (e.g. weekly-reconcile.yml's background
-      // one) covers this week; retry on the next tick (seams audit #3).
-      if (reconcileBusy()) return;
-      const result = await withReconcileGuard(() => reconcileTeller(90));
-      await pool.query("UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1")
-        .catch(e => console.error("last_reconcile_at update failed:", e.message));
-      // Record the outcome so a failing weekly heal is visible (BSI-11).
-      const { recordSyncResult } = require("./routes/enrollments");
-      await recordSyncResult([{ provider: "teller_reconcile", result }]);
-      console.log("Self-healing Teller reconcile complete:", JSON.stringify(result));
-      const reconcileErrors = result && Array.isArray(result.errors) ? result.errors.length : 0;
-      jobHealth.result("self-healing-reconcile", reconcileErrors
-        ? { ok: false, error: `${reconcileErrors} enrollment error(s)` }
-        : { ok: true });
-    } catch (err) {
-      console.error("Self-healing reconcile error:", err.message);
-      jobHealth.result("self-healing-reconcile", { ok: false, error: err.message });
-      // A thrown reconcile used to leave no trace in last_sync_result (F23).
-      try {
-        const { recordSyncResult, thrownSyncResult } = require("./routes/enrollments");
-        await recordSyncResult([{ provider: "teller_reconcile", result: thrownSyncResult(err) }]);
-      } catch (e) { console.error("Could not record the reconcile failure:", e.message); }
-    }
-  }, 60 * 60 * 1000));
+  // Self-healing reconcile (every hour, acts at most weekly) — runSelfHealingReconcileTick.
+  intervalHandles.push(setInterval(() => runSelfHealingReconcileTick(), 60 * 60 * 1000));
 
   // Weekly digest email. NOT activity-gated (PSC-3) — it exists for when the
   // user is away. Fires on the configured weekly_digest_day when
@@ -780,10 +821,55 @@ function startBackgroundJobs() {
   const bootCheck = setTimeout(runWatchdog, 2 * 60 * 1000);
   if (bootCheck.unref) bootCheck.unref();
   intervalHandles.push(setInterval(runWatchdog, 6 * 60 * 60 * 1000));
+
+  // Boot run (cycle-8 F27). Every job above is a setInterval, so its first run
+  // was one full interval after boot — on a host that sleeps after ~15 minutes
+  // idle (Render free tier) the 3- and 6-hour jobs essentially never ran, and
+  // the hourly away channels only if the process stayed up an hour. Each job
+  // now also runs once shortly after boot, staggered, lightest first. They are
+  // all safe to run early: each is gated by its own watermark / dedup / due
+  // time (the reason the extra run costs nothing when there's nothing to do).
+  scheduleBootRuns({
+    "cash-alerts": runCashAlertsTick,
+    "linked-tasks": runLinkedTasksTick,
+    "budget-alerts": runBudgetAlertTick,
+    "housing-ledger": runHousingLedgerTick,
+    "csv-reminder": runCsvReminderTick,
+    "daily-digest": runDailyDigestTick,
+    "weekly-digest": runWeeklyDigestTick,
+    "goal-milestones": runGoalMilestonesTick,
+    "budget-snapshot": runBudgetSnapshotTick,
+    "net-worth-snapshot": runNetWorthSnapshotTick,
+    "sheets-auto-sync": runSheetsAutoSyncTick,
+    "self-healing-reconcile": runSelfHealingReconcileTick,
+    "bank-auto-sync": runBankAutoSyncTick,
+    "insights-auto-trigger": runInsightsAutoTriggerTick,
+  });
+}
+
+// One-shot boot runs (F27): the first at BOOT_FIRST_DELAY_MS, then one every
+// BOOT_STAGGER_MS in the order given, so the boot doesn't hit the database
+// with fourteen jobs at once. Unref'd, and cleared by stopBackgroundJobs.
+const BOOT_FIRST_DELAY_MS = 60 * 1000;
+const BOOT_STAGGER_MS = 20 * 1000;
+const bootHandles = [];
+function bootRunPlan(names) {
+  return names.map((name, i) => ({ name, delayMs: BOOT_FIRST_DELAY_MS + i * BOOT_STAGGER_MS }));
+}
+function scheduleBootRuns(jobs) {
+  for (const { name, delayMs } of bootRunPlan(Object.keys(jobs))) {
+    const h = setTimeout(() => {
+      // Each tick records its own outcome; this only guards a synchronous throw.
+      Promise.resolve().then(jobs[name]).catch((e) => console.error(`Boot run of ${name} failed:`, e.message));
+    }, delayMs);
+    if (h.unref) h.unref();
+    bootHandles.push(h);
+  }
 }
 
 function stopBackgroundJobs() {
   while (intervalHandles.length) clearInterval(intervalHandles.pop());
+  while (bootHandles.length) clearTimeout(bootHandles.pop());
 }
 
 async function start(app, opts = {}) {
@@ -828,10 +914,12 @@ async function start(app, opts = {}) {
   return { app, server, intervalHandles };
 }
 
-module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity, isUserActive };
+module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity, isUserActive, invalidateJobMemos };
 // Exposed for tests (PSC-3): the "away" job ticks and the per-day memo reset.
 module.exports._awayJobs = {
   runBudgetAlertTick, runWeeklyDigestTick, runDailyDigestTick, runCsvReminderTick,
   runHousingLedgerTick, runInsightsAutoTriggerTick, runCashAlertsTick, runLinkedTasksTick,
-  reset() { for (const k of Object.keys(_awaySettled)) delete _awaySettled[k]; },
+  runBankAutoSyncTick, runSelfHealingReconcileTick,
+  reset() { invalidateJobMemos(); },
 };
+module.exports._boot = { bootRunPlan, BOOT_FIRST_DELAY_MS, BOOT_STAGGER_MS };

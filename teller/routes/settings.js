@@ -393,6 +393,13 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body && req.body.payday_alerts_enabled !== undefined) {
       require("../services/payday-alerts").invalidate();
     }
+    // The bank auto-sync and the insights auto-trigger skip their settings
+    // read while off or not due (cycle-8 F29); a change to what decides that
+    // makes the next tick look again.
+    const memoJobs = [];
+    if (req.body && (req.body.auto_sync_enabled !== undefined || req.body.auto_sync_interval_hours !== undefined)) memoJobs.push("bank-auto-sync");
+    if (req.body && (req.body.insights_enabled !== undefined || req.body.insights_cadence_days !== undefined)) memoJobs.push("insights-auto-trigger");
+    if (memoJobs.length) require("../startup").invalidateJobMemos(memoJobs);
     // Linked tasks: the runner skips its settings read for the day once it
     // found itself off; a change makes the next run look again.
     if (Object.keys(req.body || {}).some(k => k.startsWith("linked_tasks_"))) {

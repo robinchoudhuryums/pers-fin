@@ -10,7 +10,7 @@ to the "none in progress" state.
 ## Current Cycle
 
 Cycle: 8
-Phase: audit
+Phase: implement
 Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
 Updated: 2026-10-27
 
@@ -18,7 +18,29 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Design & UX pass — D7 DONE; the pass is complete (D1–D7)** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
+- **Status:** **Cycle 8 broad scan — Batch 1 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
+  Block: `.cycle/blocks/8-batch1-broad-implement.md`.
+  - **Shipped (Batch 1 — scheduler + auth safety):** F27 boot run for every scheduled job; F29 not-due /
+    off memos for bank auto-sync, the reconcile and the insights trigger (PATCH /api/settings invalidates);
+    F25 safeReturnTo refuses control characters (biometric open redirect); F26 shell refuses a missing or
+    shared PERSISTENT_DATABASE_URL (ALLOW_SHARED_DATABASE opts in — shell/boot-checks.js); F2 Teller
+    self-heal only after an authenticated fetch; F28 biometric probe limiter + challenge cap; F30 the
+    x-api-key limiter counts wrong keys only.
+  - **Verified:** npm test 2583/2583 (22 new: tests/broad-scan-c8-batch1); contract 253/253 (local
+    Postgres 16, no pgvector); Playwright 72/72 (scratch config → preinstalled Chromium); mutation 6/6.
+  - **Operator (blocks deploy):** confirm PERSISTENT_DATABASE_URL on Render is set and distinct.
+  - **Docs not yet updated** — the block's DOCUMENTATION UPDATES list is for /sync-docs.
+  - **Remaining scan batches** (the scan report is in the session transcript; IDs for a fresh session):
+    - Batch 2 money accuracy: F7 F8 F9 F10 F11 F12 F13 F14 F15
+    - Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54
+    - Batch 4 watermarks + webhook hardening: F1 F51 F3
+    - Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21
+    - Batch 6 AI trust + Knowledge privacy: F42 F49 F44 F24 F50 F53
+    - Batch 7 web UI + a11y: F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48
+    - Batch 8 platform hygiene + docs: F31 F32 F33 F52 F45
+    - Expansion: E1 (G1, G5), E2 (ST1, ST3), E3 (G2, ST2), E4 (ST5, G3), E5 (ST4); G4 → /roadmap
+  - **Where I left off:** Batch 1 committed and pushed. Next: `/broad-implement Batch 2`.
+- **Previous status (D7):** **Design & UX pass — D7 DONE; the pass is complete (D1–D7)** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d7-broad-implement.md`.
   - **Shipped:**

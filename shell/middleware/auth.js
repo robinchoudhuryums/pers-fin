@@ -314,6 +314,15 @@ function safeReturnTo(target) {
   if (!target.startsWith("/")) return DEFAULT_POST_LOGIN;
   if (target.startsWith("//")) return DEFAULT_POST_LOGIN;
   if (target.includes("\\")) return DEFAULT_POST_LOGIN;
+  // A browser's URL parser drops tab / CR / LF, so "/\t/evil.example" passed
+  // the checks above and became "//evil.example" when the login page assigned
+  // it to location.href after a biometric login (cycle-8 F25). Refuse every
+  // control character, then require the target to stay same-origin when it is
+  // resolved the way a browser would.
+  if (/[\x00-\x1f\x7f]/.test(target)) return DEFAULT_POST_LOGIN;
+  try {
+    if (new URL(target, "http://same-origin.invalid").origin !== "http://same-origin.invalid") return DEFAULT_POST_LOGIN;
+  } catch { return DEFAULT_POST_LOGIN; }
   return target;
 }
 
@@ -386,4 +395,5 @@ module.exports = {
   handleLogout,
   safeEqual,
   safeReturnTo,
+  isValidApiKey,
 };

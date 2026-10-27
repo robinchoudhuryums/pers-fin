@@ -178,6 +178,8 @@ describe("F63 — the insights auto-trigger doesn't rerun a failing chain every 
 
   function setup({ settings, spend = 0, budget = 500, insight = { ok: true } }) {
     calls = []; stamps = 0;
+    // Each setup is a fresh settings row: drop the not-due memo (cycle-8 F29).
+    startup._awayJobs.reset();
     for (const [m, k] of PATCH) m[k] = async () => { calls.push(k); return { ok: true }; };
     insights.monthAiSpendCents = async () => spend;
     insights.getAiBudgetCents = async () => budget;

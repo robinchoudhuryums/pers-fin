@@ -147,6 +147,11 @@ async function syncEnrollment(enrollment, opts = {}) {
   // forever, so DISCONNECTED could never be set.
   let authFailures = 0;
   let authStatus = null;
+  // Accounts whose transactions request Teller answered at least once — the
+  // proof that the token authenticates (cycle-8 F2: the self-heal back to GOOD
+  // used to run whenever no account had a 401/403, including a run where every
+  // fetch timed out or got a 5xx, or an enrollment with no accounts).
+  let accountsAnswered = 0;
 
   // Teller paginates newest-first; `from_id` returns rows OLDER than that id.
   // We request an explicit page size and do NOT assume what Teller's default is:
@@ -170,6 +175,7 @@ async function syncEnrollment(enrollment, opts = {}) {
       let txns;
       try {
         txns = await tellerRequest(endpoint, access_token);
+        if (pages === 1) accountsAnswered++;
       } catch (fetchErr) {
         console.error(`  Error fetching transactions for account ${account_id}:`, fetchErr.message);
         fetchError = true;
@@ -284,7 +290,8 @@ async function syncEnrollment(enrollment, opts = {}) {
   // range. Surfaced by syncAllEnrollments so the partial failure is visible in
   // Sync Health rather than reported as a clean success (F15).
   // insertError counts too (BSI-7): a row failed to land and will be retried.
-  return { added, incomplete: fetchError || insertError };
+  // `authenticated` = Teller answered for at least one account this run.
+  return { added, incomplete: fetchError || insertError, authenticated: accountsAnswered > 0 };
 }
 
 // The non-suspended Teller enrollments with their decrypted tokens
@@ -323,8 +330,10 @@ async function syncOneTellerEnrollment(enrollment, { backfillFrom = null } = {})
     // The token authenticated again → self-heal a DISCONNECTED flag (BSI-9
     // made DISCONNECTED reachable; syncAllBalances only runs GOOD
     // enrollments, so a transient 401 must not stop balance syncs until a
-    // manual re-link).
-    if (enrollment.status === "DISCONNECTED") {
+    // manual re-link). Only when Teller actually answered for an account
+    // (cycle-8 F2) — a run where every fetch timed out or failed, or an
+    // enrollment with no accounts, proves nothing about the token.
+    if (enrollment.status === "DISCONNECTED" && result.authenticated) {
       await pool.query(
         "UPDATE teller_enrollments SET status = 'GOOD', updated_at = now() WHERE id = $1 AND status = 'DISCONNECTED'",
         [enrollment.id]
