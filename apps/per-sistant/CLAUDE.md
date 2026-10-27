@@ -878,6 +878,11 @@ runs as an Express sub-app mounted at `/per-sistant`. Three things change:
   handler) via `location.origin + '/logout'` — an absolute URL so the fetch
   wrapper doesn't prefix BASE_PATH — then goes to `/login`; standalone it still
   uses `POST /api/logout`.
+- **Its own database is required.** Standalone, `db.js` falls back to
+  `NEON_DATABASE_URL`; under the shell that would put both apps in Perfin's
+  database (one merged `user_settings` row, one AI cap), so the shell refuses to
+  start unless `PERSISTENT_DATABASE_URL` names a different database
+  (`shell/boot-checks.js`, cycle-8 F26; `ALLOW_SHARED_DATABASE=true` opts in).
 - **Auth bails early.** `middleware.requireAuth` returns immediately when
   `req.app.get("embedded")` is true; the shell's PIN gate has already
   authenticated the user.

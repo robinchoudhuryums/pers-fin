@@ -918,7 +918,9 @@ shell/
                                  console.error wrapper before either sub-app
                                  loads and starts its flush + the uptime
                                  heartbeat after both apps' migrations
-                                 (roadmap T1.4); a final flush on shutdown
+                                 (roadmap T1.4); a final flush on shutdown.
+                                 start() refuses to boot without a separate
+                                 Per-sistant database (boot-checks.js, cycle-8 F26)
   middleware/
     auth.js                    — Shell auth: HMAC-signed cookie session
                                  (SHELL_PIN + SHELL_SECRET) with sliding-window
@@ -931,6 +933,7 @@ shell/
                                  invalidateIdleCache, makeSession,
                                  setSessionCookie, cookieSecure, isValidSession,
                                  safeReturnTo, loginReturnTo, pinLockedForMs,
+                                 isValidApiKey,
                                  COOKIE_NAME, DEFAULT_IDLE_MS, currentEpoch.
                                  Also owns the global PIN-failure ceiling
                                  (PSC-14), the return_to carry-through (PSC-9)
@@ -957,6 +960,14 @@ shell/
                                  uncategorized), Per-sistant's from taskDueCounts,
                                  in-process, each with a 1.5s budget (null when it
                                  fails or runs over); never throws
+  boot-checks.js               — Boot-time config checks (cycle-8 F26):
+                                 sharedDatabaseProblem(env) — a reason to refuse
+                                 to start when PERSISTENT_DATABASE_URL is unset or
+                                 names the same host + port + database as
+                                 NEON_DATABASE_URL (Per-sistant would fall back to /
+                                 share Perfin's database, merging the two
+                                 user_settings rows and the two AI caps);
+                                 ALLOW_SHARED_DATABASE=true opts in
   views/
     login.ejs                  — PIN form + biometric button (feature-detected)
     landing.ejs                — Tile picker (the home-screen app's start page), one
@@ -1090,9 +1101,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2561 tests as of latest); use
+  Perfin and Per-sistant test files (2583 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2561 tests across 133 test files (incl.
+  Current count: 2583 tests across 134 test files (incl.
+  `tests/broad-scan-c8-batch1.test.js` — cycle-8 broad scan Batch 1: every job in
+  `job-health.JOB_INTERVALS_MS` run once after boot under node:test mock timers (none before
+  the first boot delay, all once the stagger has passed, none after stopBackgroundJobs), the
+  boot plan's stagger, the not-due / off memos for bank auto-sync, the reconcile and the
+  insights trigger and PATCH /api/settings dropping them through the real router,
+  `safeReturnTo` against tab / CR / LF / DEL payloads, `sharedDatabaseProblem`, the Teller
+  self-heal through the real engine (all fetches failing or no accounts → stays
+  DISCONNECTED; one answered → GOOD), the webauthn challenge cap through the real router and
+  the two limiters' wiring;
   `tests/design-d7.test.js` — design pass D7 (decisions 13 / 14): `landingStatus` over injected
   readers (both lines, each fail-soft on a sync or async throw, a slow read cut off at its budget
   while the other line shows, nothing when both fail, no read without a pool; the Perfin line from
@@ -3937,7 +3957,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2561 tests passing across 133 test files (Perfin 1878 + Per-sistant 683), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2583 tests passing across 134 test files (Perfin 1900 + Per-sistant 683), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4717,7 +4737,8 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 
 ### Databases (one per sub-app)
 - `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
-- `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments.
+- `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments. **Required under the unified shell, and it must name a different database from `NEON_DATABASE_URL`** — the shell refuses to start otherwise (cycle-8 F26, `shell/boot-checks.js`: the fallback used to migrate both apps into one database, merging their single-row `user_settings` and the two separate AI caps).
+- `ALLOW_SHARED_DATABASE` — `true` to run both apps in ONE database under the shell on purpose (skips the check above). Unset in every documented deployment.
 - `TOKEN_ENCRYPTION_PASSPHRASE` — passphrase for encrypting access tokens at rest. **Required — boot fails without it** (escape hatch: `ALLOW_MISSING_TOKEN_PASSPHRASE=true` for local debug with no bank links).
 
 ### Teller (Perfin)
@@ -5414,15 +5435,24 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   workflows' `GET /api/sync/status` polls) isn't
   429'd (PSC-8) — they still apply to a standalone deployment / the sync triggers. Shell layer (the sole auth gate): `authLimiter`
   (10 failed/15min, `skipSuccessfulRequests`) on `POST /login` and the
-  biometric `authenticate`/`authenticate-options` endpoints, plus `apiKeyLimiter`
+  biometric `authenticate` endpoint, plus `apiKeyLimiter`
   (20/15min) that counts only FAILED `x-api-key` attempts (skips header-less
-  browser traffic and successful cron requests). Replaces the prior
-  defenseless single 750ms delay.
+  browser traffic; a request with a VALID key never counts, whatever its status —
+  `requestWasSuccessful: isValidApiKey`, cycle-8 F30: a backstop workflow's 409s used
+  to count and could lock the key out). The pre-auth biometric probes
+  (`authenticate-options`, `GET /available`) answer 200 to anyone once a credential
+  exists, so `skipSuccessfulRequests` never counted them; they have their own plain
+  `webauthnProbeLimiter` (30/min per IP, every request counts) and the outstanding
+  challenge map is capped at `MAX_CHALLENGES` (1000, oldest dropped — cycle-8 F28).
+  Replaces the prior defenseless single 750ms delay.
 - **Shell login redirect guard**: `auth.safeReturnTo()` only allows same-origin
   absolute paths for the post-login `return_to` — it rejects scheme-relative
   `//host` targets and backslash paths, so the login endpoint can't be turned
   into an open redirect (a naive `startsWith("/")` would have let `//evil.com`
-  through).
+  through). It also refuses any control character and any target that leaves the
+  origin when resolved like a browser would (cycle-8 F25: "/<tab>/evil.example"
+  passed, and the browser — dropping the tab — sent a biometric login to
+  //evil.example; the PIN path was safe because res.redirect encodes it).
 - **SSO replay protection**: Each SSO token embeds a 12-byte (96-bit) random nonce; validate tracks
   used nonces in an in-memory Map (2-minute TTL cleanup) and rejects duplicates. Nonce is
   consumed after signature verification so timing attacks can't burn legitimate nonces.
@@ -5513,7 +5543,23 @@ own watermarks plus a per-local-day (APP_TIMEZONE) in-memory "settled" memo,
 so once a job has sent or decided there is nothing to do, it makes no DB call
 again until the next local day. Budget alerts run their short query every
 3h while the process is awake (an accepted Neon cost). Exported for tests as
-`startup._awayJobs`.
+`startup._awayJobs`. The bank auto-sync, the self-healing reconcile and the AI
+insights auto-trigger aren't activity-gated either; since cycle-8 F29 they skip
+their settings read while switched off (the rest of the local day) or not due
+(an in-memory next-due time — `notDueYet` / `setNextDue`), and PATCH /api/settings
+drops that memo (`startup.invalidateJobMemos`) when `auto_sync_*`,
+`insights_enabled` or `insights_cadence_days` changes.
+**Boot run (cycle-8 F27).** Every job is a `setInterval`, so its first run used to
+come one full interval after boot — on a host that sleeps after ~15 minutes idle
+(Render free tier) the 3- and 6-hour jobs essentially never ran and the hourly
+away channels only when the process stayed up an hour. `scheduleBootRuns` now also
+runs every job once after boot: the first 60 s in (`BOOT_FIRST_DELAY_MS`), then one
+every 20 s (`BOOT_STAGGER_MS`), lightest first (cash alerts … bank auto-sync, the
+insights trigger last), all within ~5.3 minutes; unref'd, and cleared by
+`stopBackgroundJobs`. Each job's own watermark / dedup / due time decides whether
+it does anything, so a boot with nothing due costs one settings read per job. The
+activity-gated jobs run too (boot counts as activity), including when the wake came
+from a backstop workflow.
 **Single-flight (PSC-12).** `syncAllTransactions`, `syncAllBalances` and
 `runCategorize` keep a module-level in-flight promise: a caller that arrives
 while a run is in progress (the 6-hourly insights chain and the bank auto-sync
@@ -6280,8 +6326,11 @@ SX3-pinned — the Sheets Income tab.
   idempotent (INV-01 counts only inserts). A 401/403 on EVERY account throws
   with the status so the enrollment is marked `DISCONNECTED` (BSI-9 — before,
   per-account auth errors were swallowed and DISCONNECTED was unreachable); the
-  next clean sync restores it to `GOOD` (syncAllBalances runs GOOD enrollments
-  only, so a transient 401 must not strand balances). A single failing account
+  next sync in which Teller answers for at least one of its accounts restores it
+  to `GOOD` (syncAllBalances runs GOOD enrollments only, so a transient 401 must
+  not strand balances). A run where every fetch timed out or failed with a 5xx,
+  or an enrollment with no linked accounts, proves nothing about the token and
+  leaves it DISCONNECTED (`syncEnrollment` returns `authenticated` — cycle-8 F2). A single failing account
   among healthy siblings stays a retryable `partial_sync_incomplete`. Accounts
   opened after enrollment are registered by `syncAllBalances` (DD-9, ON CONFLICT
   DO NOTHING), and `/api/enroll`'s account upsert re-points
@@ -6337,6 +6386,34 @@ SX3-pinned — the Sheets Income tab.
   by `tests/scan-sept-fixes.test.js`, which mounts modules in server.js order).
 
 ## Known Open Issues
+**Cycle 8 (late-Oct 2026 broad scan) — open until their batches run** (the scan's
+batch plan is in `.cycle/STATE.md`; 57 findings, F1–F57). Batch 1 (scheduler + auth
+safety — boot runs F27, not-due memos F29, the biometric open redirect F25, the shared-
+database refusal F26, the Teller self-heal F2, the biometric probe limiter F28, the
+x-api-key limiter F30) is done. Still open, by batch:
+- Batch 2 — the cash forecast bills savings / internal transfers as outflows and drops
+  non-card autopays (F7 / F8), investment income nets fee rows (F9), "Paycheck landed"
+  can be lost and the low-cash alert re-notifies around its threshold (F10 / F11), and
+  smaller tax-package items (F12–F15).
+- Batch 3 — a new rename rule over rows another rule renamed resurrects a cancelled
+  subscription (F41); price-rise alerts can't retry and the PRICE UP badge lasts one run
+  (F46); restore / reconcile / CSV-overlap Resolve gaps (F4–F6, F43, F47, F54).
+- Batch 4 — the anomaly watermark can skip rows an overlapping sync commits (F1), the
+  payday watermark's CSV-import window (F51), the Plaid verifier's uncached kid fetch (F3).
+- Batch 5 — linked tasks: a permanently deleted task comes back, an unpaid manual bill's
+  task closes as completed after 30 days, auto-closes count as completions (F16–F23).
+- Batch 6 — the audit's "last year" / prior-year month claims (F42), a quoted frontmatter
+  key bypassing the privacy tier (F49), and F24 / F44 / F50 / F53.
+- Batch 7 — search Pin / Unpin does nothing (F34), the Tax checklist losing unsaved notes
+  (F35), keyboard access to the Spending by Category select (F55) and F36–F40, F48, F56, F57.
+- Batch 8 — frozen CHECK lists (F31), error-log pruning (F32), landing-status queries
+  (F33), Per-sistant's DATE parsing (F52).
+Batch 1 follow-ons: the weekly / daily digest, CSV reminder and housing ledger settle for
+the day once they find themselves off and a Settings change doesn't drop that memo
+(switching one on takes effect the next local day); the watchdog's boot timeout isn't
+cleared by stopBackgroundJobs; e2e can't run in the cloud container as configured (the
+project's Playwright pins a browser build that isn't preinstalled).
+
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
@@ -6441,14 +6518,13 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   a missed one leaves the Settings list as the way back. U1 follow-ons: a tombstone written before U1 shows only its id; Restore never starts a
   reconcile itself (a pre-U1 Teller / Plaid row needs Reconcile Now); snapshots are kept until
   a reset (no "delete forever").
-- The dashboard Review widget doesn't show `rule_error` (a too-short "Remember"
-  rule is silently not created); `ai_skipped_at` can't be cleared early (e.g.
+- `ai_skipped_at` can't be cleared early (e.g.
   after switching the AI model); the rules list doesn't flag a stored rule
   skipped for being too short. Batch 7 follow-ons.
 - The audit's entity check doesn't capture a capitalised "Cancel Netflix" at a
   sentence start; Ask's tool results still serialize DATE columns as full JSON
-  timestamps; the categorize / suggest / scan usage rows record the configured
-  model rather than the served one. Batch 8 follow-ons.
+  timestamps; the budget-suggest and bill-scan usage rows record the configured
+  model rather than the served one (categorize records the served one). Batch 8 follow-ons.
 - The standalone HTTP webhook path still reports `sent: true` when Per-sistant's
   receiver stores a draft; the Sheets Important Dates tab lists a subscription
   by its one stored `next_expected` only; notification retention is a fixed 180
@@ -6816,7 +6892,7 @@ Settings, Notifications & Cross-app:
    apps/per-sistant/routes/perfin.js + routes/webhooks.js — are audited
    together with this subsystem from both sides.)
 Platform, Shell & Auth:
-  shell/index.js, shell/landing-status.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
+  shell/index.js, shell/landing-status.js, shell/boot-checks.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
   shell/middleware/error-handler.js,
   teller/server.js, teller/startup.js, teller/services/database.js,
   teller/services/keep-alive.js, teller/services/job-health.js,
@@ -6942,7 +7018,7 @@ INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trai
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
-INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
+INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day; every scheduled job also runs once shortly after boot (scheduleBootRuns, cycle-8 F27), so a host that sleeps between requests still reaches them | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
 INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with at most one sendToAll alert per 6h — makeLockoutNotifier); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET; no login input can crash the process (and so reset the in-memory counter) — see INV-104 | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks) + tests/scan-oct-batch1.test.js (F1 / F7 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)

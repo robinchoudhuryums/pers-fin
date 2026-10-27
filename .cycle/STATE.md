@@ -29,7 +29,10 @@ implement and reflect sessions only set Phase.)
   - **Verified:** npm test 2583/2583 (22 new: tests/broad-scan-c8-batch1); contract 253/253 (local
     Postgres 16, no pgvector); Playwright 72/72 (scratch config → preinstalled Chromium); mutation 6/6.
   - **Operator (blocks deploy):** confirm PERSISTENT_DATABASE_URL on Render is set and distinct.
-  - **Docs not yet updated** — the block's DOCUMENTATION UPDATES list is for /sync-docs.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (scheduler boot run + memos, INV-77, env vars,
+    security, Teller self-heal, shell/boot-checks.js in the file list and Subsystems, test counts, a cycle-8
+    Known Open Issues section), README, apps/per-sistant/CLAUDE.md. F45 (the two stale Known Open Issues
+    bullets) was closed by that sync.
   - **Remaining scan batches** (the scan report is in the session transcript; IDs for a fresh session):
     - Batch 2 money accuracy: F7 F8 F9 F10 F11 F12 F13 F14 F15
     - Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54
@@ -37,7 +40,7 @@ implement and reflect sessions only set Phase.)
     - Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21
     - Batch 6 AI trust + Knowledge privacy: F42 F49 F44 F24 F50 F53
     - Batch 7 web UI + a11y: F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48
-    - Batch 8 platform hygiene + docs: F31 F32 F33 F52 F45
+    - Batch 8 platform hygiene: F31 F32 F33 F52 (F45 done in /sync-docs)
     - Expansion: E1 (G1, G5), E2 (ST1, ST3), E3 (G2, ST2), E4 (ST5, G3), E5 (ST4); G4 → /roadmap
   - **Where I left off:** Batch 1 committed and pushed. Next: `/broad-implement Batch 2`.
 - **Previous status (D7):** **Design & UX pass — D7 DONE; the pass is complete (D1–D7)** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
