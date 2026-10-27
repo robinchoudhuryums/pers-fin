@@ -152,7 +152,34 @@ function slackLineFor(eventType, data) {
   }
 }
 
+// A linked task (roadmap T2.4) carries another app's figures — Perfin's rent
+// amount and payee, a bill, a merchant and charge — in its title, description
+// and source_snapshot. Outbound webhooks and Slack get only what says a task
+// changed, never those (cycle-8 F19 — the INV-103 rule for outside parties).
+const LINKED_KIND_LABELS = {
+  housing: "rent & utilities due",
+  "utility-amount": "a utility amount to enter",
+  bill: "a bill to pay",
+  "still-charging": "a subscription to check",
+  "tax-doc": "a tax form to find",
+};
+function linkedTaskWebhookData(todo) {
+  const [app, kind] = String(todo.source_key).split(":");
+  const appName = app === "perfin" ? "Perfin" : app;
+  return {
+    id: todo.id,
+    title: `${appName} task: ${LINKED_KIND_LABELS[kind] || "finance task"}`,
+    linked: true,
+    source_app: todo.source_app || app,
+    kind: kind || null,
+    priority: todo.priority,
+    due_date: todo.due_date,
+    completed: todo.completed,
+  };
+}
+
 async function fireWebhooks(eventType, data) {
+  if (data && data.source_key && String(eventType).startsWith("todo_")) data = linkedTaskWebhookData(data);
   try {
     const webhooks = await pool.query("SELECT * FROM webhooks WHERE enabled = true AND $1 = ANY(events)", [eventType]);
     for (const wh of webhooks.rows) {
@@ -280,4 +307,4 @@ function announceTodoEvent(event, todo) {
   fireWebhooks(event, todo).catch((err) => console.error(`${event} webhooks:`, err.message));
 }
 
-module.exports = { announceTodoEvent, advanceRecurrence, recurrenceAnchorDay, ymdLocal, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, slackLineFor, processDueReminders, runAutomations, validateAutomationRule };
+module.exports = { linkedTaskWebhookData, announceTodoEvent, advanceRecurrence, recurrenceAnchorDay, ymdLocal, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, slackLineFor, processDueReminders, runAutomations, validateAutomationRule };

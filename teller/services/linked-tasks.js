@@ -3,9 +3,12 @@
 // services/linked-tasks.js stores them (X2b wires the two together). Pure
 // reads: nothing here writes to either database.
 //
-// computeLinkedTasks(pool, cfg, today) → { ok_kinds, desired, errors }
+// computeLinkedTasks(pool, cfg, today) → { ok_kinds, desired, retain, errors }
 //   desired  [{ key, title, description, url, due_date, priority }] — the
 //            tasks that should be open, keyed '<app>:<kind>:<id>'
+//   retain   keys still open in Perfin but past the window that creates a
+//            task (an unpaid manual bill older than 30 days) — an open task
+//            stays open, nothing new is created (cycle-8 F17)
 //   ok_kinds the kinds whose source was read this run; only these may close
 //            tasks (a failed query must never read as "resolved")
 //   errors   [{ kind, error }] — a fixed sentence per failed source
@@ -116,24 +119,44 @@ async function utilityAmountTasks(pool, hcfg, today) {
   }));
 }
 
+// The first day of the month a value (a DATE / timestamp, or 'YYYY-MM-DD…')
+// falls in — read like cadence.parseYmd reads a bill's created_at.
+function monthStartOf(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-01`;
+  const s = String(v || "").slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(s) ? s + "-01" : null;
+}
+
 // Manual bills: every occurrence from 30 days ago to `lead` days ahead
 // (manualBillOccurrences — the calendar's own placement rule) without a
-// bill_payments row for that date.
+// bill_payments row for that date gets a task. An unpaid occurrence OLDER than
+// that window is still unpaid, so its key is retained, not dropped: dropping
+// it closed the task as completed on day 31 (cycle-8 F17). → { desired, retain }
 async function billTasks(pool, leadDays, today) {
   const from = addDays(today, -BILL_OVERDUE_DAYS);
   const to = addDays(today, leadDays);
   const bills = await pool.query(
     "SELECT id, name, amount, due_day, cadence, created_at FROM manual_bills WHERE is_active = true ORDER BY id"
   );
-  if (!bills.rows.length) return [];
+  if (!bills.rows.length) return { desired: [], retain: [] };
+  const starts = bills.rows.map((b) => monthStartOf(b.created_at)).filter(Boolean).sort();
+  const earliest = starts[0] && starts[0] < from ? starts[0] : from;
   const paid = await pool.query(
     `SELECT bill_id, paid_date::text AS paid_date FROM bill_payments
       WHERE bill_source = 'manual' AND paid_date BETWEEN $1 AND $2`,
-    [from, to]
+    [earliest, to]
   );
   const paidSet = new Set(paid.rows.map((p) => p.bill_id + "|" + p.paid_date));
   const out = [];
+  const retain = [];
+  const beforeWindow = addDays(from, -1);
   for (const b of bills.rows) {
+    const start = monthStartOf(b.created_at);
+    if (start && start <= beforeWindow) {
+      for (const date of manualBillOccurrences(b, start, beforeWindow)) {
+        if (!paidSet.has(b.id + "|" + date)) retain.push(`${APP}:bill:${b.id}:${date}`);
+      }
+    }
     for (const date of manualBillOccurrences(b, from, to)) {
       if (paidSet.has(b.id + "|" + date)) continue;
       out.push({
@@ -146,7 +169,7 @@ async function billTasks(pool, leadDays, today) {
       });
     }
   }
-  return out;
+  return { desired: out, retain };
 }
 
 // Tax forms that haven't arrived (roadmap T3.3 K2, decision 6): an open
@@ -177,12 +200,14 @@ async function taxDocumentTasks(pool, today) {
 async function computeLinkedTasks(pool, cfg = {}, today = todayStr()) {
   const sources = effectiveSources(cfg.sources);
   const lead = Number.isInteger(cfg.bill_lead_days) && cfg.bill_lead_days >= 0 && cfg.bill_lead_days <= 14 ? cfg.bill_lead_days : 3;
-  const result = { ok_kinds: [], desired: [], errors: [] };
+  const result = { ok_kinds: [], desired: [], retain: [], errors: [] };
   const run = async (key, fn) => {
     if (!sources[key]) return;
     const kind = SOURCES[key];
     try {
-      result.desired.push(...(await fn()));
+      const got = await fn();
+      if (Array.isArray(got)) result.desired.push(...got);
+      else { result.desired.push(...got.desired); result.retain.push(...(got.retain || [])); }
       result.ok_kinds.push(kind);
     } catch (e) {
       console.error(`linked tasks: ${kind} source failed:`, e.message);
@@ -221,13 +246,19 @@ async function computeLinkedTasks(pool, cfg = {}, today = todayStr()) {
 // (the data it was called about may postdate the running computation) and
 // shares its promise. While the switch is off, the settings are read once a
 // local day (invalidate() from PATCH /api/settings).
+// The hourly tick (scheduled: true) runs once a local day (cycle-8 F21): every
+// write that can change a task already kicks a refresh, so between those the
+// only change is the date moving a window. After a clean run (status ok) the
+// tick is a no-op — no read of either database — until the next local day, a
+// kick, Run now or invalidate(); a partial run is retried the next hour.
 // ---------------------------------------------------------------------------
 const SYNC_ERROR = "Could not update the tasks in Per-sistant.";
 let _disabledDay = null;
+let _freshDay = null;
 let _running = null;
 let _again = false;
 
-function invalidate() { _disabledDay = null; }
+function invalidate() { _disabledDay = null; _freshDay = null; }
 function isRunning() { return !!_running; }
 
 function defaultPersistentPool() {
@@ -255,7 +286,7 @@ async function runOnce(pool, persistentPool, today, deps) {
   const errors = [...computed.errors];
   let counts = { created: 0, updated: 0, closed: 0, reopened: 0, skipped: 0 };
   try {
-    counts = { ...counts, ...(await sync(persistentPool, { app: APP, kinds: computed.ok_kinds, desired: computed.desired })) };
+    counts = { ...counts, ...(await sync(persistentPool, { app: APP, kinds: computed.ok_kinds, desired: computed.desired, retain: computed.retain || [] })) };
   } catch (e) {
     console.error("linked tasks: Per-sistant sync failed:", e.message);
     errors.push({ kind: null, error: SYNC_ERROR });
@@ -264,13 +295,15 @@ async function runOnce(pool, persistentPool, today, deps) {
   try {
     await pool.query("UPDATE user_settings SET linked_tasks_state = $1 WHERE id = 1", [JSON.stringify(state)]);
   } catch (e) { console.error("linked tasks: state write failed:", e.message); }
+  _freshDay = errors.length ? null : today;
   return { status: errors.length ? "partial" : "ok", ran: true, ...state };
 }
 
-// → { status: 'no_persistent' | 'disabled' | 'ok' | 'partial', ran, … }
+// → { status: 'no_persistent' | 'disabled' | 'fresh' | 'ok' | 'partial', ran, … }
 // (Not `async`: a call during a run gets the running promise itself.)
-function runLinkedTasks(pool, persistentPool = defaultPersistentPool(), { today = todayStr(), deps = {} } = {}) {
+function runLinkedTasks(pool, persistentPool = defaultPersistentPool(), { today = todayStr(), deps = {}, scheduled = false } = {}) {
   if (!persistentPool) return Promise.resolve({ status: "no_persistent", ran: false });
+  if (scheduled && !_running && _freshDay === today) return Promise.resolve({ status: "fresh", ran: false });
   if (_running) { _again = true; return _running; }
   _running = (async () => {
     try {
@@ -323,5 +356,5 @@ async function ensureStillChargingTask(pool, sub, { persistentPool = defaultPers
 module.exports = {
   computeLinkedTasks, taxDocumentTasks, effectiveSources, SOURCES, SOURCE_KEYS, DEFAULT_SOURCES, APP,
   runLinkedTasks, refreshSoon, kick, invalidate, isRunning, ensureStillChargingTask, SYNC_ERROR,
-  _reset() { _disabledDay = null; _running = null; _again = false; },
+  _reset() { _disabledDay = null; _freshDay = null; _running = null; _again = false; },
 };

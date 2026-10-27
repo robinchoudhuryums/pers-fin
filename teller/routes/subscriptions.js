@@ -1320,6 +1320,8 @@ router.post("/api/manual-bills", async (req, res) => {
        RETURNING *`,
       [name.trim(), parsedAmount, parsedDay, billCadence, category || "bill", notes || null]
     );
+    // A manual bill opens, moves or closes its linked tasks (cycle-8 F22).
+    linkedTasks.kick("manual-bill-add");
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -1356,6 +1358,7 @@ router.patch("/api/manual-bills/:id", async (req, res) => {
       values
     );
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    linkedTasks.kick("manual-bill-edit");
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -1366,6 +1369,7 @@ router.patch("/api/manual-bills/:id", async (req, res) => {
 router.delete("/api/manual-bills/:id", async (req, res) => {
   try {
     await pool.query("DELETE FROM manual_bills WHERE id = $1", [req.params.id]);
+    linkedTasks.kick("manual-bill-delete");
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });

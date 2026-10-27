@@ -284,14 +284,16 @@ async function runCashAlertsTick() {
 
 // Linked tasks (roadmap T2.4 X2b — services/linked-tasks.js): reconcile the
 // Per-sistant tasks Perfin keeps in step (rent due, utility amounts, manual
-// bills). An away channel (INV-77): NOT activity-gated, hourly; while the
-// switch is off the runner reads its settings once a local day (a Settings
-// change invalidates it), and with no Per-sistant pool wired (a standalone
-// Perfin) it does nothing at all. An outcome is recorded only when it ran.
+// bills). An away channel (INV-77): NOT activity-gated, ticks hourly; while
+// the switch is off the runner reads its settings once a local day (a Settings
+// change invalidates it), after a clean run it does nothing until the next
+// local day (writes kick their own refresh — cycle-8 F21), and with no
+// Per-sistant pool wired (a standalone Perfin) it does nothing at all. An
+// outcome is recorded only when it ran.
 async function runLinkedTasksTick() {
   jobHealth.tick("linked-tasks");
   try {
-    const r = await require("./services/linked-tasks").runLinkedTasks(pool);
+    const r = await require("./services/linked-tasks").runLinkedTasks(pool, undefined, { scheduled: true });
     if (r.status === "partial") jobHealth.result("linked-tasks", { ok: false, error: (r.errors || []).map((e) => (e.kind ? e.kind + ": " : "") + e.error).join("; ") });
     else if (r.ran) jobHealth.result("linked-tasks", { ok: true });
   } catch (err) {
@@ -313,7 +315,10 @@ async function runHousingLedgerTick() {
   if (awaySettledToday("housing-ledger")) return;
   try {
     const housing = require("./routes/housing");
-    await housing.generateHousingObligations();
+    const gen = await housing.generateHousingObligations();
+    // New obligations can open a linked task — the hourly linked-task tick
+    // runs once a day (cycle-8 F21), so tell it.
+    if (gen && gen.generated > 0) require("./services/linked-tasks").kick("housing-generate");
     await housing.runHousingReminders();
     markAwaySettled("housing-ledger");
     jobHealth.result("housing-ledger", { ok: true });

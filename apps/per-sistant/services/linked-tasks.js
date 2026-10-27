@@ -4,15 +4,24 @@
 // syncLinkedTasks, which reconciles the todos table to it:
 //   - a key in the set with no row → a task is created (automations + webhooks
 //     through announceTodoEvent, like any other task);
-//   - an open task of a listed kind whose key left the set → closed, marked
-//     auto_closed;
+//   - an open task of a listed kind whose key left the set (and isn't in
+//     `retain`) → closed, marked auto_closed — quietly: it is not your
+//     completion, so no todo_completed automation, webhook or Slack post, and
+//     analytics / the weekly review / Ask leave it out (cycle-8 F18);
+//   - a key in `retain` (an item still open in the source that is no longer
+//     due a new task — an unpaid bill older than its creation window) keeps an
+//     existing open task open and creates nothing (F17);
 //   - an auto_closed task whose key came back → reopened;
 //   - an open task's title, description, due date and priority are refreshed
 //     only while each still equals what the sync last wrote (source_snapshot),
 //     so a field you edited keeps your value and the others keep refreshing.
 // A task you completed or reopened yourself is source_detached (db/030's
 // trigger) and never touched again; a task you deleted keeps its row (and its
-// key) in the trash, so it isn't recreated until the 30-day purge.
+// key) in the trash, and once it is deleted for good its key stays in
+// linked_task_tombstones (db/031's trigger), so it is never recreated (F16).
+// One sync at a time across processes: each run holds a transaction-level
+// advisory lock (LINKED_TASKS_LOCK_KEY) and announces its creations only after
+// COMMIT (F20).
 // source_url is a path inside the SOURCE app ('/housing'); the task chip joins
 // it with that app's mount (window.LINKED_APP_BASES — '/perfin' under the shell).
 // ensureLinkedTask is the one-off form (the still-charging subscription): it
@@ -70,11 +79,16 @@ function checkTask(app, kinds, t) {
   return { task: { key: t.key, kind: parsed.kind, title, description, url, due_date: dueDate, priority } };
 }
 
+// A key deleted for good (linked_task_tombstones) is never inserted again.
 const INSERT_SQL = `INSERT INTO todos (title, description, priority, horizon, category, due_date,
     source_app, source_key, source_url, source_snapshot)
-  VALUES ($1, $2, $3, 'short', 'finance', $4, $5, $6, $7, $8)
+  SELECT $1, $2, $3, 'short', 'finance', $4, $5, $6, $7, $8
+   WHERE NOT EXISTS (SELECT 1 FROM linked_task_tombstones WHERE source_key = $6)
   ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING
   RETURNING *`;
+
+// Perfin uses 727274001 and Per-sistant 727274002 for migrations.
+const LINKED_TASKS_LOCK_KEY = 727274010;
 
 async function insertTask(pool, app, task) {
   const snapshot = { title: task.title, description: task.description, due_date: task.due_date, priority: task.priority };
@@ -86,8 +100,11 @@ async function insertTask(pool, app, task) {
 // Reconcile app's open tasks of `kinds` to `desired` ([{ key, title,
 // description?, url?, due_date?, priority? }]). Only list a kind whose source
 // was read successfully this run — a listed kind with a key missing from
-// `desired` is closed. → { created, updated, closed, reopened, skipped }.
-async function syncLinkedTasks(pool, { app, kinds, desired } = {}) {
+// `desired` and `retain` is closed. `retain` = keys (of listed kinds) whose
+// item is still open in the source but no longer due a task: an existing open
+// task stays open, nothing is created or refreshed for it.
+// → { created, updated, closed, reopened, skipped }.
+async function syncLinkedTasks(pool, { app, kinds, desired, retain } = {}) {
   if (!APP_RE.test(app || "")) throw new Error("syncLinkedTasks: bad app");
   const kindList = Array.isArray(kinds) ? kinds.filter((k) => typeof k === "string" && KIND_RE.test(k)) : [];
   const items = Array.isArray(desired) ? desired : [];
@@ -108,36 +125,49 @@ async function syncLinkedTasks(pool, { app, kinds, desired } = {}) {
     }
     valid.push(checked.task);
   }
-
-  for (const task of valid) {
-    const row = await insertTask(pool, app, task);
-    if (row) {
-      result.created++;
-      helpers.announceTodoEvent("todo_created", row);
-    }
+  const keepKeys = new Set(desiredKeys);
+  for (const key of Array.isArray(retain) ? retain : []) {
+    const parsed = parseKey(app, key);
+    if (parsed && kindList.includes(parsed.kind)) keepKeys.add(key);
   }
 
-  if (!kindList.length) return result;
-  const keys = [...desiredKeys];
+  const created = [];
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [LINKED_TASKS_LOCK_KEY]);
+    for (const task of valid) {
+      const row = await insertTask(client, app, task);
+      if (row) created.push(row);
+    }
+    result.created = created.length;
 
-  const reopened = await pool.query(
-    `UPDATE todos SET completed = false, completed_at = NULL, auto_closed = false, updated_at = now()
-      WHERE source_app = $1 AND source_key = ANY($2::text[])
-        AND completed AND auto_closed AND NOT source_detached AND deleted_at IS NULL
-      RETURNING id`, [app, keys]);
-  result.reopened = reopened.rowCount;
+    if (kindList.length) {
+      const reopened = await client.query(
+        `UPDATE todos SET completed = false, completed_at = NULL, auto_closed = false, updated_at = now()
+          WHERE source_app = $1 AND source_key = ANY($2::text[])
+            AND completed AND auto_closed AND NOT source_detached AND deleted_at IS NULL
+          RETURNING id`, [app, [...desiredKeys]]);
+      result.reopened = reopened.rowCount;
 
-  result.updated = await refreshOpenTasks(pool, app, valid);
+      result.updated = await refreshOpenTasks(client, app, valid);
 
-  const closed = await pool.query(
-    `UPDATE todos SET completed = true, completed_at = now(), auto_closed = true, updated_at = now()
-      WHERE source_app = $1 AND split_part(source_key, ':', 2) = ANY($3::text[])
-        AND NOT (source_key = ANY($2::text[]))
-        AND NOT completed AND NOT source_detached AND deleted_at IS NULL
-      RETURNING *`, [app, keys, kindList]);
-  result.closed = closed.rowCount;
-  for (const row of closed.rows) helpers.announceTodoEvent("todo_completed", row);
-
+      const closed = await client.query(
+        `UPDATE todos SET completed = true, completed_at = now(), auto_closed = true, updated_at = now()
+          WHERE source_app = $1 AND split_part(source_key, ':', 2) = ANY($3::text[])
+            AND NOT (source_key = ANY($2::text[]))
+            AND NOT completed AND NOT source_detached AND deleted_at IS NULL
+          RETURNING id`, [app, [...keepKeys], kindList]);
+      result.closed = closed.rowCount;
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  for (const row of created) helpers.announceTodoEvent("todo_created", row);
   return result;
 }
 
@@ -167,7 +197,7 @@ async function refreshOpenTasks(pool, app, tasks) {
   return r.rowCount;
 }
 
-// One-off event task: created once (a trashed one isn't recreated), never
+// One-off event task: created once (a trashed or deleted one isn't recreated), never
 // closed by a sync — list its kind in no syncLinkedTasks call.
 // → { created, id } or { created: false, error }.
 async function ensureLinkedTask(pool, { app, task } = {}) {
@@ -184,4 +214,4 @@ async function ensureLinkedTask(pool, { app, task } = {}) {
   return { created: true, id: row.id };
 }
 
-module.exports = { syncLinkedTasks, ensureLinkedTask, checkTask, parseKey };
+module.exports = { syncLinkedTasks, ensureLinkedTask, checkTask, parseKey, LINKED_TASKS_LOCK_KEY };

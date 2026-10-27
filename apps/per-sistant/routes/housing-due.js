@@ -102,4 +102,30 @@ async function housingDue(perfinPool, today = todayStr()) {
   } catch { return null; }
 }
 
-module.exports = { housingDue, computeHousingDue, housingDueSuffix };
+// One unpaid rent used to be nudged on up to four surfaces at once (cycle-8
+// F23). While Perfin keeps an open Per-sistant task for it (a linked task
+// 'perfin:housing:<period>', roadmap T2.4) that task — with its due date and
+// overdue state — is the reminder here, so the notification check's
+// housing_due entry and the briefing's rent line step aside. Fail-soft: a
+// failed read keeps the line (false).
+async function housingTaskOpen(pool) {
+  if (!pool) return false;
+  try {
+    const r = await pool.query(
+      `SELECT 1 FROM todos WHERE source_key LIKE 'perfin:housing:%'
+          AND NOT completed AND deleted_at IS NULL LIMIT 1`);
+    return r.rows.length > 0;
+  } catch (e) {
+    console.error("housing task lookup failed:", e.message);
+    return false;
+  }
+}
+
+// housingDue, or null while a housing linked task is open.
+async function housingDueUnlessTask(perfinPool, pool, today = todayStr()) {
+  const h = await housingDue(perfinPool, today);
+  if (!h) return h;
+  return (await housingTaskOpen(pool)) ? null : h;
+}
+
+module.exports = { housingDue, housingDueUnlessTask, housingTaskOpen, computeHousingDue, housingDueSuffix };

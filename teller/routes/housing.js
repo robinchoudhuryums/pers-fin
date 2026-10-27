@@ -489,6 +489,8 @@ router.patch("/api/housing/config", async (req, res) => {
     }
     await client.query("UPDATE user_settings SET housing_config = $1, updated_at = now() WHERE id = 1", [JSON.stringify(merged)]);
     await client.query("COMMIT");
+    // A new payee, rent, due day or lead time changes which tasks are open (cycle-8 F22).
+    linkedTasks.kick("housing-config");
     res.json(merged);
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});

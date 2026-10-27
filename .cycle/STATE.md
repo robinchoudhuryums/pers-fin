@@ -18,17 +18,24 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 8 broad scan — Batch 4 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
-  Block: `.cycle/blocks/8-batch4-broad-implement.md`.
+- **Status:** **Cycle 8 broad scan — Batch 5 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
+  Block: `.cycle/blocks/8-batch5-broad-implement.md`.
+  - **Shipped (Batch 5 — linked tasks semantics):** F16 tombstones for a task deleted for good (db/031);
+    F17 aged unpaid manual-bill tasks retained, not closed; F18 an auto-close announces nothing and is left
+    out of analytics / review / Ask / stats; F19 linked tasks' webhook / Slack payload is a kind label only;
+    F20 one sync at a time (transaction + advisory lock 727274010, announce after COMMIT); F22 kicks after the
+    housing config, manual-bill writes and generated obligations; F23 housing_due / briefing rent line step
+    aside while a housing task is open; F21 the hourly tick acts once a local day after a clean run.
+  - **Verified:** npm test 2650/2650 (24 new); contract 269/269 (5 new); Playwright 72/72; mutation 10/10.
+  - **Where I left off:** Batch 5 committed and pushed. Next: `/sync-docs` for Batch 5, then
+    `/broad-implement Batch 6`.
+- **Batch 4 (DONE):** block `.cycle/blocks/8-batch4-broad-implement.md`.
   - **Shipped (Batch 4 — sync watermarks + webhook hardening):** F1 the anomaly watermark is the newest
     created_at visible before the candidate read, kept below any open writer's start, never backwards;
     F51 "Paycheck landed" re-reads 24 h behind its watermark with a notification_log tag dedupe; F3 the
     Plaid verifier's miss cache, lookup cap, one lookup per kid, kid format and cheap checks first.
   - **Verified:** npm test 2626/2626 (13 new); contract 264/264 (2 new); Playwright 72/72; mutation 10/10.
-  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (webhook-verify.js + payday-alerts.js entries,
-    the anomaly watermark and Payday alerts notes, last_anomaly_check_at, INV-137 / 142, test counts,
-    Known Open Issues + Batch 4 follow-ons) and README.
-  - **Where I left off:** Batch 4 committed, pushed and documented. Next: `/broad-implement Batch 5`.
+  - **Docs synced** (/sync-docs, 2026-10-27).
 - **Batch 3 (DONE):** block `.cycle/blocks/8-batch3-broad-implement.md`.
   - **Shipped (Batch 3 — detection / rename / restore):** F41 a new rename rule takes rows other rules
     renamed and re-keys only fully vacated keys; F46 prior_amount / amount_changed kept until a later
@@ -70,7 +77,7 @@ implement and reflect sessions only set Phase.)
   - **Remaining scan batches** (the scan report is in the session transcript; IDs for a fresh session):
     - ~~Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54~~ (done)
     - ~~Batch 4 watermarks + webhook hardening: F1 F51 F3~~ (done)
-    - Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21
+    - ~~Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21~~ (done)
     - Batch 6 AI trust + Knowledge privacy: F42 F49 F44 F24 F50 F53
     - Batch 7 web UI + a11y: F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48
     - Batch 8 platform hygiene: F31 F32 F33 F52 (F45 done in /sync-docs)

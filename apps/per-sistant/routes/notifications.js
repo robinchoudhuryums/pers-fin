@@ -9,7 +9,7 @@ const { upcomingFacts } = require("./rag");
 const { gatherHealthSummary, todayStr } = require("./health");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "UTC";
 const { gatherJobRadarSummary } = require("./jobs");
-const { housingDue, housingDueSuffix } = require("./housing-due");
+const { housingDueUnlessTask, housingDueSuffix } = require("./housing-due");
 
 // Job Radar leads for the notification check (weekly cadence is driven by the
 // weekly refresh; the client's 12h dedup ledger prevents re-firing). No-op +
@@ -79,8 +79,9 @@ module.exports = function ({ pool }) {
         // Fail-soft: a health-tables error degrades to "no habit alerts"
         // rather than 500ing the whole notification check.
         gatherHealthSummary(pool).catch(() => ({ due_today: 0, done_today: 0, streaks_at_risk: [] })),
-        // Cross-app rent/utilities (read-only via perfinPool), fail-soft.
-        housingDue(perfinPool),
+        // Cross-app rent/utilities (read-only via perfinPool), fail-soft —
+        // left out while a housing linked task is open (cycle-8 F23).
+        housingDueUnlessTask(perfinPool, pool, today),
         // Job Radar high-fit leads (fail-soft; no-op when disabled).
         jobRadarLeads(pool),
         vaultSyncError(pool),

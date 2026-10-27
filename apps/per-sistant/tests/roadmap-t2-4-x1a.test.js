@@ -66,7 +66,8 @@ describe("syncLinkedTasks", () => {
     assert.equal(r.closed, 1);
     assert.equal(pool.rows[0].completed, true);
     assert.equal(pool.rows[0].auto_closed, true);
-    assert.deepEqual(announced, [["todo_completed", "perfin:housing:2026-11"]]);
+    // cycle-8 F18: an auto-close isn't your completion — nothing is announced.
+    assert.deepEqual(announced, []);
     r = await sync(pool, [rent("2026-11")]);
     assert.deepEqual(r, { created: 0, updated: 0, closed: 0, reopened: 1, skipped: 0 });
     assert.equal(pool.rows[0].completed, false);
@@ -111,7 +112,7 @@ describe("syncLinkedTasks", () => {
     const n = pool.queries.length;
     const r = await sync(pool, [], []);
     assert.equal(r.closed, 0);
-    assert.equal(pool.queries.length, n, "no UPDATE sent");
+    assert.equal(pool.queries.slice(n).filter((q) => /^UPDATE/.test(q)).length, 0, "no UPDATE sent");
   });
 
   it("refuses a malformed key, another app's key and an unlisted kind", async () => {

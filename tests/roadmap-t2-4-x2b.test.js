@@ -71,7 +71,7 @@ describe("runLinkedTasks", () => {
     let computeArgs, syncArgs, syncPool;
     const desired = [{ key: "perfin:housing:2026-11", title: "Pay" }];
     const deps = {
-      compute: async (p, cfg, today) => { computeArgs = { cfg, today }; return { ok_kinds: ["housing", "utility-amount"], desired, errors: [{ kind: "bill", error: "Could not read this source." }] }; },
+      compute: async (p, cfg, today) => { computeArgs = { cfg, today }; return { ok_kinds: ["housing", "utility-amount"], desired, retain: ["perfin:bill:4:2026-08-01"], errors: [{ kind: "bill", error: "Could not read this source." }] }; },
       sync: async (p, args) => { syncPool = p; syncArgs = args; return { created: 1, updated: 0, closed: 2, reopened: 0, skipped: 0 }; },
     };
     const r = await lt.runLinkedTasks(pool, PS_POOL, { today: TODAY, deps });
@@ -79,7 +79,8 @@ describe("runLinkedTasks", () => {
     assert.equal(computeArgs.cfg.bill_lead_days, 5);
     assert.equal(computeArgs.today, TODAY);
     assert.equal(syncPool, PS_POOL);
-    assert.deepEqual(syncArgs, { app: "perfin", kinds: ["housing", "utility-amount"], desired });
+    // cycle-8 F17: the retained keys go along.
+    assert.deepEqual(syncArgs, { app: "perfin", kinds: ["housing", "utility-amount"], desired, retain: ["perfin:bill:4:2026-08-01"] });
     assert.equal(r.status, "partial");
     const st = pool.calls.states[0];
     assert.deepEqual({ ...st, at: "x" }, { at: "x", desired: 1, created: 1, updated: 0, closed: 2, reopened: 0, skipped: 0, errors: [{ kind: "bill", error: "Could not read this source." }] });

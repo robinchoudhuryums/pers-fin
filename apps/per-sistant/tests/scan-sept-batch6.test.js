@@ -141,7 +141,8 @@ describe("PB-10 — rollMissedRecurring marks missed instances", () => {
   it("completion analytics + /api/stats don't count missed instances as done", () => {
     const analytics = read("routes/analytics.js");
     assert.equal((analytics.match(/FILTER \(WHERE completed AND NOT COALESCE\(missed, false\)\)/g) || []).length, 2);
-    assert.match(read("routes/settings.js"), /FILTER \(WHERE completed AND NOT COALESCE\(missed, false\)\) as done/);
+    // cycle-8 F18: a linked task the sync closed isn't done either.
+    assert.match(read("routes/settings.js"), /FILTER \(WHERE completed AND NOT COALESCE\(missed, false\)(?: AND NOT auto_closed)?\) as done/);
   });
 });
 

@@ -364,7 +364,9 @@ describe("health integration pins", () => {
     // The balance/due math lives in ONE shared helper used by both the
     // briefing and the notification check (PB-2).
     assert.match(src, /require\("\.\/housing-due"\)/);
-    assert.match(src, /await housingDue\(perfinPool\)/);
+    // cycle-8 F23: through housingDueUnlessTask (the same read, left out
+    // while a housing linked task is open).
+    assert.match(src, /await housingDueUnlessTask\(perfinPool, pool\)/);
     assert.match(read("routes", "housing-due.js"), /payee_obligations WHERE status='unpaid' AND payee = \$1/);
     assert.match(src, /Rent & utilities/);
     // The block is guarded so a cross-pool failure can't 500 the briefing.
