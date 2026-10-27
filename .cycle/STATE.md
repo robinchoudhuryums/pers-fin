@@ -30,7 +30,11 @@ implement and reflect sessions only set Phase.)
     buttons name their institution.
   - **Verified:** npm test 2697/2697 (31 new); contract 270/270; mutation 13/13; Playwright not re-run (the
     container's Playwright build isn't installed — Batch 1 follow-on).
-  - **Where I left off:** Batch 7 committed and pushed. Next: `/sync-docs`, then `/broad-implement Batch 8`
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (the toast paragraph F56, the Tax page notes
+    F35 / F39, the Settings switches F38, INV-63 return_to F40, test counts 2697 / 143, Known Open
+    Issues + Batch 7 follow-ons), apps/per-sistant/CLAUDE.md (search widget F34 / F36, the fetch
+    wrapper's return_to, heatmap day keys F48, counts + the new test file) and README.
+  - **Where I left off:** Batch 7 committed, pushed and documented. Next: `/broad-implement Batch 8`
     (F31 frozen CHECK lists, F32 error-log pruning, F33 landing-status queries, F52 Per-sistant DATE parsing).
 - **Batch 6 (DONE):** block `.cycle/blocks/8-batch6-broad-implement.md`.
   - **Shipped (Batch 6 — AI trust + Knowledge privacy):** F42 F49 F44 F24 F50 F53. npm 2666/2666, contract

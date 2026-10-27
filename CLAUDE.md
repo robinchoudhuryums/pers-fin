@@ -1146,9 +1146,21 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2666 tests as of latest); use
+  Perfin and Per-sistant test files (2697 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2666 tests across 141 test files (incl.
+  Current count: 2697 tests across 143 test files (incl.
+  `tests/broad-scan-c8-batch7.test.js` — cycle-8 broad scan Batch 7, Perfin's side: the Tax page script
+  in a vm over a list that parses its markup (notes typed in another row and the focused control carried
+  across a reload, a vanished button handing focus to its row's notes box, an older reply for the same
+  year dropped, a double tap on a row button / Add / Suggest sending one request), Show more re-enabled
+  after a failed load, updateSetting's true / false and saveToggle / toggleModule putting a refused
+  switch back, the account-floor Save's network failure and single save, the collapsible heading's
+  keydown ignoring its select, the Undo toast paused while hovered / focused, closed only by Undo /
+  Dismiss, focus moved by action.focus, and the Accounts rows' institution-named buttons and one Plaid
+  update per double tap — with `apps/per-sistant/tests/broad-scan-c8-batch7.test.js` (search Pin /
+  Unpin sending the opposite state, the widget and /search page dropping a stale reply — before and
+  after its body — and the widget's error line, the fetch wrapper's return_to, the Health / Analytics
+  heatmaps' days under America/Los_Angeles in a child process);
   `tests/broad-scan-c8-batch6.test.js` — cycle-8 broad scan Batch 6, Perfin's side: the audit's
   CROSS_PERIOD_RE over year / week / quarter phrasings (and the this-month and unqualified claims
   it leaves checked, "a quarter of your spending" among them), namesOtherMonth / claimNamesOtherMonth
@@ -2587,7 +2599,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   (last year from January to April, else this year; `?year=`), Download PDF / ZIP, an overview card
   and a card per section with its totals and a CSV link, and the documents checklist (`#documents` —
   Mark received, Dismiss, notes, Delete for a hand-added row, an Add form and "Suggest from my
-  data"). Linked from Settings → Data & Exports ("Open the Tax page") and, from January to April
+  data"; a reload keeps notes typed in other rows and the focused control, reloads are sequenced and
+  each write is single-flight — cycle-8 F35 / F39). Linked from Settings → Data & Exports ("Open the Tax page") and, from January to April
   only, from the top of the dashboard ("Tax season: your <year> tax package is ready to review");
   the top nav has no link — on a phone the hamburger drawer lists "Tax" after "Rent" from January
   to April (design D7).
@@ -3440,9 +3453,14 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   `#toast-stack` container (auto-created on first call) instead of
   overwriting a single per-page element. Stack caps at 5 visible toasts;
   identical consecutive messages dedupe (timer bump, no pile-up). An optional
-  third argument `{ action: { label, run } }` adds a button (`.toast-action` —
+  third argument `{ action: { label, run, focus? } }` adds a button (`.toast-action` —
   the Activity page's "Undo", T2.5 U2): pressing it closes the toast and calls
-  `run`; such a toast stays 10 s and is never merged with an earlier one. The cap
+  `run`; such a toast stays 10 s and is never merged with an earlier one. Since
+  cycle-8 F56 an action toast closes only through its buttons (Undo or a labelled
+  "Dismiss" ×, `.toast-close` — a tap on its text no longer dismisses it), its
+  timer waits while it is hovered or holds focus, and `focus: true` moves focus to
+  the action button (the Activity delete passes it; its text also names Settings →
+  Sync Health → Deleted transactions). The cap
   counts only toasts that aren't already leaving and removes the excess
   immediately (F89 — counting leaving toasts made the sixth message loop
   forever and freeze the tab). Each
@@ -3566,6 +3584,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   lists itself — add a `<section class="settings-group" id="group-…">` with an `h3.settings-group-title`
   and keep each section's id (deep links: `#sync-health`, `#deleted-transactions`,
   `#recent-errors`, `#cash-alerts-section`, `#linked-tasks-section`, `#ai-insights`).
+  Every switch saved through `updateSetting` goes through `saveToggle(box, key)`: a save the server
+  refused or that never reached it puts the switch back (cycle-8 F38 — it stayed flipped); the
+  insight-module and dashboard-widget switches revert the same way.
 - **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" with color-coded
   staleness: green (<6h), yellow (6-24h), red (>24h). Tooltip shows per-source
   freshness (transactions, balances, auto-sync). Populated from the most recent of
@@ -4122,7 +4143,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2666 tests passing across 141 test files (Perfin 1962 + Per-sistant 704), plus the real-Postgres route contract suite (270 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2697 tests passing across 143 test files (Perfin 1981 + Per-sistant 716), plus the real-Postgres route contract suite (270 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -6578,10 +6599,8 @@ and utility autopays F8, fee rows in investment income F9, the payday-landed ret
 low-cash alert's memory and forced re-check F11 / F12, F13–F15) and Batch 3 (detection /
 rename / restore — F41 F46 F47 F5 F43 F4 F6 F54) and Batch 4 (sync watermarks + webhook
 hardening — F1 F51 F3) and Batch 5 (linked tasks — F16 F17 F18 F19 F20 F21 F22 F23) and
-Batch 6 (AI trust + Knowledge privacy — F42 F49 F44 F24 F50 F53) are done. Still open, by
-batch:
-- Batch 7 — search Pin / Unpin does nothing (F34), the Tax checklist losing unsaved notes
-  (F35), keyboard access to the Spending by Category select (F55) and F36–F40, F48, F56, F57.
+Batch 6 (AI trust + Knowledge privacy — F42 F49 F44 F24 F50 F53) and Batch 7 (UI correctness
++ accessibility — F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48) are done. Still open:
 - Batch 8 — frozen CHECK lists (F31), error-log pruning (F32), landing-status queries
   (F33), Per-sistant's DATE parsing (F52).
 Batch 1 follow-ons: the weekly / daily digest, CSV reminder and housing ledger settle for
@@ -6624,6 +6643,11 @@ restrictive); Knowledge's /diagram still returns an empty diagram on a refusal (
 cappedAI's empty text); the credit-score prompt reads 6 entries across all types, so a rarely-logged
 type may have no prior entry in range. OPERATOR: run one full Knowledge reindex after deploying
 Batch 6 (VAULT_PARSE_VERSION 3).
+Batch 7 follow-ons: the Undo toast's buttons are below the 44px phone touch target (operator check
+V2); a switch whose save reached the server but whose reply was lost shows the old state until a
+reload; a Tax-page note the server normalized on save shows what was typed until the next reload;
+Per-sistant's standalone login ignores return_to; the heatmap day keys assume DATE columns arrive as
+UTC midnight (a server not on UTC shifts them, as before).
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
@@ -7225,7 +7249,7 @@ INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fi
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
-INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
+INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login (with return_to = the page's path + query, cycle-8 F40) on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
 INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall (since roadmap T2.3 C1 an alias of ai.cappedAI) reads getAiBudgetCents()+monthlyAiSpendCents() (the APP_TIMEZONE month; a spend read error is CAP_CHECK_FAILED and stops the pass) and throws { code:'CAP' } BEFORE calling the model when over budget; on a call that returned tokens it charges an ai_usage row via recordAiUsage once in a `finally`. Every other Per-sistant AI feature is on the same wrappers since T2.3 C2 / C3 — this is the Job Radar case of INV-143 | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete, and removing a target company deactivates it (active=false — the db/021 seed would re-insert a deleted row) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
