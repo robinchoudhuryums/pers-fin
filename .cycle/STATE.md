@@ -9,9 +9,9 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-Cycle: 7
-Phase: implement
-Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
+Cycle: 8
+Phase: audit
+Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
 Updated: 2026-10-27
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
