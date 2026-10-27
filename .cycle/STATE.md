@@ -28,8 +28,11 @@ implement and reflect sessions only set Phase.)
     one stale; F54 income top sources by display name (route + Sheets mirror).
   - **Verified:** npm test 2613/2613 (15 new; one run hit the known x2a IPC flake); contract 262/262
     (8 new); Playwright 72/72; mutation 10/10.
-  - **Docs NOT yet synced** — the block's DOCUMENTATION UPDATES NEEDED list is pending `/sync-docs`.
-  - **Where I left off:** Batch 3 committed and pushed. Next: `/sync-docs`, then `/broad-implement Batch 4`.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (merchant-rename.js entry, rename rules,
+    detection DC-7 + watchdog, undelete / Resolve / deleted_transactions columns, the resolve / restore /
+    income-summary endpoint notes, INV-123 / 124 / 145, test counts, Known Open Issues + Batch 3
+    follow-ons) and README.
+  - **Where I left off:** Batch 3 committed, pushed and documented. Next: `/broad-implement Batch 4`.
 - **Batch 2 (DONE):** block `.cycle/blocks/8-batch2-broad-implement.md`.
   - **Shipped (Batch 2 — money accuracy):** F7 internal transfers between spendable accounts not billed
     (mirror credit ±5 days); F8 only card autopays skipped (linked-card credit / card phrase / issuer);

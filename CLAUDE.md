@@ -641,8 +641,11 @@ teller/
                            PATCH /api/merchant-rename-rules/:id (roadmap T1.5 —
                            rename_to / is_active), DELETE
                            /api/merchant-rename-rules/:id. Exports
-                           applyRenameRules (run by syncAllTransactions, the CSV
-                           import and manual entry), createRenameRule,
+                           applyRenameRules (run by syncAllTransactions, both
+                           reconciles — cycle-8 F43 — the CSV import, manual entry
+                           and a restore — F5), createRenameRule (takes the rows
+                           another rule renamed that it also matches and re-keys
+                           only the detection keys it fully vacated — F41),
                            createRuleFromTransaction (PATCH /api/transactions/:id
                            apply_to_all), updateRenameRule and ruleCondition
     investments.js       — AGGREGATOR for the investment routes: mounts
@@ -1117,9 +1120,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2598 tests as of latest); use
+  Perfin and Per-sistant test files (2613 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2598 tests across 135 test files (incl.
+  Current count: 2613 tests across 136 test files (incl.
+  `tests/broad-scan-c8-batch3.test.js` — cycle-8 broad scan Batch 3: restore over a fake client
+  (a bank-removed row a 409 with nothing written, a bank-changed one restored stale, an active
+  rule's current name applied, a deleted / switched-off rule's rename cleared, a hand rename kept
+  and every rule applied on the client), the stale restore toast run in a vm, createRenameRule
+  releasing another rule's rows and re-keying only the vacated keys, reconcileTeller renaming the
+  rows it recovered through the real Teller engine without the anomaly check, and source pins for
+  the detection upsert's prior_amount / amount_changed, the watchdog's early rise, the Plaid
+  tombstone hooks, Resolve's tombstones and the income sources' grouping — the SQL half is
+  `tests/contract/c8-batch3`;
   `tests/broad-scan-c8-batch2.test.js` — cycle-8 broad scan Batch 2: the forecast's two transfer
   flags through getCashFlowInputs (internal moves and linked-card payments left out, a transfer to
   someone else, a brokerage contribution and a utility autopay billed) and the card / utility
@@ -1922,7 +1934,12 @@ shell/
   /api/categorize/status and /api/data-health's warnings). Since cycle-8 Batch 2, c8-batch2 (the
   forecast's bills on real rows: checking → a linked savings account and a payment into the linked
   card left out; a brokerage contribution, a transfer to someone else, a utility autopay and a
-  same-amount credit 9 days later billed). 254 tests, run
+  same-amount credit 9 days later billed). Since cycle-8 Batch 3, c8-batch3 (a specific rename rule
+  taking a broad rule's rows while the broad rule's cancelled subscription stays put, a fully vacated
+  key re-keyed; a price change surviving a detection run with no new charge; an early rise alerting
+  once and not for a utility or a 2x charge; Resolve tombstoning with a restorable snapshot; a restore
+  taking its rule's current name; a bank-removed Plaid id refused and a changed one restored stale;
+  a renamed payroll source as one income-summary row). 262 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2274,7 +2291,15 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   alone for a row deleted before U1 — each with a labelled Restore button (none for a pre-U1
   manual entry); the Activity page's delete toast offers **Undo**. Both go through
   `restoreTransaction` (perfin-shared.js), which toasts the outcome — for a pre-U1 row, how it
-  returns ("Reconcile Now" / "import its CSV file again"). **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
+  returns ("Reconcile Now" / "import its CSV file again"). **The bank's later changes (cycle-8
+  F6, Plaid only):** a Plaid `modified` delivery for a tombstoned id stamps
+  `deleted_transactions.bank_changed_at`, a `removed` one `bank_removed_at`; a restore refuses a
+  removed row (409 `reason: "removed_by_bank"`, nothing changed) and returns `stale: true` for a
+  changed one (the toast says to run a Plaid Reconcile Now — Plaid won't send it again). A restored
+  row takes its rename rule's CURRENT name, or loses the rename of a rule deleted or switched off
+  while it was gone, then every rule applies (F5). CSV-overlap **Resolve** tombstones (with a
+  snapshot and source) the rows it deletes, in the same transaction (F4), so they can be restored
+  and a CSV re-import skips them. **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
   when the merchants look alike (a shared word of 3+ letters, or a ≥4-letter prefix, noise words
   ignored; the synced row's raw description is tried too), closest date first — amount + date
   alone matched two different $4.50 coffees and let one synced row claim every same-amount CSV
@@ -2321,8 +2346,13 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   the tag) and deleting a rule reverts exactly its rows. They apply most specific
   first (`RULE_ORDER_SQL`) with the categorization rules' 3-character minimum for
   contains / starts_with, and run after every `syncAllTransactions` (before the
-  anomaly check), inside the CSV import transaction (`SAVEPOINT csv_rename`) and
-  after a manual entry. Settings → Rules lists them with Edit, Turn off / Turn on
+  anomaly check), after a Teller or Plaid reconcile that recovered rows (cycle-8 F43 —
+  never the anomaly check), inside the CSV import transaction (`SAVEPOINT csv_rename`),
+  after a manual entry and on a restored row (F5). A NEW rule releases the rows
+  ANOTHER rule renamed that it also matches, so all rules re-apply most specific
+  first, and re-keys only the detection keys no transaction still carries — a
+  specific "AMAZON PRIME" rule no longer moves the broad "Amazon" rule's cancelled
+  subscription to the new name (cycle-8 F41). Settings → Rules lists them with Edit, Turn off / Turn on
   and Delete (`/api/merchant-rename-rules`). Since roadmap T1.5, `PATCH
   /api/merchant-rename-rules/:id` (`updateRenameRule`) takes a new `rename_to`
   (the rows the rule renamed and the detected subscription / transfer keyed on the
@@ -2394,7 +2424,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   - **Price anchor (DC-7)**: `findAnchorAmount` anchors on the most recent ±10% amount
     cluster when it has ≥ minOcc charges (else the global mode), so 18 × $15.49 then
     6 × $17.99 is reported at $17.99; the persisted row flags the change via the
-    upsert's `amount_changed = (EXCLUDED.amount != stored amount)`.
+    upsert's `amount_changed` (and `prior_amount` = the old price) — since cycle-8 F46 both
+    are KEPT until a later charge (`last_charged` moves) instead of being recomputed from
+    the unchanged amount, so PRICE UP and the watchdog's rise outlast the next run.
   - `next_expected` steps by calendar month (`services/cadence.js`, DC-9).
   DC-7/DC-8 apply to subscriptions only; the transfer detector keeps the
   floor-majority + global-mode amount.
@@ -2406,7 +2438,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   `sub-still-charging-<id>`, deep link `/subscriptions`) plus a critical-alert
   email, once per charge (`still_charging_txn`). **Price rise** — an active
   subscription whose amount rose ≥5% or ≥$1 over `prior_amount` within 45 days
-  pushes once per new price (`price_alerted_amount`, tag `sub-price-<id>`). A row
+  pushes once per new price (`price_alerted_amount`, tag `sub-price-<id>`). Since cycle-8
+  F47 a charge 10–50% above the stored price (settled, after `last_charged`, within 45 days)
+  pushes "<name> went up from $X to $Y" before detection re-anchors the price (which takes
+  three charges at the new price) — not for a utility, once per charged amount. A row
   is marked only when the notification was logged, so a failed send retries. The
   Subscriptions page shows "STILL CHARGING" and "PRICE UP $X" badges.
 - **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
@@ -3994,7 +4029,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2598 tests passing across 135 test files (Perfin 1915 + Per-sistant 683), plus the real-Postgres route contract suite (254 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2613 tests passing across 136 test files (Perfin 1930 + Per-sistant 683), plus the real-Postgres route contract suite (262 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4142,6 +4177,8 @@ POST /api/transactions/csv-overlap/resolve # delete CSV-side rows paired one-to-
                                            # account (a manual cash account can't have
                                            # its hand entries deleted) and the synced
                                            # side is Teller or a non-CSV Plaid item.
+                                           # The deleted rows are tombstoned with a
+                                           # snapshot in the same transaction (cycle-8 F4)
 PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimbursed
                             # (Phase B1/B2), personal_for ('self'|'partner'|null —
                             # shared-card settlement override; invalid values
@@ -4172,6 +4209,8 @@ POST /api/deleted-transactions/:id/restore # put it back from its snapshot and l
                             # already_present, splits }; 404 unknown; 409 when its account
                             # is gone; a pre-U1 tombstone → { restored: false, cleared,
                             # returns_on: reconcile | csv_reimport } (a manual one 409s);
+                            # a Plaid id the bank removed since → 409 { reason:
+                            # "removed_by_bank" }; one it changed → stale: true (cycle-8 F6);
                             # the Settings Restore button and the Activity toast's Undo (U2)
 GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
@@ -4281,7 +4320,9 @@ GET  /api/cash-flow        # rolling cash flow projection (query: days 30-180, d
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
 GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6).
                            # Window anchored on the APP_TIMEZONE month; avg_monthly_income
-                           # averages COMPLETED months only (FAN-13)
+                           # averages COMPLETED months only (FAN-13); top sources group
+                           # by the display name, a rename wins (cycle-8 F54 — also the
+                           # Sheets Income tab)
 GET  /api/spending-yoy     # year-over-year comparison (query: month, year; defaults =
                            # the APP_TIMEZONE date). The current month is capped at
                            # today's day for every year (through_day; null = whole
@@ -4982,7 +5023,8 @@ standalone-mode fallback if either app is run on its own Render service.
   Teller and Plaid upserts and the CSV import / CLI skip them. Roadmap T2.5 U1 adds
   `snapshot JSONB` (`{ row: to_jsonb(transaction), splits: [...] }`, written by the
   DELETE; NULL on an older tombstone) and `source TEXT` (teller / plaid / csv / manual).
-  Restore deletes the row. In reset-fresh's WIPE_TABLES.
+  Cycle-8 F6 adds `bank_changed_at` / `bank_removed_at TIMESTAMPTZ` (stamped by Plaid's
+  modified / removed deliveries for a tombstoned id; read by restore). Restore deletes the row. In reset-fresh's WIPE_TABLES.
 - `transaction_splits` (Phase B3): subdivides a single Teller transaction into
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references
@@ -6430,10 +6472,8 @@ safety — boot runs F27, not-due memos F29, the biometric open redirect F25, th
 database refusal F26, the Teller self-heal F2, the biometric probe limiter F28, the
 x-api-key limiter F30) and Batch 2 (money accuracy — the forecast's internal transfers F7
 and utility autopays F8, fee rows in investment income F9, the payday-landed retry F10, the
-low-cash alert's memory and forced re-check F11 / F12, F13–F15) are done. Still open, by batch:
-- Batch 3 — a new rename rule over rows another rule renamed resurrects a cancelled
-  subscription (F41); price-rise alerts can't retry and the PRICE UP badge lasts one run
-  (F46); restore / reconcile / CSV-overlap Resolve gaps (F4–F6, F43, F47, F54).
+low-cash alert's memory and forced re-check F11 / F12, F13–F15) and Batch 3 (detection /
+rename / restore — F41 F46 F47 F5 F43 F4 F6 F54) are done. Still open, by batch:
 - Batch 4 — the anomaly watermark can skip rows an overlapping sync commits (F1), the
   payday watermark's CSV-import window (F51), the Plaid verifier's uncached kid fetch (F3).
 - Batch 5 — linked tasks: a permanently deleted task comes back, an unpaid manual bill's
@@ -6455,6 +6495,13 @@ happens to match an unrelated same-amount credit on another spendable account wi
 is treated as internal (F7); an unlinked card's autopay with a card name is still skipped; the
 user can't mark a transfer internal or a bill themselves (the scan's G1); an unlogged cash /
 floor alert's retry still waits for new data when a check was stamped earlier that day.
+Batch 3 follow-ons: the bank-changed / bank-removed handling is Plaid-only (Teller sends no
+such signal, so a Teller row changed while deleted is restored as the old copy); the early
+price-rise alert has no "one-off" dismissal, so a one-off higher charge (an add-on, a prorated
+upgrade) on a non-utility subscription alerts once per distinct amount; when a new rename rule
+takes only some rows under a name, the moved rows get a fresh detection row (no user state) on
+the next run; a price change later reverted keeps PRICE UP until the next charge;
+tests/roadmap-t2-4-x2a.test.js intermittently fails with a node:test runner IPC error.
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
@@ -7101,8 +7148,8 @@ INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file 
 INV-120 | Shell sessions are revocable server-side: the cookie carries user_settings.shell_session_epoch and is refused once the epoch moves; POST /logout?everywhere=1 needs a valid session and bumps it; a legacy epoch-less cookie counts as epoch 0 | Subsystem: Platform, Shell & Auth | Verify: tests/contract/platform-batch13.contract.test.js (F12)
 INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month anchor in server code) and the canonical-helper scan (net worth via getNetWorth, budget_snapshots / income streams / AI spend / effective limit derived in one place) keep per-file KNOWN_GAPS that fail on growth AND on a stale entry; the Sheets Budget Status equals getBudgetStatus on real Postgres | Subsystem: Test Coverage Quality / Parallel Source-of-Truth Drift | Verify: tests/scan-oct-batch13.test.js + tests/contract/budget-parity.contract.test.js
 INV-122 | Every spending aggregation nets refunds through the shared spend_lines (spendLinesCTE: charges + split lines + REFUND_PREDICATE lines) floored per (month, category) at $0 (NET_CATEGORY_MONTHS) — no route re-derives refunds, the Sheets mirror is SX3-pinned, and cash flow / anomaly / tax stay charge-level (cycle-7 F35) | Subsystem: Financial Analytics | Verify: tests/scan-oct-batch14.test.js + tests/contract/refunds.contract.test.js + tests/contract/budget-parity.contract.test.js
-INV-123 | The subscription watchdog alerts at most once per post-cancel charge (still_charging_txn) and once per new price (price_alerted_amount), only for a charge more than 7 days after cancelled_at at ±25% of the amount or a rise of ≥5% or ≥$1, and marks a row only after its notification was logged | Subsystem: Detection & Categorization / Notification Correctness | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
-INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule — or turning it off — reverts exactly its rows; renaming a rule moves exactly its rows and re-keys detection keeping the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/contract/quickwins.contract.test.js + tests/scan-oct-batch15.test.js
+INV-123 | The subscription watchdog alerts at most once per post-cancel charge (still_charging_txn) and once per new price (price_alerted_amount), only for a charge more than 7 days after cancelled_at at ±25% of the amount, a rise of ≥5% or ≥$1, or (cycle-8 F47) a non-utility charge 10–50% above the stored price; the detection upsert keeps prior_amount / amount_changed until a later charge (F46); it marks a row only after its notification was logged | Subsystem: Detection & Categorization / Notification Correctness | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js + tests/contract/c8-batch3
+INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule — or turning it off — reverts exactly its rows; renaming a rule moves exactly its rows and re-keys detection keeping the rows' user state; a new rule takes the rows another rule renamed that it also matches (most specific wins) and re-keys only the keys it fully vacated (cycle-8 F41); a reconcile and a restore apply the rules, a restore with the rule's current state (F43 / F5) | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/contract/quickwins.contract.test.js + tests/scan-oct-batch15.test.js + tests/contract/c8-batch3
 INV-129 | Per-sistant client code disables a button for a pending action only through withPending(btn, key, fn, busyText) (views/js.js — guardPending single-flight + disabled + aria-busy, each button's prior state restored in a finally); no page re-enables a button or sets aria-busy by hand (shrinking KNOWN_GAPS guard); the e2e click sweep never presses a data-e2e-skip control, so every destructive, off-app or device-permission control carries it | Subsystem: Per-sistant Web UI / Test Coverage Quality | Verify: apps/per-sistant/tests/scan-oct-batch20.test.js + e2e/pages.spec.js
 INV-128 | Plaid re-authentication and new accounts at a connected login go through Link UPDATE MODE on the same Item: link-token-update sends the item's own access_token (perfin_try_decrypt) with no products; update-complete never exchanges a token, registers new accounts BEFORE the cursor walk, clears last_error_code and syncs only that Item under withPlaidTxnLock (investments: syncAllPlaidHoldings({ itemId })); only a token that won't decrypt is sent to unlink + link | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch19.test.js + tests/contract/plaid-update.contract.test.js
 INV-127 | A background sync (POST /api/sync, /api/sync-balances, /api/sync/reconcile with background:true) answers 202 with a job id at once and runs the SAME body as the synchronous call (records last_sync_result / freshness identically); for sync / sync-balances a POST during a run of that kind joins it (sharedRun) and a second background start is a 409 carrying the running id; a reconcile runs one at a time — either route answers 409 while any reconcile runs (background, synchronous or the weekly heal, which skips) and only a background run writes the slot (seams audit #3); the status's error is a fixed sentence, never an exception message (the reconcile slot included); the backstop workflows poll by id and fail on an error, a lost run or the deadline without printing the error text | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/scan-oct-batch18.test.js + tests/contract/async-sync.contract.test.js
@@ -7122,7 +7169,7 @@ INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs o
 INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4
 INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
-INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone; Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update
+INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3
 INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js
 INV-147 | The dashboard summary has one definition per figure, each the helper its own screen uses — net worth = the latest net_worth_snapshots row (written only through getNetWorth); spending = getBudgetStatus (GET /api/budgets); lowest cash = getCashFlowForecast (GET /api/cash-flow); bills due = getBillsDue (the /api/forecast charges via forecastCharges + the bill calendar's manualBillOccurrences, less bill_payments); rent owed = getHousingOwed (the ledger's ledgerTotals, payee-scoped); uncategorized = countUncategorized (/api/categorize/status); Sync Health = gatherDataHealth (/api/data-health) — no figure is re-derived in routes/dashboard-summary.js; every part is fail-soft with a fixed sentence and the page still loads when the whole request fails; attention links are same-app paths joined with withBase; the shell landing page's Perfin line reads the same gatherDashboardSummary in-process (its parts option — rent / bills / uncategorized only), never an HTTP self-fetch | Subsystem: Financial Analytics / Web UI | Verify: tests/design-d3.test.js + tests/design-d7.test.js + tests/contract/dashboard-summary.contract.test.js + e2e/pages.spec.js
 INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only. Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
