@@ -130,7 +130,7 @@ describe("runPaydayLanded", () => {
     const order = [];
     rename.applyRenameRules = async () => { order.push("rename"); };
     dbModule.pool.query = async (sql) => {
-      if (/SELECT last_anomaly_check_at FROM user_settings/.test(sql)) order.push("anomaly");
+      if (/last_anomaly_check_at FROM user_settings/.test(sql)) order.push("anomaly");
       return { rows: [] };
     };
     pa.runPaydayLanded = async () => { order.push("payday"); throw new Error("boom"); };

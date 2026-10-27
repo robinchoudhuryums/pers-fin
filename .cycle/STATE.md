@@ -18,8 +18,16 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 8 broad scan — Batch 3 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
-  Block: `.cycle/blocks/8-batch3-broad-implement.md`.
+- **Status:** **Cycle 8 broad scan — Batch 4 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
+  Block: `.cycle/blocks/8-batch4-broad-implement.md`.
+  - **Shipped (Batch 4 — sync watermarks + webhook hardening):** F1 the anomaly watermark is the newest
+    created_at visible before the candidate read, kept below any open writer's start, never backwards;
+    F51 "Paycheck landed" re-reads 24 h behind its watermark with a notification_log tag dedupe; F3 the
+    Plaid verifier's miss cache, lookup cap, one lookup per kid, kid format and cheap checks first.
+  - **Verified:** npm test 2626/2626 (13 new); contract 264/264 (2 new); Playwright 72/72; mutation 10/10.
+  - **Docs NOT yet synced** — the block's DOCUMENTATION UPDATES NEEDED list is pending `/sync-docs`.
+  - **Where I left off:** Batch 4 committed and pushed. Next: `/sync-docs`, then `/broad-implement Batch 5`.
+- **Batch 3 (DONE):** block `.cycle/blocks/8-batch3-broad-implement.md`.
   - **Shipped (Batch 3 — detection / rename / restore):** F41 a new rename rule takes rows other rules
     renamed and re-keys only fully vacated keys; F46 prior_amount / amount_changed kept until a later
     charge; F47 the watchdog's early rise (10–50%, non-utility, once per amount); F5 a restore follows its
@@ -32,7 +40,6 @@ implement and reflect sessions only set Phase.)
     detection DC-7 + watchdog, undelete / Resolve / deleted_transactions columns, the resolve / restore /
     income-summary endpoint notes, INV-123 / 124 / 145, test counts, Known Open Issues + Batch 3
     follow-ons) and README.
-  - **Where I left off:** Batch 3 committed, pushed and documented. Next: `/broad-implement Batch 4`.
 - **Batch 2 (DONE):** block `.cycle/blocks/8-batch2-broad-implement.md`.
   - **Shipped (Batch 2 — money accuracy):** F7 internal transfers between spendable accounts not billed
     (mirror credit ±5 days); F8 only card autopays skipped (linked-card credit / card phrase / issuer);
@@ -60,7 +67,7 @@ implement and reflect sessions only set Phase.)
     bullets) was closed by that sync.
   - **Remaining scan batches** (the scan report is in the session transcript; IDs for a fresh session):
     - ~~Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54~~ (done)
-    - Batch 4 watermarks + webhook hardening: F1 F51 F3
+    - ~~Batch 4 watermarks + webhook hardening: F1 F51 F3~~ (done)
     - Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21
     - Batch 6 AI trust + Knowledge privacy: F42 F49 F44 F24 F50 F53
     - Batch 7 web UI + a11y: F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48

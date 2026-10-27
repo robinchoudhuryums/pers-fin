@@ -13,10 +13,15 @@
 //     same source, amount within ±10%) notifies: one-off income, refunds and a
 //     first paycheck from a new job (a stream needs two deposits) don't.
 //   - One push per deposit (tag payday-<hash of its id>). The watermark
-//     advances to the newest created_at processed; a send that THROWS stops
-//     the run with the watermark just before that deposit, so the next sync
-//     retries it (the anomaly-watermark rule). With no watermark yet (just
-//     switched on) it is set to now and nothing older is announced.
+//     advances to the newest created_at processed (never backwards); a send
+//     that isn't logged stops the run with the watermark just before that
+//     deposit, so the next sync retries it (the anomaly-watermark rule). With
+//     no watermark yet (just switched on) it is set to now and nothing older
+//     is announced.
+//   - Each run re-reads LANDED_OVERLAP_HOURS behind the watermark and skips a
+//     deposit there whose tag is already in notification_log (cycle-8 F51 — a
+//     CSV import's rows carry the import's start time, so a check that ran
+//     mid-import could otherwise step past them for good).
 //
 // runPaydayMissed(pool, { now, today, deps }) — "Payday missed?". Run by the
 // hourly "cash-alerts" away job (startup.js) next to the low cash alert.
@@ -44,6 +49,13 @@ const LANDED_MAX_AGE_DAYS = 5;
 const GRACE_DAYS = 3;
 const MISSED_LOOKBACK_DAYS = 14;
 const AMOUNT_TOLERANCE = 0.10;
+// The landed check re-reads this far behind its watermark (cycle-8 F51): a
+// CSV import commits all its rows at once, stamped with the import's START
+// time, so a check that ran mid-import could move the watermark past them.
+// A deposit in the overlap that was already announced (its tag in
+// notification_log) is skipped.
+const LANDED_OVERLAP_HOURS = 24;
+const LANDED_DEDUPE_DAYS = 30;
 
 const hash = (s) => crypto.createHash("sha256").update(String(s)).digest("hex").slice(0, 12);
 function money(n) {
@@ -74,10 +86,11 @@ async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
   const { rows } = await pool.query(`
     SELECT transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS source,
            ABS(amount) AS amount, to_char(date, 'YYYY-MM-DD') AS date,
-           created_at::text AS created_at
+           created_at::text AS created_at,
+           created_at <= $1::timestamptz AS in_overlap
       FROM transactions
      WHERE amount < 0 AND pending = false
-       AND created_at > $1::timestamptz
+       AND created_at > $1::timestamptz - make_interval(hours => ${LANDED_OVERLAP_HOURS})
        AND date >= $2::date
        AND ${INCOME_PREDICATE}
      ORDER BY created_at, transaction_id`,
@@ -87,11 +100,23 @@ async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
   if (!rows.length) return { status: "none", notified: 0 };
 
   const streams = await getLiveIncomeStreams(pool, today);
+  const tagOf = (r) => "payday-" + hash(r.transaction_id);
+  // Which overlap deposits were already announced — one read (F51). A failure
+  // here throws: the run stops with the watermark where it was.
+  const overlapTags = rows.filter((r) => r.in_overlap && matchStream(streams, r.source, parseFloat(r.amount))).map(tagOf);
+  const announced = new Set();
+  if (overlapTags.length) {
+    const seen = await pool.query(
+      `SELECT DISTINCT type FROM notification_log
+        WHERE type = ANY($1::text[]) AND created_at > now() - make_interval(days => ${LANDED_DEDUPE_DAYS})`,
+      [overlapTags]);
+    for (const x of seen.rows) announced.add(x.type);
+  }
   let watermark = null, notified = 0, held = false;
   for (const r of rows) {
     const amount = parseFloat(r.amount);
     const stream = matchStream(streams, r.source, amount);
-    if (stream) {
+    if (stream && !(r.in_overlap && announced.has(tagOf(r)))) {
       // sendToAll doesn't throw — it reports { logged: false } when the
       // notification_log row (the in-app record and the dedup marker) didn't
       // land (cycle-8 F10: only a throw held the watermark back, so a failed
@@ -103,7 +128,7 @@ async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
         sent = await sendToAll({
           title: "Paycheck landed",
           body: `${money(amount)} from ${r.source} (${stream.cadence}) on ${dayLabel(r.date)}.`,
-          tag: "payday-" + hash(r.transaction_id),
+          tag: tagOf(r),
           data: { url: "/dashboard" },
         });
       } catch (e) {
@@ -118,7 +143,8 @@ async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
     }
     watermark = r.created_at;
   }
-  if (watermark) await pool.query("UPDATE user_settings SET last_income_alert_at = $1::timestamptz WHERE id = 1", [watermark]);
+  // Never backwards: the overlap rows sit below the stored watermark.
+  if (watermark) await pool.query("UPDATE user_settings SET last_income_alert_at = GREATEST(last_income_alert_at, $1::timestamptz) WHERE id = 1", [watermark]);
   return { status: held ? "held_back" : "done", notified, considered: rows.length };
 }
 
@@ -193,6 +219,6 @@ async function runPaydayMissed(pool, { now = new Date(), today = todayStr(), dep
 
 module.exports = {
   runPaydayLanded, runPaydayMissed, overduePayday, invalidate,
-  LANDED_MAX_AGE_DAYS, GRACE_DAYS, MISSED_LOOKBACK_DAYS,
+  LANDED_MAX_AGE_DAYS, GRACE_DAYS, MISSED_LOOKBACK_DAYS, LANDED_OVERLAP_HOURS,
   _reset() { _disabledDay = null; _lastEval = null; },
 };

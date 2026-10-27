@@ -466,8 +466,31 @@ async function syncAllEnrollments(opts = {}) {
 // Never throws (a failed check must not fail the sync).
 async function runAnomalyCheck() {
   try {
-    const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
+    // The watermark travels as text both ways — a JS Date drops the
+    // microseconds, and `created_at > <truncated>` would re-check (and
+    // re-notify) the row the watermark sits on.
+    const settings = await pool.query("SELECT last_anomaly_check_at::text AS last_anomaly_check_at FROM user_settings WHERE id = 1");
     const watermark = settings.rows[0]?.last_anomaly_check_at || null;
+    // The new watermark is the newest created_at visible BEFORE the candidate
+    // read, and the candidates stop there (cycle-8 F1). It used to be now() at
+    // the end, after the sends: a row another sync (a webhook sync, the Plaid
+    // walk) committed in between fell below it and was never checked. A row
+    // stamps created_at with its transaction's START, so the mark is also kept
+    // below the start of any other transaction on this database still writing
+    // (a CSV import commits all its rows at once) — those rows land above it
+    // and the next check sees them. Without pg_stat_activity rights that bound
+    // reads NULL and LEAST ignores it.
+    const hwRes = await pool.query(
+      `SELECT LEAST(
+         (SELECT MAX(created_at) FROM transactions
+           WHERE $1::timestamptz IS NULL OR created_at > $1::timestamptz),
+         (SELECT MIN(xact_start) - interval '1 microsecond' FROM pg_stat_activity
+           WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xid IS NOT NULL)
+       )::text AS hw`,
+      [watermark]
+    );
+    const highWater = hwRes.rows[0]?.hw || null;
+    if (!highWater) return; // nothing new since the last check
     // Group merchants by user_merchant_name when the user has set one, so a
     // user-merged merchant ('Amazon' replacing 'AMAZON MKTP*4321' / 'AMZN.COM')
     // accumulates a single baseline rather than three under-the-threshold ones.
@@ -495,9 +518,10 @@ async function runAnomalyCheck() {
          AND t.date >= CURRENT_DATE - INTERVAL '7 days'
          AND t.amount > avg_tbl.avg_amount * 3
          AND ($1::timestamptz IS NULL OR t.created_at > $1)
+         AND t.created_at <= $2::timestamptz
        ORDER BY t.amount DESC
        LIMIT 5`,
-      [watermark]
+      [watermark, highWater]
     );
     // Track whether the notify loop itself failed. If it did, leave the
     // watermark alone so the next sync re-considers the same candidates —
@@ -537,8 +561,11 @@ async function runAnomalyCheck() {
       } catch (e) { console.error("Anomaly alert email error:", e.message); }
     }
     if (!notifyFailed) {
-      await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1")
-        .catch(err => console.error("Anomaly watermark update error:", err.message));
+      // Never backwards — a check that ran alongside may have gone further.
+      await pool.query(
+        "UPDATE user_settings SET last_anomaly_check_at = $1::timestamptz WHERE id = 1 AND (last_anomaly_check_at IS NULL OR last_anomaly_check_at < $1::timestamptz)",
+        [highWater]
+      ).catch(err => console.error("Anomaly watermark update error:", err.message));
     }
   } catch (err) {
     console.error("Post-sync anomaly check error:", err.message);
