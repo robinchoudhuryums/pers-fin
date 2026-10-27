@@ -240,7 +240,7 @@ describe("PUI-4 — Job Radar views + error states", () => {
     const r = await supertest(appWith(express.Router().get("/jobs", require("../pages/jobs")()))).get("/jobs").expect(200);
     for (const v of ["radar", "saved", "applied", "dismissed"]) assert.ok(r.text.includes('data-view="' + v + '"'), v);
     assert.match(r.text, /if\(!r\.ok \|\| data\.error\)/, "a 500 / error:true summary shows an error, not 'no matches'");
-    assert.match(r.text, /btn\.disabled = true;/);
+    assert.match(r.text, /return withPending\(btn, 'jobs-refresh', async function\(\)/, "Refresh is disabled while running (ST3 helper)");
     assert.match(r.text, /box\.checked = !on;/, "the Enabled box reverts when the save fails");
     assert.match(r.text, /function safeUrl\(u\)/, "PUI-7 client-side guard");
   });

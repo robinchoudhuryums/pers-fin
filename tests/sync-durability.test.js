@@ -148,7 +148,10 @@ describe("GET /api/data-health", () => {
     const res = await supertest(app).get("/api/data-health");
     assert.equal(res.status, 200);
     assert.equal(res.body.ok, true);
-    assert.equal(res.body.issues.length, 0);
+    // Operator checks (Batch 17) add an info line while GitHub checks aren't
+    // configured; no provider / freshness issue fires.
+    assert.equal(res.body.issues.filter(i => i.source !== "operator").length, 0);
+    assert.ok(res.body.issues.every(i => i.severity === "info"));
   });
 });
 

@@ -42,6 +42,28 @@ module.exports = `
   };
 })();
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+// A DATE column (due_date) as a LOCAL-midnight Date for that calendar day
+// (F109, parity with Perfin's WUI-2). The API sends 'YYYY-MM-DD' or node-pg's
+// UTC-midnight 'YYYY-MM-DDT00:00:00.000Z'; new Date() reads either as UTC
+// midnight, which is the PREVIOUS day west of UTC (a task due on the 1st
+// landed on the 30th and fell off the month's calendar). String methods only:
+// this module is a template literal (see gotcha).
+function parseCalDate(v){
+  if (!v) return null;
+  if (v instanceof Date) return v;
+  var s = String(v);
+  var tail = s.slice(10);
+  if (s.length >= 10 && s.charAt(4) === '-' && s.charAt(7) === '-' &&
+      (tail === '' || tail === 'T00:00:00.000Z' || tail === 'T00:00:00Z')) {
+    var y = parseInt(s.slice(0, 4), 10), m = parseInt(s.slice(5, 7), 10), d = parseInt(s.slice(8, 10), 10);
+    if (y && m && d) return new Date(y, m - 1, d);
+  }
+  return new Date(s);
+}
+// Short display for a DATE value ('' when missing).
+function fmtCalDate(v){ var d = parseCalDate(v); return d && !isNaN(d.getTime()) ? d.toLocaleDateString() : ''; }
+// 'YYYY-MM-DD' of a Date in the browser's local zone.
+function ymdOfLocal(d){ var p = function(n){ return String(n).padStart(2, '0'); }; return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
 // ISO timestamp -> <input type=datetime-local> value in the BROWSER's local
 // time ("YYYY-MM-DDTHH:MM"). The API returns UTC ISO strings; iso.slice(0,16)
 // put UTC wall-time in the field, and the save path's new Date(local)
@@ -60,6 +82,66 @@ function toLocalDatetimeInput(iso){
 // quotes. esc() alone is only safe in element-text context. Use escAttr() for
 // any attr="'+VALUE+'" interpolation. (& escaped first to avoid double-encoding.)
 function escAttr(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+// Linked tasks (roadmap T2.4): a task another app keeps in step carries a chip
+// naming that app, linking its source_url through the app's own mount
+// (window.LINKED_APP_BASES — '/perfin' under the shell, PERFIN_URL standalone).
+// Only a same-app path on an http(s) or root-relative base becomes a link;
+// anything else renders as plain text. No regex with a backslash here (INV-97).
+// linkedAppHref(app, path) → { href, external } for a same-app path under the
+// app's base, or null (no base, a non-http(s) base, a path that isn't one).
+// Shared by the chip and the search results' finance links (X3a).
+function linkedAppHref(app,u){
+  var bases=window.LINKED_APP_BASES||{};
+  var base=Object.prototype.hasOwnProperty.call(bases,app)?bases[app]:null;
+  var safePath=typeof u==='string'&&u.length>1&&u.charAt(0)==='/'&&u.charAt(1)!=='/'&&u.indexOf(String.fromCharCode(92))<0;
+  var rooted=typeof base==='string'&&base.charAt(0)==='/'&&base.charAt(1)!=='/';
+  var external=typeof base==='string'&&/^https?:/i.test(base);
+  if(!safePath||!(rooted||external))return null;
+  if(base.charAt(base.length-1)==='/')base=base.slice(0,-1);
+  return {href:base+u,external:external};
+}
+function linkedTaskChip(t){
+  if(!t||!t.source_app)return '';
+  var label=t.source_app==='perfin'?'Perfin':String(t.source_app);
+  var link=linkedAppHref(t.source_app,t.source_url);
+  var title='Kept in step with '+label;
+  if(!link)return '<span class="linked-chip" title="'+escAttr(title)+'">'+esc(label)+'</span>';
+  return '<a class="linked-chip" href="'+escAttr(link.href)+'"'+(link.external?' target="_blank" rel="noopener"':'')+' title="'+escAttr(title)+'" aria-label="'+escAttr('Open in '+label+': '+(t.title||''))+'">'+esc(label)+'</a>';
+}
+// Search results (roadmap T2.4 X3b): ONE renderer for the dashboard search
+// widget and the /search page. A Per-sistant row links to its page through
+// BASE_PATH; a Perfin row (group 'finance') through linkedAppHref, plain text
+// without a safe link; a row of an unknown type is left out. opts.actions adds
+// the dashboard's inline Complete / Send Now / Pin buttons (its delegation
+// handles them); Perfin rows never get actions.
+var SEARCH_PAGES={todo:'/todos',email:'/emails',note:'/notes',contact:'/contacts'};
+function renderSearchResults(results,opts){
+  opts=opts||{};
+  if(!Array.isArray(results)||!results.length)return '<div class="empty-msg">No results</div>';
+  var bp=window.BASE_PATH||'';
+  var linkStyle=' class="result-item" style="display:block;text-decoration:none;color:inherit;"';
+  var html=results.map(function(r){
+    if(!r||typeof r!=='object')return '';
+    var detail=r.description?'<div style="font-size:11px;color:var(--muted);margin-top:2px;">'+esc(r.description)+'</div>':'';
+    if(r.group==='finance'){
+      var body='<div class="result-type">'+esc(r.type)+' · Perfin</div><div style="font-size:14px;">'+esc(r.title||'')+'</div>'+detail;
+      var link=linkedAppHref(r.app,r.url);
+      if(!link)return '<div class="result-item">'+body+'</div>';
+      return '<a href="'+escAttr(link.href)+'"'+(link.external?' target="_blank" rel="noopener"':'')+linkStyle+'>'+body+'</a>';
+    }
+    if(!Object.prototype.hasOwnProperty.call(SEARCH_PAGES,r.type))return '';
+    var id=parseInt(r.id,10);
+    var actions='';
+    if(opts.actions&&id>0){
+      if(r.type==='todo'&&!r.completed)actions='<button data-action="search-complete" data-id="'+id+'" data-recurring="'+!!r.recurring+'" class="btn">Complete</button>';
+      else if(r.type==='email'&&r.status==='scheduled')actions='<button data-action="search-send" data-id="'+id+'" class="btn primary">Send now</button>';
+      else if(r.type==='note')actions='<button data-action="search-pin" data-id="'+id+'" data-pinned="'+!!r.pinned+'" class="btn">'+(r.pinned?'Unpin':'Pin')+'</button>';
+      if(actions)actions='<div style="display:flex;gap:6px;margin-top:6px;">'+actions+'</div>';
+    }
+    return '<a href="'+escAttr(bp+SEARCH_PAGES[r.type])+'"'+linkStyle+'><div class="result-type">'+esc(r.type)+(r.type==='todo'&&r.completed?' (done)':'')+'</div><div style="font-size:14px;">'+esc(r.title||'')+'</div>'+detail+actions+'</a>';
+  }).join('');
+  return html||'<div class="empty-msg">No results</div>';
+}
 function renderMd(s){
   if(!s)return'';
   return s
@@ -154,6 +236,43 @@ var _undoTimer=null;
 // (extra = that instance's id). 'info' shows the message with no Undo — used
 // after sending an email, which can't be unsent (PUI-3: "Undo" used to flip a
 // delivered email back to draft, so the next Send mailed it twice).
+// F113: how every write reports its outcome (parity with Perfin's writeOk) —
+// true on 2xx; otherwise a toast "<what>: <server error>" (never an Undo) and
+// false, so the caller keeps the modal / form open instead of losing what was
+// typed. A null res (the fetch threw, e.g. offline) also reports.
+async function writeOk(res, what){
+  if (res && res.ok) return true;
+  var detail = res ? 'HTTP ' + res.status : 'no connection';
+  try { var b = await res.clone().json(); if (b && b.error) detail = b.error; } catch (e) { /* not JSON */ }
+  showUndo((what || 'Save failed') + ': ' + detail, '', '', 'info');
+  return false;
+}
+// fetch that resolves to null instead of throwing, for use with writeOk.
+function tryFetch(url, opts){ return fetch(url, opts).catch(function(){ return null; }); }
+// F111: run fn at most once at a time per key (a double-click on Send Now
+// used to create and send two emails). Returns undefined while one is running.
+var _pending = {};
+async function guardPending(key, fn){
+  if (_pending[key]) return undefined;
+  _pending[key] = true;
+  try { return await fn(); } finally { _pending[key] = false; }
+}
+// ST3: the ONE "button busy while its action runs" helper. Runs fn single-flight
+// under key (guardPending), with btn (an element, a NodeList / array of them, or
+// null) disabled + aria-busy and, when busyText is given, relabelled — every
+// change restored in a finally. Returns undefined while a run with that key is
+// in progress. Pages use this instead of toggling .disabled by hand.
+async function withPending(btn, key, fn, busyText){
+  var list = !btn ? [] : (btn.tagName ? [btn] : Array.prototype.slice.call(btn));
+  return guardPending(key, async function(){
+    var saved = list.map(function(b){ return { b: b, text: b.textContent, disabled: b.disabled }; });
+    list.forEach(function(b){ b.disabled = true; b.setAttribute('aria-busy', 'true'); if (busyText) b.textContent = busyText; });
+    try { return await fn(); }
+    finally {
+      saved.forEach(function(s){ s.b.disabled = s.disabled; s.b.removeAttribute('aria-busy'); if (busyText) s.b.textContent = s.text; });
+    }
+  });
+}
 function showUndo(msg,type,id,action,extra){
   clearTimeout(_undoTimer);
   var el=document.getElementById('undo-toast');
@@ -392,16 +511,17 @@ document.addEventListener('keydown',function(e){
     if (!q) return;
     answer.hidden = false;
     answer.textContent = 'Thinking…';
-    sendBtn.disabled = true;
-    fetch('/api/ai/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: q }),
-    }).then(function (r) { return r.json(); }).then(function (r) {
-      answer.textContent = (r && r.answer) || 'No answer available.';
-    }).catch(function (err) {
-      answer.textContent = 'Error: ' + ((err && err.message) || 'request failed');
-    }).then(function () { sendBtn.disabled = false; });
+    withPending(sendBtn, 'ask', function () {
+      return fetch('/api/ai/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }),
+      }).then(function (r) { return r.json(); }).then(function (r) {
+        answer.textContent = (r && r.answer) || 'No answer available.';
+      }).catch(function (err) {
+        answer.textContent = 'Error: ' + ((err && err.message) || 'request failed');
+      });
+    });
   }
   document.addEventListener('click', function (e) {
     var t = e.target.closest('#ask-ps-btn');

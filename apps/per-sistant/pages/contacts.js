@@ -11,7 +11,7 @@ ${navBar("/contacts")}
   <p class="subtitle">Manage your email contacts for quick lookup.</p>
 
   <div class="actions">
-    <button class="primary" id="btn-add-contact">+ Add Contact</button>
+    <button class="primary" id="btn-add-contact">+ Add contact</button>
     <button id="btn-import-csv">Import CSV</button>
     <input type="file" id="csv-file" accept=".csv" style="display:none">
   </div>
@@ -33,7 +33,7 @@ ${navBar("/contacts")}
     <div class="modal-actions">
       <button id="btn-cancel-contact">Cancel</button>
       <button class="primary" id="btn-save-contact">Save</button>
-      <button class="danger" id="c-delete-btn" style="display:none">Delete</button>
+      <button class="danger" data-e2e-skip id="c-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -41,7 +41,7 @@ ${navBar("/contacts")}
 <script${nonceAttr()}>
 async function load() {
   var contacts = await fetch('/api/contacts').then(r=>r.json());
-  if (!contacts.length) { document.getElementById('contact-list').innerHTML = '<div class="empty-msg">No contacts yet. Add contacts to use quick email addressing.</div>'; return; }
+  if (!contacts.length) { document.getElementById('contact-list').innerHTML = emptyState({ title: 'No contacts yet', text: 'Add one to address an email by name.', action: { label: '+ Add contact', click: 'btn-add-contact' } }); return; }
   document.getElementById('contact-list').innerHTML = '<table><thead><tr><th>Name</th><th>Email</th><th>Actions</th></tr></thead><tbody>' +
     contacts.map(c => '<tr><td>'+esc(c.name)+'</td><td>'+esc(c.email)+'</td><td><div class="todo-actions"><button data-action="editContact" data-id="'+c.id+'">&#9998;</button><button class="delete" data-action="deleteContact" data-id="'+c.id+'">&#10005;</button></div></td></tr>').join('') +
     '</tbody></table>';
@@ -74,25 +74,24 @@ async function saveContact() {
   var data = { name: document.getElementById('c-name').value, email: document.getElementById('c-email').value };
   if (!data.name || !data.email) return alert('Name and email are required');
   var id = document.getElementById('c-id').value;
-  if (id) await fetch('/api/contacts/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  else {
-    var r = await fetch('/api/contacts', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-    var d = await r.json();
-    if (d.error) return alert(d.error);
-  }
+  // F113: a rejected save keeps the dialog open with what was typed.
+  var r = id
+    ? await tryFetch('/api/contacts/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    : await tryFetch('/api/contacts', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if (!(await writeOk(r, 'Could not save the contact'))) return;
   closeContact(); load();
 }
 
 async function deleteContact() {
   var id = document.getElementById('c-id').value;
   if (!confirm('Delete this contact?')) return;
-  await fetch('/api/contacts/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/contacts/'+id, {method:'DELETE'}), 'Could not delete the contact'))) return;
   closeContact(); load();
 }
 
 async function deleteDirect(id) {
   if (!confirm('Delete this contact?')) return;
-  await fetch('/api/contacts/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/contacts/'+id, {method:'DELETE'}), 'Could not delete the contact'))) return;
   load();
 }
 
@@ -111,7 +110,9 @@ function importCSV(input) {
       }
     }
     if (!contacts.length) { alert('No valid contacts found in CSV. Expected format: name,email'); return; }
-    var r = await fetch('/api/contacts/import', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:contacts})}).then(r=>r.json());
+    var res = await tryFetch('/api/contacts/import', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:contacts})});
+    if (!(await writeOk(res, 'Could not import the contacts'))) return;
+    var r = await res.json();
     var el = document.getElementById('import-status');
     el.className = 'status-msg success';
     el.textContent = 'Imported '+r.imported+' contacts'+(r.errors?' ('+r.errors+' errors)':'');

@@ -474,7 +474,14 @@ router.patch("/api/investment-accounts/:id", async (req, res) => {
     for (const f of ALLOWED_FIELDS) {
       if (req.body[f] !== undefined) { updates.push(`"${f}" = $${idx++}`); values.push(f === "notes" ? (req.body[f] || null) : req.body[f]); }
     }
-    if (req.body.balance !== undefined) { updates.push(`"balance" = $${idx++}`); values.push(parseFloat(req.body.balance)); }
+    if (req.body.balance !== undefined) {
+      // Cycle-7 F29: reject a non-numeric balance instead of storing NaN.
+      const raw = req.body.balance;
+      const bal = typeof raw === "number" ? raw
+        : (typeof raw === "string" && raw.trim() !== "" ? Number(raw.trim().replace(/[$,]/g, "")) : NaN);
+      if (!Number.isFinite(bal)) return res.status(400).json({ error: "balance must be a number" });
+      updates.push(`"balance" = $${idx++}`); values.push(bal);
+    }
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
     updates.push(`updated_at = now()`);
     values.push(req.params.id);
@@ -568,6 +575,16 @@ router.get("/api/context-export", async (req, res) => {
 
     const zipCode = settings.rows[0]?.zip_code;
     const state = zipCode ? zipToState(zipCode) : null;
+    // A card's limit (F36, the AIN-7 rule): credit_limit, else owed + available
+    // when an available figure exists, else UNKNOWN — null, never owed + 0 (which
+    // reported a Discover card with no reported limit as 100% utilized).
+    const cardLimit = (c) => {
+      const cl = parseFloat(c.credit_limit);
+      if (Number.isFinite(cl) && cl > 0) return cl;
+      if (c.available_balance == null) return null;
+      const derived = parseFloat(c.current_balance || 0) + parseFloat(c.available_balance || 0);
+      return derived > 0 ? derived : null;
+    };
 
     if (format === "json") {
       return res.json({
@@ -583,11 +600,8 @@ router.get("/api/context-export", async (req, res) => {
         }),
         credit_cards: creditCards.rows.map(c => {
           const owed = parseFloat(c.current_balance || 0);
-          const avail = parseFloat(c.available_balance || 0);
-          // Prefer the reported credit_limit; fall back to owed+avail (which is
-          // wrong when Plaid reports available:null, e.g. Discover).
-          const limit = parseFloat(c.credit_limit) || (owed + avail);
-          return { ...c, credit_limit: limit, utilization_pct: limit > 0 ? Math.round(owed / limit * 100) : 0 };
+          const limit = cardLimit(c);
+          return { ...c, credit_limit: limit, utilization_pct: limit != null ? Math.round(owed / limit * 100) : null };
         }),
         net_worth_history: netWorth.rows,
         latest_insight: recentInsight.rows[0] || null,
@@ -648,10 +662,9 @@ router.get("/api/context-export", async (req, res) => {
       md += "\n## Credit Card Details\n";
       for (const c of creditCards.rows) {
         const owed = parseFloat(c.current_balance || 0);
-        const avail = parseFloat(c.available_balance || 0);
-        const limit = parseFloat(c.credit_limit) || (owed + avail);
-        const util = limit > 0 ? Math.round(owed / limit * 100) : 0;
-        md += "- **" + c.name + "**" + (c.mask ? " (****" + c.mask + ")" : "") + ": $" + owed.toFixed(2) + " owed / $" + limit.toFixed(2) + " limit (" + util + "% utilization)";
+        const limit = cardLimit(c);
+        md += "- **" + c.name + "**" + (c.mask ? " (****" + c.mask + ")" : "") + ": $" + owed.toFixed(2) + " owed / " +
+          (limit != null ? "$" + limit.toFixed(2) + " limit (" + Math.round(owed / limit * 100) + "% utilization)" : "limit unknown (utilization unknown)");
         if (c.apr) md += ", " + c.apr + "% APR";
         md += "\n";
       }
@@ -753,3 +766,5 @@ router.get("/api/fire-projection", async (req, res) => {
 });
 
 module.exports = router;
+// Shared with the AI goal-tracking prompt (cycle-7 F62).
+module.exports.deriveGoalProgress = deriveGoalProgress;

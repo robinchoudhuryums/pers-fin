@@ -17,7 +17,7 @@ const router = express.Router();
 const { pool } = require("../services/database");
 const {
   getMonthlyIncome, getMonthlySpending, getNetWorth,
-  getCategorySpendingForMonth, SPLIT_AMOUNT, NOT_REIMBURSED, NOT_TRANSFER, currentMonth,
+  getCategorySpendingForMonth, SPLIT_AMOUNT, NOT_REIMBURSED, NOT_TRANSFER, REFUND_PREDICATE, currentMonth, todayStr,
 } = require("../services/financial-queries");
 const { MODEL_MAP, estimateCostGranular } = require("../data/reference-data");
 
@@ -106,9 +106,12 @@ async function toolSearchTransactions(args) {
       // spend total applies the dashboard's spending filters — reimbursed AND
       // transfers / card payments (NOT_TRANSFER) excluded — so a date-range
       // "how much did I spend" no longer adds card payments and Zelle moves.
+      // F35: matching refunds (REFUND_PREDICATE) net against the matching
+      // charges, floored at $0 like every other spending total.
       `SELECT COUNT(*) AS match_count,
-              ROUND(SUM(CASE WHEN t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-                             THEN ${SPLIT_AMOUNT} ELSE 0 END), 2) AS total_spent_adjusted
+              ROUND(GREATEST(COALESCE(SUM(CASE WHEN (t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER})
+                                                 OR ${REFUND_PREDICATE}
+                                               THEN ${SPLIT_AMOUNT} ELSE 0 END), 0), 0), 2) AS total_spent_adjusted
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE ${where}`,
@@ -118,7 +121,7 @@ async function toolSearchTransactions(args) {
   return {
     match_count: parseInt(totals.rows[0].match_count),
     total_spent_adjusted: totals.rows[0].total_spent_adjusted,
-    note: "total_spent_adjusted is shared-card adjusted and excludes reimbursed rows and transfers/card payments (the dashboard's spending filters); the row list shows raw amounts. With a category filter it counts a split transaction's FULL parent amount — use get_category_spending for exact per-category month totals.",
+    note: "total_spent_adjusted is shared-card adjusted, excludes reimbursed rows and transfers/card payments, and nets matching refunds (the dashboard's spending filters); the row list shows raw amounts. With a category filter it counts a split transaction's FULL parent amount — use get_category_spending for exact per-category month totals.",
     transactions: rows.rows,
   };
 }
@@ -229,9 +232,11 @@ router.post("/api/ask", async (req, res) => {
   let charged = false;
   const chargeAsk = async () => {
     if (charged) return;
-    charged = true;
     // entry_type='ask' — counted by the cap queries, filtered out of the
     // user-facing insights feed (which selects entry_type='insight').
+    // `charged` is set only once the row is written (cycle-7 F64): set before
+    // the INSERT, a failed write left the tokens uncharged AND blocked the
+    // `finally` retry.
     await pool.query(
       `INSERT INTO financial_insights
          (insight_text, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type)
@@ -244,6 +249,7 @@ router.post("/api/ask", async (req, res) => {
         totalUsage.cache_read_input_tokens, totalUsage.cache_creation_input_tokens,
       ]
     );
+    charged = true;
   };
 
   try {
@@ -265,13 +271,16 @@ router.post("/api/ask", async (req, res) => {
       "ALWAYS use the tools for any number — never estimate or invent figures. The tools return the same " +
       "split-adjusted, reimbursed-excluded values the dashboard shows. Be concise and concrete; state the " +
       "period a figure covers. If the data can't answer the question, say so plainly. " +
-      `Today's date is ${new Date().toISOString().slice(0, 10)}.`;
+      // APP_TIMEZONE date (F66 — UTC's date made "this month" the next month
+      // on the last evening of a month west of UTC).
+      `Today's date is ${todayStr()}.`;
 
     const messages = [{ role: "user", content: question }];
     const toolCalls = [];
     let answer = null;
 
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+      const lastRound = round === MAX_TOOL_ROUNDS;
       const msg = await client.messages.create({
         model: modelId,
         // Room for adaptive thinking (5.5 models think by default; billed as
@@ -280,8 +289,14 @@ router.post("/api/ask", async (req, res) => {
         ...require("../services/claude").effortParams("analyze"),
         system,
         tools: TOOLS,
+        // The last round can't run tools, so it must answer in text (cycle-7
+        // F65 — it was still offered tools, called one, and the run ended in
+        // "I couldn't produce an answer"). "none" is not a forced choice.
+        ...(lastRound ? { tool_choice: { type: "none" } } : {}),
         messages,
       });
+      // Record the model that actually served the call (F66).
+      if (msg.model) modelId = msg.model;
       if (msg.usage) {
         totalUsage.input_tokens += msg.usage.input_tokens || 0;
         totalUsage.output_tokens += msg.usage.output_tokens || 0;
@@ -290,7 +305,7 @@ router.post("/api/ask", async (req, res) => {
       }
 
       const toolUses = msg.content.filter(b => b.type === "tool_use");
-      if (msg.stop_reason !== "tool_use" || toolUses.length === 0 || round === MAX_TOOL_ROUNDS) {
+      if (msg.stop_reason !== "tool_use" || toolUses.length === 0 || lastRound) {
         answer = msg.content.filter(b => b.type === "text").map(b => b.text).join("\n").trim();
         break;
       }

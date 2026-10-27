@@ -48,6 +48,41 @@
     return base + url;
   }
 
+  // --- Empty states (design D2, decision 12) ---
+  // One block for every "nothing here yet" message: a title, a line of text and
+  // an optional action — { label, href } (a same-app path, joined with
+  // withBase) or { label, click } (the id of a button the page already wires:
+  // the empty state's button just clicks it, so no new write path exists).
+  // Every value is escaped.
+  function emptyState(opts) {
+    opts = opts || {};
+    var html = '<div class="empty-state">';
+    if (opts.title) html += '<div class="empty-state-title">' + esc(opts.title) + '</div>';
+    if (opts.text) html += '<div class="empty-state-text">' + esc(opts.text) + '</div>';
+    var a = opts.action;
+    if (a && a.label) {
+      // Only a same-app path ("/x", never "//host" or "javascript:") becomes a link.
+      if (a.href && a.href.charAt(0) === '/' && a.href.charAt(1) !== '/') {
+        html += '<a class="btn btn-sm primary empty-state-action" href="' + esc(withBase(a.href)) + '">' + esc(a.label) + '</a>';
+      } else if (a.click) {
+        html += '<button type="button" class="btn btn-sm primary empty-state-action" data-empty-click="' + esc(a.click) + '">' + esc(a.label) + '</button>';
+      }
+    }
+    return html + '</div>';
+  }
+  // The delegated handler for { click } actions (installed once below).
+  function emptyStateClick(e) {
+    var t = e && e.target && e.target.closest ? e.target.closest('[data-empty-click]') : null;
+    if (!t) return false;
+    var target = document.getElementById(t.getAttribute('data-empty-click'));
+    if (!target) return false;
+    target.click();
+    return true;
+  }
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('click', emptyStateClick);
+  }
+
   // --- API fetch with headers ---
   // W3: a single in-flight guard so concurrent expired calls trigger one nav.
   var _authRedirecting = false;
@@ -70,7 +105,9 @@
         (res.redirected && ON_LOGIN_RE.test(res.url || ''));
       if (expired && !_authRedirecting && !ON_LOGIN_RE.test(win.location.pathname)) {
         _authRedirecting = true;
-        win.location.href = '/login';
+        // F102: carry the page through login (the shell's return_to, PSC-9) —
+        // the PIN used to land on the default page instead of where you were.
+        win.location.href = '/login?return_to=' + encodeURIComponent(win.location.pathname + win.location.search);
       }
       return res;
     });
@@ -85,8 +122,12 @@
     el.classList.add('toast-leaving');
     setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
   }
-  function showMsg(text, ok) {
+  // opts.action = { label, run } adds a button to the toast (e.g. "Undo" —
+  // roadmap T2.5 U2): pressing it closes the toast and calls run(). A toast
+  // with an action stays 10 s and is never merged with an earlier one.
+  function showMsg(text, ok, opts) {
     if (!text) return;
+    var action = opts && opts.action && typeof opts.action.run === 'function' ? opts.action : null;
     var stack = document.getElementById('toast-stack');
     if (!stack) {
       stack = document.createElement('div');
@@ -98,7 +139,7 @@
     }
     // Dedupe: most recent toast with same text gets its timer bumped.
     var last = stack.lastElementChild;
-    if (last && last.textContent === text) {
+    if (!action && last && !last._action && (last._text != null ? last._text : last.textContent) === text) {
       if (last._timer) clearTimeout(last._timer);
       last._timer = setTimeout(function() { removeToast(last); }, ok ? 5000 : 10000);
       return;
@@ -106,16 +147,42 @@
     var toast = document.createElement('div');
     toast.className = 'toast ' + (ok ? 'success' : 'error');
     toast.setAttribute('role', ok ? 'status' : 'alert');
-    toast.textContent = text;
+    toast._text = text;
+    toast._action = !!action;
+    if (action) {
+      var span = document.createElement('span');
+      span.textContent = text;
+      toast.appendChild(span);
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'toast-action';
+      btn.textContent = action.label || 'Undo';
+      btn.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        if (toast._timer) clearTimeout(toast._timer);
+        removeToast(toast);
+        action.run();
+      });
+      toast.appendChild(btn);
+    } else {
+      toast.textContent = text;
+    }
     toast.addEventListener('click', function() { removeToast(toast); });
     stack.appendChild(toast);
-    toast._timer = setTimeout(function() { removeToast(toast); }, ok ? 5000 : 10000);
+    toast._timer = setTimeout(function() { removeToast(toast); }, ok && !action ? 5000 : 10000);
     // Cap at 5 visible toasts — anything older gets dropped so the stack
-    // doesn't grow unbounded during a rapid background-task burst.
-    while (stack.children.length > 5) {
-      var oldest = stack.firstElementChild;
-      if (oldest && oldest._timer) clearTimeout(oldest._timer);
-      if (oldest) removeToast(oldest);
+    // doesn't grow unbounded during a rapid background-task burst. Count only
+    // toasts that aren't already animating out, and drop the excess
+    // SYNCHRONOUSLY: removeToast() only detaches after 220ms, so the old
+    // `while (children.length > 5) removeToast(oldest)` never shrank the stack
+    // and a sixth toast hung the tab in an infinite loop (F89).
+    var live = [];
+    for (var i = 0; i < stack.children.length; i++) {
+      if (!stack.children[i].classList.contains('toast-leaving')) live.push(stack.children[i]);
+    }
+    for (var j = 0; j < live.length - 5; j++) {
+      if (live[j]._timer) clearTimeout(live[j]._timer);
+      if (live[j].parentNode) live[j].parentNode.removeChild(live[j]);
     }
   }
 
@@ -159,9 +226,15 @@
 
   // --- Formatters ---
   // Thousands separators so large amounts read clearly and don't visually
-  // overflow narrow mobile stat cards ($22,199.52 vs $22199.52). Negatives keep
-  // the prior "$-12.34" shape (toLocaleString renders the minus before digits).
-  function fmt(n) { return '$' + parseFloat(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  // overflow narrow mobile stat cards ($22,199.52 vs $22199.52). A negative is
+  // "-$12.34" (design pass D1 — it used to read "$-12.34"); a value that rounds
+  // to zero is "$0.00", never "-$0.00".
+  function fmt(n) {
+    var x = parseFloat(n || 0);
+    var rounded = Math.round(x * 100) / 100;
+    var s = '$' + Math.abs(rounded).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return rounded < 0 ? '-' + s : s;
+  }
   // Calendar dates (DATE columns) arrive as 'YYYY-MM-DD' or as node-pg's UTC
   // midnight 'YYYY-MM-DDT00:00:00.000Z'. Parsing either with `new Date()` and
   // formatting in the browser's zone showed every date ONE DAY EARLY west of
@@ -185,6 +258,15 @@
     var d = new Date();
     if (offsetDays) d.setDate(d.getDate() + offsetDays);
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  // Roadmap T3.3 K4: the tax year to open on — LAST year from January to April
+  // (filing season), else this year — and whether it is filing season (the
+  // dashboard's Tax page link shows only then). One rule for both.
+  function taxSeason(today) {
+    var t = String(today || localTodayStr());
+    var y = parseInt(t.slice(0, 4), 10), m = parseInt(t.slice(5, 7), 10);
+    var season = m >= 1 && m <= 4;
+    return { year: season ? y - 1 : y, season: season };
   }
   function localDateStr(d) {
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -266,6 +348,37 @@
     showMsg((what || 'Save failed') + ': ' + detail, false);
     return false;
   }
+  // Undelete (roadmap T2.5 U2): POST /api/deleted-transactions/:id/restore,
+  // shared by Settings → Deleted transactions and the Activity page's Undo.
+  // The outcome is toasted (writeOk on a refusal); resolves to the reply on
+  // success, else null.
+  var RESTORE_RETURNS_ON = {
+    reconcile: 'It comes back with the next sync of its bank — Settings → Sync Health → Reconcile Now fetches it right away.',
+    csv_reimport: 'Import its CSV file again to bring it back.',
+  };
+  function restoreMessage(r) {
+    r = r || {};
+    if (r.restored) {
+      if (r.already_present) return 'That transaction is already in your list.';
+      return 'Transaction restored' + (r.splits ? ' with its ' + r.splits + ' split' + (r.splits === 1 ? '' : 's') + '.' : '.');
+    }
+    return 'Undeleted. ' + (RESTORE_RETURNS_ON[r.returns_on] || 'It comes back the next time its source is read.');
+  }
+  async function restoreTransaction(id) {
+    var res;
+    try {
+      res = await apiFetch('/api/deleted-transactions/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
+    } catch (e) {
+      showMsg("Couldn't restore the transaction — check your connection.", false);
+      return null;
+    }
+    if (!(await writeOk(res, 'Restore'))) return null;
+    var r = {};
+    try { r = await res.json(); } catch (e) { /* a 2xx without a body still restored */ }
+    showMsg(restoreMessage(r), true);
+    return r;
+  }
+
   // Parse a money/number entered in a prompt() ("$1,234.50" → 1234.5). NaN
   // when it isn't a number — callers stop instead of sending null (WD-12).
   function parseAmountInput(raw) {
@@ -351,13 +464,58 @@
   }
 
   // Export to window
+  // --- Dashboard widget toggles (F96) ---
+  // ONE list of dashboard widget keys: Settings renders a toggle per entry and
+  // the dashboard hides each entry's element when its key is false. The two
+  // used to keep separate lists — five Settings toggles hid nothing and the
+  // documented whatsNew / investmentReturns / settlement keys had no toggle.
+  // In page order (design D4, decision 6), so Settings lists the toggles as
+  // they appear on the dashboard — tests/design-d4.test.js pins it.
+  var DASHBOARD_WIDGETS = [
+    { key: 'whatsNew', label: 'Since You Last Looked', selector: '#whats-new-widget' },
+    { key: 'reviewQueue', label: 'Review Uncategorized', selector: '#review-queue-section' },
+    { key: 'charts', label: 'Charts', selector: '.charts-grid' },
+    { key: 'accounts', label: 'Account Balances', selector: '#accounts-section' },
+    { key: 'cashFlow', label: 'Cash Flow', selector: '#cashflow-section' },
+    { key: 'calendar', label: 'Upcoming Bills', selector: '#calendar-widget' },
+    { key: 'forecast', label: '30-Day Forecast', selector: '#forecast-section' },
+    { key: 'monthlySpend', label: 'Monthly Spending', selector: '[data-collapse-key="monthlySpend"]' },
+    { key: 'categories', label: 'Categories', selector: '[data-collapse-key="categories"]' },
+    { key: 'merchants', label: 'Top Merchants', selector: '[data-collapse-key="merchants"]' },
+    { key: 'upcoming', label: 'Upcoming Charges', selector: '[data-collapse-key="upcoming"]' },
+    { key: 'settlement', label: 'Settle Up', selector: '#settlement-section' },
+    { key: 'housing', label: 'Rent & Utilities', selector: '#housing-widget-section' },
+    { key: 'investments', label: 'Investments', selector: '#investments-section' },
+    { key: 'investmentReturns', label: 'Investment Returns', selector: '#investments-performance' },
+    { key: 'savingsRate', label: 'Savings Rate', selector: '#savings-rate-section' },
+    { key: 'yoy', label: 'Year-over-Year', selector: '#yoy-section' },
+    { key: 'pyramid', label: 'Financial Pyramid', selector: '.wellness-section' },
+    { key: 'ask', label: 'Ask Perfin (AI Q&A)', selector: '#ask-section' },
+    { key: 'aiMemory', label: 'AI Memory', selector: '#ai-memory-section' },
+  ];
+  // Hide the switched-off widgets with a class (.widget-off is display:none
+  // !important), so a loader that later shows its section can't bring it back.
+  function applyDashboardWidgets(widgets) {
+    var w = widgets || {};
+    DASHBOARD_WIDGETS.forEach(function(d) {
+      document.querySelectorAll(d.selector).forEach(function(el) {
+        el.classList.toggle('widget-off', w[d.key] === false);
+      });
+    });
+  }
+
+  win.DASHBOARD_WIDGETS = DASHBOARD_WIDGETS;
+  win.applyDashboardWidgets = applyDashboardWidgets;
   win.openDialog = openDialog;
   win.watchDialog = watchDialog;
   win.writeOk = writeOk;
   win.parseAmountInput = parseAmountInput;
+  win.restoreTransaction = restoreTransaction;
+  win.restoreMessage = restoreMessage;
   win.esc = esc;
   win.apiFetch = apiFetch;
   win.withBase = withBase;
+  win.emptyState = emptyState;
   win.showMsg = showMsg;
   win.btnLoading = btnLoading;
   win.fmt = fmt;
@@ -365,6 +523,7 @@
   win.parseCalDate = parseCalDate;
   win.localTodayStr = localTodayStr;
   win.localDateStr = localDateStr;
+  win.taxSeason = taxSeason;
   win.fmtMonth = fmtMonth;
   win.asyncAction = asyncAction;
   win.registerSW = registerSW;

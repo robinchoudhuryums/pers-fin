@@ -30,7 +30,17 @@ const path = require("path");
 const auth = require("./middleware/auth");
 const webauthn = require("./middleware/webauthn");
 const errorHandler = require("./middleware/error-handler");
+const { landingStatus } = require("./landing-status");
 const { startKeepAlive } = require("../teller/services/keep-alive");
+const errorLog = require("../teller/services/error-log");
+const uptime = require("../teller/services/uptime");
+const jobHealth = require("../teller/services/job-health");
+
+// In-app error log (roadmap T1.4): every console.error from here on — both
+// sub-apps, the shell, unhandled rejections — is also recorded, grouped and
+// shown in Perfin → Settings → Sync Health. Installed before the sub-apps load
+// so their boot errors count; written to the database once migrations ran.
+errorLog.install();
 
 const app = express();
 app.set("trust proxy", 1);
@@ -164,6 +174,12 @@ app.get("/android-chrome-512x512.png", sendShellIcon("android-chrome-512x512.png
 // Mounted before requireAuth.
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+// Database-backed probe for an uptime monitor (roadmap T1.4): SELECT 1 on both
+// databases (3s each), cached 60s, 200 / 503 with yes/no fields only. Public
+// like /health. On Render + Neon monitor /health instead — probing the database
+// every few minutes keeps Neon awake (teller/services/uptime.js).
+app.get("/health/deep", uptime.deepHealthHandler({ perfinPool: perfin.pool, persistentPool: persistent.pool }));
+
 // Bill-calendar iCalendar feed — public route with its own dedicated token,
 // because calendar apps (iOS Calendar, Google Calendar) fetch subscription
 // URLs with no headers and no cookies. This is the ONE sanctioned
@@ -173,10 +189,9 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/calendar.ics", async (req, res) => {
   const expected = process.env.CALENDAR_FEED_TOKEN || "";
   if (!expected) return res.status(404).end();
-  const provided = String(req.query.token || "");
-  const a = Buffer.from(provided.padEnd(expected.length, " ").slice(0, expected.length));
-  const b = Buffer.from(expected);
-  if (provided.length !== expected.length || !crypto.timingSafeEqual(a, b)) {
+  // Digest compare — a padded raw-buffer compare threw on a multibyte token of
+  // the right character length and crashed the process before login (F1).
+  if (!auth.safeEqual(String(req.query.token || ""), expected)) {
     return res.status(401).end();
   }
   try {
@@ -222,15 +237,9 @@ webauthn.attach(app, perfin.pool);
 // Perfin's notification channel (push + the in-app bell log).
 auth.init({
   pool: perfin.pool,
-  onLockout: async ({ failures, lockedUntil }) => {
-    const { sendToAll } = require("../teller/routes/notifications");
-    await sendToAll({
-      title: "PIN login locked",
-      body: `${failures} failed PIN attempts within an hour. PIN login is locked until ${lockedUntil.toISOString().slice(11, 16)} UTC. If this wasn't you, rotate SHELL_PIN.`,
-      tag: "pin-lockout",
-      data: { url: "/" },
-    });
-  },
+  // Deduped (F7): a sustained guesser re-trips the lockout every 30 minutes,
+  // which used to push ~48 alerts a day.
+  onLockout: auth.makeLockoutNotifier(() => require("../teller/routes/notifications")),
 });
 // Expose the cache invalidator on Perfin's app so /api/settings can drop
 // the 60s read-cache on the idle-timeout column the moment the user
@@ -246,7 +255,16 @@ app.use(apiKeyLimiter);
 app.use(auth.requireAuth);
 
 // --- Landing tile picker ----------------------------------------------------
-app.get("/", (_req, res) => res.render("landing"));
+// Each tile carries one status line (design D7) read in-process from the wired
+// pools — landingStatus never throws, and a slow or failed line is left out.
+app.get("/", async (_req, res, next) => {
+  try {
+    const status = await landingStatus({ perfinPool: perfin.pool, persistentPool: persistent.pool });
+    res.render("landing", { status });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // --- Sub-app mounts ---------------------------------------------------------
 // We then call start({ standalone: false }) so migrations and cron jobs
@@ -316,6 +334,10 @@ async function start() {
   await perfin.start(perfin.app, { standalone: false });
   console.log("Starting Per-sistant (embedded)…");
   await persistent.start({ standalone: false });
+  // Both apps' migrations have run, so app_errors exists: start writing the
+  // error log, and the optional uptime heartbeat (HEARTBEAT_URL).
+  errorLog.start({ pool: perfin.pool });
+  uptime.startHeartbeat({ failingJobs: jobHealth.failingJobs });
 
   const PORT = parseInt(process.env.SHELL_PORT || process.env.PORT || "3000", 10);
   const server = app.listen(PORT, "0.0.0.0", () => {
@@ -324,16 +346,24 @@ async function start() {
     // own the listener, so their startup.js skips startKeepAlive — without this
     // the keep_alive_enabled setting was wired to nothing and scheduled jobs
     // never fired on Render free tier between user sessions. Keep-alive reads
-    // its enable flag and active-hours from Perfin's user_settings each tick,
-    // so settings changes still take effect immediately.
+    // its enable flag and active-hours from Perfin's user_settings through
+    // getKeepAliveConfigCached (6h cache, PSC-2); PATCH /api/settings
+    // invalidates it on a keep_alive_* change, so edits still apply at once.
     startKeepAlive(PORT);
   });
 
-  // Graceful shutdown — close the listener, then drain both DB pools.
+  // Graceful shutdown — stop both apps' scheduled jobs (cycle-7 F16: they kept
+  // firing against pools being drained), close the listener, then drain both
+  // DB pools.
   function shutdown(signal) {
     console.log(`\n${signal} received — shutting down gracefully…`);
+    try { perfin.stopBackgroundJobs(); } catch (err) { console.error("Perfin job stop error:", err.message); }
+    try { persistent.stopJobs(); } catch (err) { console.error("Per-sistant cron stop error:", err.message); }
+    uptime.stopHeartbeat();
+    errorLog.stop();
     server.close(async () => {
       try {
+        await errorLog.flush({ notify: false, drain: true }); // keep the last minute's errors, after any flush in flight
         await perfin.pool.end().catch(() => null);
         await persistent.pool.end().catch(() => null);
         console.log("Database pools closed.");
@@ -347,6 +377,14 @@ async function start() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
+
+// Express 4 does not catch a rejected promise from an async handler, and
+// Node 22 exits on an unhandled rejection — so one throwing request handler
+// took the whole process down (and with it the in-memory PIN lockout and rate
+// limiters, F1). Log instead; boot failures still exit via start().catch.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason && reason.stack ? reason.stack : reason);
+});
 
 start().catch(err => {
   console.error("Shell startup failed:", err);

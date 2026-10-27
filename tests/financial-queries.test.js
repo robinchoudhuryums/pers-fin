@@ -153,9 +153,11 @@ describe("INCOME_PREDICATE — expanded keywords", () => {
   });
 });
 
-// Extract NOT_TRANSFER pattern for testing
-const transferMatch = NOT_TRANSFER.match(/!~\*\s*'([^']+)'/);
-const TRANSFER_PATTERN = transferMatch ? transferMatch[1] : "";
+// Extract NOT_TRANSFER's exclusion patterns for testing — the payment/transfer
+// phrase list (merchant + raw description) and the brand list (cleaned
+// merchant only, F32); a merchant string matching either is excluded.
+const TRANSFER_PATTERN = [...NOT_TRANSFER.matchAll(/!~\*\s*'([^']+)'/g)]
+  .map((m) => "(?:" + m[1] + ")").join("|");
 
 describe("NOT_TRANSFER — credit card payment exclusion", () => {
   it("excludes 'Chase' standalone (not just 'Chase Bank')", () => {
@@ -283,7 +285,7 @@ describe("getMonthlyIncomeAndSpending", () => {
     const mockPool = {
       query: async (sql) => {
         callCount++;
-        if (sql.includes("amount < 0")) {
+        if (sql.includes("total_income")) {
           // Income query
           return { rows: [
             { month: "2026-01", total_income: "5000" },
@@ -311,7 +313,7 @@ describe("getMonthlyIncomeAndSpending", () => {
 });
 
 describe("getCategorySpendingThisMonth", () => {
-  it("uses parent_no_splits and from_splits CTEs", async () => {
+  it("reads the shared spend_lines (charges, split lines, refund lines) floored per category", async () => {
     let capturedSql = "";
     const mockPool = {
       query: async (sql) => {
@@ -323,8 +325,9 @@ describe("getCategorySpendingThisMonth", () => {
       },
     };
     const result = await getCategorySpendingThisMonth(mockPool);
-    assert.ok(capturedSql.includes("parent_no_splits"), "should have parent_no_splits CTE");
-    assert.ok(capturedSql.includes("from_splits"), "should have from_splits CTE");
+    assert.ok(capturedSql.includes("spend_lines AS ("), "should build spend_lines");
+    assert.ok(capturedSql.includes("net_category_months"), "should floor per (month, category) — F35");
+    assert.ok(capturedSql.includes("prior ON true"), "refund lines inherit the merchant's prior category — F35");
     assert.ok(capturedSql.includes("transaction_splits"), "should join transaction_splits");
     assert.ok(capturedSql.includes("spending_split_pct"), "should apply spending split");
     assert.ok(capturedSql.includes("is_reimbursed"), "should exclude reimbursed");

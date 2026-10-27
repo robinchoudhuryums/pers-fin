@@ -16,6 +16,9 @@ const router = express.Router();
 const multer = require("multer");
 const { pool } = require("../services/database");
 const { currentMonth, todayStr } = require("../services/financial-queries");
+// Linked tasks (roadmap T2.4 X2b): a write that can resolve or reopen a task
+// kicks a fire-and-forget refresh — never failing or delaying the response.
+const linkedTasks = require("../services/linked-tasks");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -90,6 +93,50 @@ function addMonths(ym, n) {
   const [y, m] = ym.split("-").map(Number);
   const t = y * 12 + (m - 1) + n;
   return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+}
+
+// F43: next month's rent when TODAY is inside its reminder lead window — the
+// window for a due day near the start of a month begins in the previous month
+// (lead 5, due the 2nd → from the 28th), but next month's rent row isn't
+// generated until that month starts, so the payment-due reminder never saw it.
+// Pure: `today` is 'YYYY-MM-DD'; returns { period, due_date, days_until } or null.
+function nextRentInLeadWindow(cfg, today) {
+  const lead = Number.isFinite(cfg.reminder_lead_days) ? cfg.reminder_lead_days : 0;
+  const due = parseInt(cfg.rent_due_day, 10);
+  if (!(due >= 1 && due <= 31) || !(lead > 0)) return null;
+  const period = addMonths(today.slice(0, 7), 1);
+  const dueDate = periodDueDate(period, due);
+  const until = daysBetween(today, dueDate);
+  return until >= 0 && until <= lead ? { period, due_date: dueDate, days_until: until } : null;
+}
+
+// A period's due date: 'YYYY-MM' + a day of month clamped to that month's
+// real length (rent due the 31st is due Feb 28). Pure.
+function periodDueDate(period, dueDay) {
+  const [y, m] = period.split("-").map(Number);
+  const day = Math.min(Math.max(1, parseInt(dueDay, 10) || 1), new Date(Date.UTC(y, m, 0)).getUTCDate());
+  return `${period}-${String(day).padStart(2, "0")}`;
+}
+
+// Whole days from 'YYYY-MM-DD' a to b (negative when b is earlier). Pure.
+function daysBetween(a, b) {
+  return Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
+}
+
+// The payment-due window for a period's rent (shared by the payment-due
+// reminder and the linked tasks, roadmap T2.4): open from reminder_lead_days
+// before the period's due date onward, overdue included. Pure.
+function rentReminderOpen(period, cfg, today) {
+  const lead = Number.isFinite(cfg.reminder_lead_days) ? cfg.reminder_lead_days : 0;
+  return daysBetween(today, periodDueDate(period, cfg.rent_due_day)) <= lead;
+}
+
+// A utility placeholder whose bill should have arrived — its period is past,
+// or this month's day has reached its due day. Shared by the missing-amount
+// reminder and the linked tasks (roadmap T2.4). Pure.
+function utilityAmountDue(o, today) {
+  if (monthsBetween(o.period, today.slice(0, 7)) > 0) return true;
+  return parseInt(today.slice(8, 10), 10) >= (parseInt(o.due_day, 10) || 1);
 }
 
 // The months generation should cover (FAN-3): the TRAILING `cap` months ending
@@ -262,7 +309,8 @@ async function generateHousingObligations(pool_) {
   const months = generationMonths(cfg.start_month, thisMonth());
   let generated = 0;
   // A period that already has a rent row (under ANY payee name) — or a utility
-  // row with the same label — is not regenerated (FAN-4). The ON CONFLICT key
+  // row with the same label — is not regenerated (FAN-4), nor is one the user
+  // removed (payee_obligation_skips, F33). The ON CONFLICT key
   // includes the payee, so a payee rename that couldn't be propagated used to
   // regenerate rent for every month since start_month as unpaid.
   for (const period of months) {
@@ -271,6 +319,7 @@ async function generateHousingObligations(pool_) {
         `INSERT INTO payee_obligations (payee, category, label, period, amount, due_day, status, auto_generated)
          SELECT $1, 'rent', 'Rent', $2, $3, $4, 'unpaid', true
          WHERE NOT EXISTS (SELECT 1 FROM payee_obligations WHERE period = $2 AND category = 'rent')
+           AND NOT EXISTS (SELECT 1 FROM payee_obligation_skips WHERE period = $2 AND category = 'rent')
          ON CONFLICT (payee, period, category, label) DO NOTHING`,
         [cfg.payee_name, period, cfg.rent_amount, cfg.rent_due_day]
       );
@@ -283,6 +332,7 @@ async function generateHousingObligations(pool_) {
         `INSERT INTO payee_obligations (payee, category, label, period, amount, due_day, status, auto_generated)
          SELECT $1, 'utility', $2, $3, NULL, $4, 'pending_amount', true
          WHERE NOT EXISTS (SELECT 1 FROM payee_obligations WHERE period = $3 AND category = 'utility' AND label = $2)
+           AND NOT EXISTS (SELECT 1 FROM payee_obligation_skips WHERE period = $3 AND category = 'utility' AND label = $2)
          ON CONFLICT (payee, period, category, label) DO NOTHING`,
         [cfg.payee_name, u.label, period, u.due_day]
       );
@@ -297,7 +347,7 @@ async function generateHousingObligations(pool_) {
 // (2) missing utility amount (a pending_amount whose bill should have arrived).
 // Deduped via sentRecently so each reminder repeats at most every ~3 days.
 // ---------------------------------------------------------------------------
-async function runHousingReminders(pool_) {
+async function runHousingReminders(pool_, today = todayStr()) {
   const db = pool_ || pool;
   const cfg = await getConfig(db);
   if (!cfg.enabled || !cfg.payee_name) return { sent: 0 };
@@ -305,9 +355,6 @@ async function runHousingReminders(pool_) {
   let sendToAll, sentRecently;
   try { ({ sendToAll, sentRecently } = require("./notifications")); }
   catch { return { sent: 0 }; }
-
-  // Day-of-month in APP_TIMEZONE (FAN-13), matching thisMonth().
-  const dom = parseInt(todayStr().slice(8, 10), 10);
 
   // (1) Payment due — unpaid balance owed, and we're within the lead window of
   // the rent due day (or past it). One reminder per ~3 days while it stands.
@@ -318,12 +365,29 @@ async function runHousingReminders(pool_) {
     );
     const balance = parseFloat(bal.rows[0].balance);
     const count = parseInt(bal.rows[0].n);
-    if (balance > 0 && dom >= cfg.rent_due_day - cfg.reminder_lead_days) {
-      const tag = "housing-due-" + thisMonth();
+    // Next month's rent, when its lead window has already opened and its row
+    // doesn't exist yet (not generated, not removed by the user — F43).
+    let upcoming = 0;
+    const next = cfg.rent_amount > 0 ? nextRentInLeadWindow(cfg, today) : null;
+    if (next) {
+      const ex = await db.query(
+        `SELECT (EXISTS (SELECT 1 FROM payee_obligations WHERE period = $1 AND category = 'rent')
+              OR EXISTS (SELECT 1 FROM payee_obligation_skips WHERE period = $1 AND category = 'rent')) AS has`,
+        [next.period]
+      );
+      if (!(ex.rows[0] && ex.rows[0].has)) upcoming = cfg.rent_amount;
+    }
+    const dueNow = balance > 0 && rentReminderOpen(today.slice(0, 7), cfg, today);
+    if (dueNow || upcoming > 0) {
+      const tag = "housing-due-" + (upcoming > 0 ? next.period : today.slice(0, 7));
       if (!(await sentRecently(tag, 72))) {
+        const total = (dueNow ? balance : 0) + upcoming;
+        const items = (dueNow ? count : 0) + (upcoming > 0 ? 1 : 0);
         const r = await sendToAll({
           title: "Rent/utilities due to " + cfg.payee_name,
-          body: "$" + balance.toFixed(2) + " owed across " + count + " item(s). Send the transfer.",
+          body: "$" + total.toFixed(2) + " owed across " + items + " item(s)" +
+            (upcoming > 0 ? " — " + periodLabel(next.period) + " rent is due " + next.due_date : "") +
+            ". Send the transfer.",
           tag,
           data: { url: "/housing" },
         });
@@ -342,10 +406,8 @@ async function runHousingReminders(pool_) {
        ORDER BY period`,
       [cfg.payee_name]
     );
-    const tm = thisMonth();
     for (const o of pend.rows) {
-      const past = monthsBetween(o.period, tm) > 0;
-      if (!past && dom < o.due_day) continue; // bill not due yet this month
+      if (!utilityAmountDue(o, today)) continue; // bill not due yet this month
       const tag = "housing-util-" + o.id;
       if (await sentRecently(tag, 72)) continue;
       const r = await sendToAll({
@@ -416,6 +478,14 @@ router.patch("/api/housing/config", async (req, res) => {
                            WHERE x.payee = $1 AND x.period = o.period AND x.category = 'utility' AND x.label = $3)`,
         [merged.payee_name, r.from, r.to]
       );
+      // A removed month of the old label stays removed under the new one (F33).
+      await client.query(
+        `UPDATE payee_obligation_skips s SET label = $2
+         WHERE s.category = 'utility' AND s.label = $1
+           AND NOT EXISTS (SELECT 1 FROM payee_obligation_skips x
+                           WHERE x.period = s.period AND x.category = 'utility' AND x.label = $2)`,
+        [r.from, r.to]
+      );
     }
     await client.query("UPDATE user_settings SET housing_config = $1, updated_at = now() WHERE id = 1", [JSON.stringify(merged)]);
     await client.query("COMMIT");
@@ -428,6 +498,33 @@ router.patch("/api/housing/config", async (req, res) => {
 });
 
 // GET /api/housing/ledger — balance, obligations, payments.
+// The balance owed and the awaiting-bill count of a set of obligations (design
+// D3 — one definition for the ledger and the dashboard summary's rent item):
+// balance = the sum of `unpaid` amounts (rounded to cents), awaiting = the
+// `pending_amount` rows, unpaid_count = the unpaid rows.
+function ledgerTotals(rows) {
+  let balance = 0, awaiting = 0, unpaid = 0;
+  for (const o of rows) {
+    if (o.status === "unpaid") { balance += parseFloat(o.amount || 0); unpaid++; }
+    else if (o.status === "pending_amount") awaiting++;
+  }
+  return { balance: Math.round(balance * 100) / 100, awaiting_count: awaiting, unpaid_count: unpaid };
+}
+
+// What's owed to the configured payee (design D3, the dashboard summary): the
+// ledger's own totals over the same payee-scoped rows (FAN-4). { configured:
+// false } while the ledger isn't set up (disabled or no payee) — the dashboard
+// widget hides then too.
+async function getHousingOwed(db = pool) {
+  const cfg = await getConfig(db);
+  if (!cfg.enabled || !cfg.payee_name) return { configured: false };
+  const r = await db.query(
+    "SELECT status, amount FROM payee_obligations WHERE payee = $1 AND status IN ('unpaid', 'pending_amount')",
+    [cfg.payee_name]
+  );
+  return { configured: true, payee: cfg.payee_name, ...ledgerTotals(r.rows) };
+}
+
 router.get("/api/housing/ledger", async (_req, res) => {
   try {
     const cfg = await getConfig();
@@ -454,15 +551,11 @@ router.get("/api/housing/ledger", async (_req, res) => {
         [payee]
       ),
     ]);
-    let balance = 0, awaiting = 0;
-    for (const o of obl.rows) {
-      if (o.status === "unpaid") balance += parseFloat(o.amount || 0);
-      else if (o.status === "pending_amount") awaiting++;
-    }
+    const totals = ledgerTotals(obl.rows);
     res.json({
       config: cfg,
-      balance: Math.round(balance * 100) / 100,
-      awaiting_count: awaiting,
+      balance: totals.balance,
+      awaiting_count: totals.awaiting_count,
       obligations: obl.rows,
       payments: pay.rows,
     });
@@ -471,9 +564,54 @@ router.get("/api/housing/ledger", async (_req, res) => {
 
 // POST /api/housing/generate — generate current/missing months from config.
 router.post("/api/housing/generate", async (_req, res) => {
-  try { res.json(await generateHousingObligations()); }
+  try { const out = await generateHousingObligations(); linkedTasks.kick("housing-generate"); res.json(out); }
   catch (err) { console.error("housing generate error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
 });
+
+// A year's payments to the payee, each with the obligations it settled
+// (roadmap T3.3 K3 — moved out of GET /api/housing/export so the landlord export
+// and the year-end tax package share one definition):
+//   { year, payee, total (the raw sum), payments: [{ id, payee, paid_date, amount,
+//     memo, covers: [{ label, period }] }] }
+// payee = the configured payee name, else the first payment's, else "Payee" (a
+// config read failing falls back the same way, as the export always did).
+async function getHousingPayments(year, db = pool) {
+  const cfg = await getConfig(db).catch(() => ({ payee_name: "" }));
+  const pays = await db.query(
+    `SELECT pp.id, pp.payee, pp.paid_date::text AS paid_date, pp.amount, pp.memo,
+            COALESCE(json_agg(json_build_object('label', o.label, 'period', o.period)
+                     ORDER BY o.period) FILTER (WHERE o.id IS NOT NULL), '[]') AS covers
+     FROM payee_payments pp
+     LEFT JOIN payee_obligations o ON o.paid_payment_id = pp.id
+     WHERE EXTRACT(YEAR FROM pp.paid_date) = $1
+     GROUP BY pp.id
+     ORDER BY pp.paid_date`,
+    [year]
+  );
+  const rows = pays.rows;
+  return {
+    year,
+    payee: cfg.payee_name || (rows[0] && rows[0].payee) || "Payee",
+    total: rows.reduce((s, p) => s + parseFloat(p.amount || 0), 0),
+    payments: rows,
+  };
+}
+
+function housingCoversText(p) {
+  return (p.covers || []).map((c) => periodLabel(c.period) + " " + c.label).join("; ");
+}
+
+// The landlord export's CSV (also the tax package's rent_paid.csv).
+// SXE-13: formula-guarded text fields; ISO date whatever the driver returns.
+function housingPaymentsCsv({ year, total, payments }) {
+  const { csvText: q, csvDate } = require("../services/csv-export");
+  let csv = "Date,Amount,Memo,Covers,Payee\n";
+  for (const p of payments) {
+    csv += [csvDate(p.paid_date), parseFloat(p.amount).toFixed(2), q(p.memo || ""), q(housingCoversText(p)), q(p.payee)].join(",") + "\n";
+  }
+  csv += `,${total.toFixed(2)},${q("Total " + year)},,\n`;
+  return csv;
+}
 
 // GET /api/housing/export?year=YYYY&format=csv|pdf|json — a landlord-ready record
 // of payments to the payee for a year, with memos + covered months. Mirrors the
@@ -482,22 +620,11 @@ router.get("/api/housing/export", async (req, res) => {
   const year = parseInt(req.query.year, 10) || parseInt(todayStr().slice(0, 4), 10);
   const format = String(req.query.format || "csv").toLowerCase();
   try {
-    const cfg = await getConfig().catch(() => ({ payee_name: "" }));
-    const pays = await pool.query(
-      `SELECT pp.id, pp.payee, pp.paid_date::text AS paid_date, pp.amount, pp.memo,
-              COALESCE(json_agg(json_build_object('label', o.label, 'period', o.period)
-                       ORDER BY o.period) FILTER (WHERE o.id IS NOT NULL), '[]') AS covers
-       FROM payee_payments pp
-       LEFT JOIN payee_obligations o ON o.paid_payment_id = pp.id
-       WHERE EXTRACT(YEAR FROM pp.paid_date) = $1
-       GROUP BY pp.id
-       ORDER BY pp.paid_date`,
-      [year]
-    );
-    const rows = pays.rows;
-    const total = rows.reduce((s, p) => s + parseFloat(p.amount || 0), 0);
-    const payeeName = cfg.payee_name || (rows[0] && rows[0].payee) || "Payee";
-    const coversText = (p) => (p.covers || []).map((c) => periodLabel(c.period) + " " + c.label).join("; ");
+    const data = await getHousingPayments(year);
+    const rows = data.payments;
+    const total = data.total;
+    const payeeName = data.payee;
+    const coversText = housingCoversText;
 
     if (format === "json") {
       return res.json({ year, payee: payeeName, total: Math.round(total * 100) / 100, payments: rows });
@@ -532,13 +659,7 @@ router.get("/api/housing/export", async (req, res) => {
       }
     }
     // CSV (default)
-    // SXE-13: formula-guarded text fields; ISO date whatever the driver returns.
-    const { csvText: q, csvDate } = require("../services/csv-export");
-    let csv = "Date,Amount,Memo,Covers,Payee\n";
-    for (const p of rows) {
-      csv += [csvDate(p.paid_date), parseFloat(p.amount).toFixed(2), q(p.memo || ""), q(coversText(p)), q(p.payee)].join(",") + "\n";
-    }
-    csv += `,${total.toFixed(2)},${q("Total " + year)},,\n`;
+    const csv = housingPaymentsCsv(data);
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename=rent_utilities_${year}.csv`);
     res.send(csv);
@@ -741,6 +862,10 @@ router.post("/api/housing/obligations", async (req, res) => {
   const cfg = await getConfig().catch(() => ({ payee_name: "" }));
   const pay = (payee && String(payee).trim()) || cfg.payee_name || "Payee";
   try {
+    // Adding an obligation by hand undoes an earlier removal of the same item
+    // (F33) — generation may manage it again.
+    await pool.query("DELETE FROM payee_obligation_skips WHERE period = $1 AND category = $2 AND label = $3",
+      [period, cat, String(label).trim()]);
     const r = await pool.query(
       `INSERT INTO payee_obligations (payee, category, label, period, amount, due_day, status, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -750,6 +875,7 @@ router.post("/api/housing/obligations", async (req, res) => {
        RETURNING *`,
       [pay, cat, String(label).trim(), period, amt, clampDay(due_day, 1), status, notes || null]
     );
+    linkedTasks.kick("housing-obligation-add");
     res.json(r.rows[0]);
   } catch (err) { console.error("housing obligation create error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
 });
@@ -786,17 +912,45 @@ router.patch("/api/housing/obligations/:id", async (req, res) => {
   try {
     const r = await pool.query(`UPDATE payee_obligations SET ${fields.join(", ")} WHERE id = $${i} RETURNING *`, params);
     if (!r.rows.length) return res.status(404).json({ error: "Not found" });
+    linkedTasks.kick("housing-obligation-edit");
     res.json(r.rows[0]);
   } catch (err) { console.error("housing obligation patch error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
 });
 
-// DELETE /api/housing/obligations/:id
+// DELETE /api/housing/obligations/:id — remove an obligation. An
+// auto-generated one is remembered in payee_obligation_skips so the next
+// generation run doesn't recreate it (F33: "delete the placeholder for a bill
+// that won't come" used to last until the next 6-hourly run).
 router.delete("/api/housing/obligations/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid id" });
+  const client = await pool.connect();
   try {
-    const r = await pool.query("DELETE FROM payee_obligations WHERE id = $1 RETURNING id", [req.params.id]);
-    if (!r.rows.length) return res.status(404).json({ error: "Not found" });
-    res.json({ ok: true });
-  } catch (err) { console.error("housing obligation delete error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
+    await client.query("BEGIN");
+    const r = await client.query(
+      "DELETE FROM payee_obligations WHERE id = $1 RETURNING period, category, label, auto_generated",
+      [id]
+    );
+    if (!r.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Not found" });
+    }
+    const o = r.rows[0];
+    if (o.auto_generated) {
+      await client.query(
+        `INSERT INTO payee_obligation_skips (period, category, label) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING`,
+        [o.period, o.category, o.label]
+      );
+    }
+    await client.query("COMMIT");
+    linkedTasks.kick("housing-obligation-delete");
+    res.json({ ok: true, skipped_from_generation: !!o.auto_generated });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("housing obligation delete error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  } finally { client.release(); }
 });
 
 // POST /api/housing/payments — settle a batch of unpaid obligations.
@@ -834,6 +988,7 @@ router.post("/api/housing/payments", async (req, res) => {
       [pp.rows[0].id, ids]
     );
     await client.query("COMMIT");
+    linkedTasks.kick("housing-payment");
     res.json({ payment: pp.rows[0], settled: ids.length });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -858,6 +1013,7 @@ router.delete("/api/housing/payments/:id", async (req, res) => {
     const d = await client.query("DELETE FROM payee_payments WHERE id = $1 RETURNING id", [req.params.id]);
     await client.query("COMMIT");
     if (!d.rows.length) return res.status(404).json({ error: "Not found" });
+    linkedTasks.kick("housing-payment-undo");
     res.json({ ok: true });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -874,10 +1030,19 @@ module.exports.runHousingReminders = runHousingReminders;
 module.exports.monthsBetween = monthsBetween;
 module.exports.monthRange = monthRange;
 module.exports.addMonths = addMonths;
+module.exports.nextRentInLeadWindow = nextRentInLeadWindow;
+module.exports.periodDueDate = periodDueDate;
+module.exports.rentReminderOpen = rentReminderOpen;
+module.exports.utilityAmountDue = utilityAmountDue;
+module.exports.getConfig = getConfig;
 module.exports.generationMonths = generationMonths;
 module.exports.planConfigUpdate = planConfigUpdate;
 module.exports.deriveMemo = deriveMemo;
+module.exports.getHousingPayments = getHousingPayments;
+module.exports.housingPaymentsCsv = housingPaymentsCsv;
 module.exports.normalizeConfig = normalizeConfig;
 module.exports.periodLabel = periodLabel;
 module.exports.computeSplit = computeSplit;
+module.exports.ledgerTotals = ledgerTotals;
+module.exports.getHousingOwed = getHousingOwed;
 module.exports.buildDoubleCountPattern = buildDoubleCountPattern;

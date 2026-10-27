@@ -1,10 +1,15 @@
 <%- include('partials/head', { title: 'Transactions', extraStyles: `
-    .container { max-width: 1060px; }
+    #main-content { max-width: 1060px; }
     .filters-toggle { display: none; }
+    /* Design D7: "+ Add cash transaction" and the phone Filters toggle sit in one
+       row, centred, at the same button height (--btn-h-touch on a phone). */
+    .txn-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .txn-actions .btn { margin: 0; }
     @media (max-width: 640px) {
       /* The Activity list IS the page on mobile — filters collapse behind a
          toggle so recent transactions are immediately at the top. */
-      .filters-toggle { display: inline-flex; margin-bottom: 12px; }
+      .filters-toggle { display: inline-flex; align-items: center; justify-content: center; }
+      .txn-actions .btn { min-height: var(--btn-h-touch); }
       .search-bar { display: none !important; }
       .search-bar.open { display: flex !important; }
     }
@@ -34,8 +39,6 @@
       border-bottom: 1px solid var(--border); }
     .txn-table td { padding: 8px; font-size: 13px; border-bottom: 1px solid var(--border); font-weight: 300; }
     .txn-table tr:hover { background: rgba(255,255,255,0.02); }
-    .txn-table .amount.debit { color: var(--warm); }
-    .txn-table .amount.credit { color: var(--green); }
     .txn-cat { font-size: 11px; color: var(--text-muted); }
     .pagination { display: flex; gap: 10px; align-items: center; justify-content: center;
                   margin-top: 16px; font-size: 13px; color: var(--text-muted); }
@@ -84,8 +87,10 @@
   <p class="subtitle">Search, filter, and categorize transactions</p>
   <div id="status-msg" class="status-msg"></div>
 
-  <button type="button" class="btn btn-sm" id="add-cash-btn" style="margin-bottom:8px;">+ Add cash transaction</button>
-  <button type="button" class="btn btn-sm filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="search-bar">Filters &#9662;</button>
+  <div class="txn-actions">
+    <button type="button" class="btn btn-sm" id="add-cash-btn">+ Add cash transaction</button>
+    <button type="button" class="btn btn-sm filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="search-bar">Filters &#9662;</button>
+  </div>
   <div class="search-bar" id="search-bar">
     <div class="field" style="flex:1;min-width:180px;">
       <label for="search-input">Search</label>

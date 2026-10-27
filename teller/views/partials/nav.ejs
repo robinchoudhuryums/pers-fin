@@ -17,12 +17,18 @@
       <a href="<%= __basePath %>/goals"<%= activePage === 'goals' ? ' class="active"' : '' %>>Goals</a>
       <a href="<%= __basePath %>/budgets"<%= activePage === 'budgets' ? ' class="active"' : '' %>>Budgets</a>
       <a href="<%= __basePath %>/housing"<%= activePage === 'housing' ? ' class="active"' : '' %>>Rent</a>
+      <%# Design D7 (decision 14): January to April only (taxSeason, shown by the script below), and only in the phone drawer — the desktop top nav has no Tax link. %>
+      <a href="<%= __basePath %>/tax" id="nav-tax-link" class="nav-tax-link<%= activePage === 'tax' ? ' active' : '' %>" hidden>Tax</a>
       <a href="<%= __basePath %>/accounts"<%= activePage === 'accounts' ? ' class="active"' : '' %>>Accounts</a>
       <a href="<%= __basePath %>/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
 <% if (__embedded) { %>
     <a href="/per-sistant" class="cross-app-link" id="cross-app-link" data-atrans="cosmic" title="Switch to Per-sistant" aria-label="Switch to Per-sistant" style="display:inline-flex;align-items:center;justify-content:center;padding:4px;border:1px solid var(--border);border-radius:6px;margin-right:8px;line-height:0;">
       <img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true" width="22" height="22" style="display:block;object-fit:contain;">
+    </a>
+    <%# Roadmap T2.4 X3b: one search across both apps lives in Per-sistant (under the shell only). %>
+    <a href="/per-sistant/search" class="nav-search-link" id="nav-search-link" title="Search Per-sistant and Perfin" aria-label="Search everything" style="display:inline-flex;align-items:center;justify-content:center;padding:4px 6px;border:1px solid var(--border);border-radius:6px;margin-right:8px;line-height:0;color:var(--text);">
+      <svg width="18" height="18" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.4"/><line x1="9" y1="9" x2="12.5" y2="12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </a>
 <% } %>
     <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
@@ -104,9 +110,29 @@
   </div>
   <main id="main-content">
   <script nonce="<%= nonce %>">
+    // F90: this script runs while the page is still parsing, but apiFetch /
+    // esc / openDialog come from perfin-shared.js, which foot.ejs loads at the
+    // end of the page body. Calling apiFetch here threw a ReferenceError (swallowed
+    // by the catch), so the sync badge and the unread count never loaded.
+    // Anything that needs the shared helpers at load goes through
+    // whenShared(): now if they're defined, else at DOMContentLoaded (which
+    // fires after every parser-blocking script, perfin-shared.js included).
+    function whenShared(fn) {
+      if (typeof window.apiFetch === 'function') return fn();
+      document.addEventListener('DOMContentLoaded', fn, { once: true });
+    }
+
+    // Design D7: the drawer's Tax link, January to April (taxSeason — the rule the
+    // dashboard's tax-season link and the Tax page's default year use).
+    whenShared(function() {
+      var link = document.getElementById('nav-tax-link');
+      var ts = link && window.taxSeason && window.localTodayStr ? window.taxSeason(window.localTodayStr()) : null;
+      if (ts && ts.season) link.hidden = false;
+    });
+
     // Populate the "Last synced Xm ago" badge from /api/settings.last_auto_sync_at.
     // Purely informational — no action; graceful no-op if the API call fails.
-    (async function() {
+    whenShared(async function() {
       var el = document.getElementById('nav-sync-badge');
       if (!el) return;
       function fmtAgo(iso) {
@@ -138,7 +164,7 @@
           else if (ageHrs > 6) el.style.color = 'var(--yellow, #f0c36d)';
         }
       } catch (_) {}
-    })();
+    });
 
     // Notification bell — load unread count and toggle panel
     (async function() {
@@ -297,7 +323,7 @@
         setTimeout(function() { location.reload(); }, 250);
       });
 
-      loadNotifs();
+      whenShared(loadNotifs);
     })();
 
     // Hamburger drawer toggle (mobile). Collapses the 7-link menu behind a

@@ -18,6 +18,10 @@
 const { google } = require("googleapis");
 const { Pool } = require("pg");
 const path = require("path");
+// The app's pure recurring-date rules (no DB, no route layer): manual bills and
+// month-scale transfers are placed exactly as the in-app calendar and the ICS
+// feed place them (cycle-7 F76).
+const { manualBillOccurrences, seriesOccurrences, addDaysStr } = require("../teller/services/cadence");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -40,6 +44,20 @@ function sheetsMonth(offset = 0) {
   const t = y * 12 + (m - 1) + offset;
   return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
 }
+// Average spend per COMPLETED month and per day of those months (real month
+// lengths), from [{ month: 'YYYY-MM', total }]. The month to date is left out
+// (cycle-7 F75). With no completed month yet both are "" (blank cell).
+function completedMonthAverages(monthTotals, thisMonth) {
+  const done = monthTotals.filter((r) => r.month !== thisMonth);
+  if (!done.length) return { avgMonthlySpend: "", avgDailySpend: "" };
+  const total = done.reduce((sum, r) => sum + parseFloat(r.total || 0), 0);
+  const days = done.reduce((sum, r) => {
+    const [y, m] = r.month.split("-").map(Number);
+    return sum + new Date(Date.UTC(y, m, 0)).getUTCDate();
+  }, 0);
+  return { avgMonthlySpend: total / done.length, avgDailySpend: total / days };
+}
+
 // A validated SQL date literal (digits + hyphens only — safe to interpolate
 // into the shared window fragments, which are spliced into many queries).
 function sqlDate(ymd) {
@@ -83,9 +101,15 @@ async function getSheetsClient() {
 // ---------------------------------------------------------------------------
 class SheetFormula { constructor(f) { this.f = f; } }
 function sheetFormula(f) { return new SheetFormula(f); }
+// A plain signed number / amount / percentage ("-12.5%", "-$45.00", "+3") is
+// data, not a formula: Sheets should parse it as a number (cycle-7 F83 — the
+// guard turned negative percentages and amounts into text, so they stopped
+// sorting, summing and taking number formats).
+const PLAIN_NUMBER_RE = /^[+-]?\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$/;
 function guardCell(v) {
   if (v instanceof SheetFormula) return v.f;
   if (typeof v !== "string") return v;
+  if (PLAIN_NUMBER_RE.test(v)) return v;
   if (/^[=+\-@\t\r]/.test(v) || /^\d{1,2}[-/]\d{1,2}$/.test(v.trim())) return "'" + v;
   return v;
 }
@@ -271,6 +295,9 @@ function fmtCurrency(val) {
 
 function fmtDate(d) {
   if (!d) return "";
+  // A calendar date string is already the answer — new Date('YYYY-MM-DD') is
+  // UTC midnight and would render the day before west of UTC.
+  if (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
   const date = (d instanceof Date) ? d : new Date(d);
   if (isNaN(date.getTime())) return String(d);
   // Use LOCAL calendar components, not toISOString() (UTC). node-postgres parses
@@ -674,6 +701,34 @@ async function syncSubscriptions(sheets, pool) {
 // ---------------------------------------------------------------------------
 // Build Dashboard
 // ---------------------------------------------------------------------------
+// Byte-mirror of financial-queries.js incomePredicate (FAN-2 / DD-2 / DD-3),
+// pinned by SX3 in tests/audit-regressions.test.js. Module-level so the
+// Income tab and the Dashboard's refund lines (F35) share it.
+function incomeText(a) {
+  return `CONCAT_WS(' ', ${a}.user_merchant_name, ${a}.merchant_name, ${a}.name)`;
+}
+function incomePredicate(a = "transactions") {
+  const txt = incomeText(a);
+  return `
+  (
+    (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
+      AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|reimbursement|reimburse|reimb|expense report|atm|withdrawal|bill pay)\\y')
+    OR (
+      ${txt} ~* 'funds transfer from brokerage'
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions __t2
+        WHERE __t2.account_id <> ${a}.account_id
+          AND __t2.amount = ABS(${a}.amount)
+          AND __t2.pending = false
+          AND __t2.date BETWEEN ${a}.date - INTERVAL '2 days' AND ${a}.date + INTERVAL '2 days'
+      )
+    )
+    OR LOWER(COALESCE(${a}.user_category, ${a}.category[1], '')) = 'income'
+    OR (${a}.user_category IS NULL AND ${a}.personal_finance_category->>'primary' = 'INCOME')
+  )
+`;
+}
+
 async function buildDashboard(sheets, pool) {
   console.log("Building dashboard...");
 
@@ -688,7 +743,14 @@ async function buildDashboard(sheets, pool) {
   // cat_lines CTE below; total aggregations stay parent-keyed by design.
   const NOT_TRANSFER = `(
     COALESCE(t.user_merchant_name, CONCAT_WS(' ', t.merchant_name, t.name)) !~*
-      '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'
+      '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|cash app|cashapp|square cash|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|direct dep|atm|withdrawal)\\y'
+    AND (
+      COALESCE(t.user_merchant_name, t.merchant_name, t.name) !~*
+        '\\y(interest|paypal|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|deposit)\\y'
+      OR COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~*
+        '\\y(citi ?bike|citi field|chase (center|field)|security deposit)\\y|\\ypaypal ?\\*'
+    )
+    AND LOWER(COALESCE(t.user_category, CASE WHEN t.personal_finance_category IS NULL THEN t.category[1] END, '')) NOT IN ('transfer', 'investment')
     AND NOT (
       COALESCE(t.personal_finance_category->>'primary', '') IN ('TRANSFER_IN', 'TRANSFER_OUT', 'LOAN_PAYMENTS')
       AND COALESCE(t.user_category, 'Transfer') = 'Transfer'
@@ -705,10 +767,10 @@ async function buildDashboard(sheets, pool) {
   // each split's (category, amount) REPLACES the parent row in per-category
   // aggregations (mirrors getCategorySpendingThisMonth / getCategorySpendingForMonth
   // in services/financial-queries.js); transactions without splits contribute the
-  // parent row. TOTAL aggregations (monthlySummary, totals) are intentionally NOT
-  // routed through this — splits sum to the parent, so totals are unchanged — and
-  // topMerchants stays parent-keyed (splits-replacement is per-CATEGORY, matching
-  // the app). `whereClause` is the date-window predicate on `t`.
+  // parent row. Since F35 every spending figure (monthly totals, merchants, the
+  // KPI totals) reads these lines too, because refund lines net per (month,
+  // category) and the floor must apply the same way everywhere; merchant is the
+  // parent's display merchant. `whereClause` is the date-window predicate on `t`.
   // SXE-6: the SAME category expression as getCategorySpendingForMonth (and this
   // script's own Transactions tab). A personal_finance_category->>'primary' term
   // here bucketed an uncategorized Plaid charge as "FOOD_AND_DRINK" in the Sheets
@@ -720,11 +782,35 @@ async function buildDashboard(sheets, pool) {
       WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
       ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0
     END)`;
+  // F35 mirror of financial-queries REFUND_PREDICATE / REFUND_PRIOR_CATEGORY_JOIN
+  // (pinned by SX3): a settled, non-transfer, non-income, non-reimbursed credit
+  // nets against its category in the month it posts, taking the category of the
+  // merchant's latest earlier charge. Every spending query below floors each
+  // (month, category) at $0, like the app's NET_CATEGORY_MONTHS.
+  const REFUND_PREDICATE = `(
+  t.amount < 0 AND t.pending = false
+  AND COALESCE(t.is_reimbursed, false) = false
+  AND ${NOT_TRANSFER}
+  AND NOT COALESCE(${incomePredicate("t").trim()}, false)
+)`;
+  const REFUND_PRIOR_CATEGORY_JOIN = `LEFT JOIN LATERAL (
+    SELECT COALESCE(c.user_category, c.category[1]) AS category
+    FROM transactions c
+    WHERE c.amount > 0 AND c.pending = false
+      AND LOWER(COALESCE(c.user_merchant_name, c.merchant_name, c.name))
+          = LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name))
+      AND c.date <= t.date AND c.date >= t.date - 180
+      AND COALESCE(c.user_category, c.category[1]) IS NOT NULL
+    ORDER BY c.date DESC, c.transaction_id DESC
+    LIMIT 1
+  ) prior ON true`;
+  const MERCHANT_EXPR = "COALESCE(t.user_merchant_name, t.merchant_name, t.name)";
   const catLinesCTE = (whereClause) => `
     WITH parent_no_splits AS (
       SELECT ${CAT_EXPR_PARENT} AS category,
              TO_CHAR(t.date, 'YYYY-MM') AS month,
-             ${SPLIT_AMT} AS amount
+             ${SPLIT_AMT} AS amount,
+             ${MERCHANT_EXPR} AS merchant, false AS is_refund, t.transaction_id
       FROM transactions t
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
@@ -734,17 +820,38 @@ async function buildDashboard(sheets, pool) {
     from_splits AS (
       SELECT ${CAT_EXPR_SPLIT} AS category,
              TO_CHAR(t.date, 'YYYY-MM') AS month,
-             ${SPLIT_AMT_S} AS amount
+             ${SPLIT_AMT_S} AS amount,
+             ${MERCHANT_EXPR} AS merchant, false AS is_refund, t.transaction_id
       FROM transaction_splits s
       JOIN transactions t ON t.transaction_id = s.parent_transaction_id
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
         AND ${whereClause}
     ),
+    refund_lines AS (
+      SELECT COALESCE(t.user_category, prior.category, t.category[1], 'Uncategorized') AS category,
+             TO_CHAR(t.date, 'YYYY-MM') AS month,
+             ${SPLIT_AMT} AS amount,
+             ${MERCHANT_EXPR} AS merchant, true AS is_refund, t.transaction_id
+      FROM transactions t
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      ${REFUND_PRIOR_CATEGORY_JOIN}
+      WHERE ${REFUND_PREDICATE}
+        AND ${whereClause}
+    ),
     cat_lines AS (
-      SELECT category, month, amount FROM parent_no_splits
+      SELECT * FROM parent_no_splits
       UNION ALL
-      SELECT category, month, amount FROM from_splits
+      SELECT * FROM from_splits
+      UNION ALL
+      SELECT * FROM refund_lines
+    ),
+    net_cat_months AS (
+      SELECT month, category, GREATEST(SUM(amount), 0) AS spent,
+             COUNT(*) FILTER (WHERE NOT is_refund) AS charge_lines
+      FROM cat_lines
+      GROUP BY month, category
+      HAVING COUNT(*) FILTER (WHERE NOT is_refund) > 0
     )`;
   // WHOLE-month windows in APP_TIMEZONE (SXE-12, parity with the app's FA-4
   // whole-month windows): "6 months" = this month + the 5 before it, starting
@@ -755,18 +862,21 @@ async function buildDashboard(sheets, pool) {
   const WINDOW_THIS_MONTH = `t.date >= ${sqlDate(sheetsMonth(0) + "-01")} AND t.date < ${sqlDate(sheetsMonth(1) + "-01")}`;
 
   // Fetch summary data from DB
+  // F35: every spending figure below is net of refunds (net_cat_months floors
+  // each month's categories at $0), matching the app's spend_lines; counts and
+  // averages describe the CHARGES.
   const { rows: monthlySummary } = await pool.query(`
-    SELECT
-      TO_CHAR(t.date, 'YYYY-MM') AS month,
-      COUNT(*) AS txn_count,
-      SUM(${SPLIT_AMT}) AS total_spend,
-      ROUND(AVG(${SPLIT_AMT}), 2) AS avg_transaction
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND ${WINDOW_6MO}
-    GROUP BY TO_CHAR(t.date, 'YYYY-MM')
-    ORDER BY month DESC
+    ${catLinesCTE(WINDOW_6MO)},
+    charges AS (
+      SELECT month, COUNT(DISTINCT transaction_id) AS txn_count, SUM(amount) AS gross
+      FROM cat_lines WHERE NOT is_refund GROUP BY month
+    )
+    SELECT n.month, MAX(c.txn_count) AS txn_count, SUM(n.spent) AS total_spend,
+           ROUND(MAX(c.gross) / NULLIF(MAX(c.txn_count), 0), 2) AS avg_transaction
+    FROM net_cat_months n
+    JOIN charges c ON c.month = n.month
+    GROUP BY n.month
+    ORDER BY n.month DESC
   `);
 
   // M4: splits-replacement so per-category totals match the app dashboard. The
@@ -774,8 +884,8 @@ async function buildDashboard(sheets, pool) {
   // its split rows), not raw transactions — the dollar total is what's rendered.
   const { rows: categorySummary } = await pool.query(`
     ${catLinesCTE(WINDOW_6MO)}
-    SELECT category, SUM(amount) AS total, COUNT(*) AS txn_count
-    FROM cat_lines
+    SELECT category, SUM(spent) AS total, SUM(charge_lines) AS txn_count
+    FROM net_cat_months
     GROUP BY category
     ORDER BY total DESC
     LIMIT 15
@@ -786,9 +896,8 @@ async function buildDashboard(sheets, pool) {
   // category list's "Trend" column has data to graph. Splits-replaced (M4).
   const { rows: categoryByMonth } = await pool.query(`
     ${catLinesCTE(WINDOW_6MO)}
-    SELECT category, month, SUM(amount) AS total
-    FROM cat_lines
-    GROUP BY 1, 2
+    SELECT category, month, spent AS total
+    FROM net_cat_months
   `);
   // Build a {category: {month: total}} map for fast lookup, and the list
   // of months oldest-to-newest matching what we'll show as columns.
@@ -800,15 +909,13 @@ async function buildDashboard(sheets, pool) {
   const sparklineMonths = (monthlySummary || []).map(m => m.month).slice().reverse();
 
   const { rows: topMerchants } = await pool.query(`
-    SELECT
-      COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
-      SUM(${SPLIT_AMT}) AS total,
-      COUNT(*) AS txn_count
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND ${WINDOW_6MO}
+    ${catLinesCTE(WINDOW_6MO)}
+    SELECT merchant, GREATEST(SUM(amount), 0) AS total,
+           COUNT(DISTINCT transaction_id) FILTER (WHERE NOT is_refund) AS txn_count
+    FROM cat_lines
+    WHERE merchant IS NOT NULL
     GROUP BY merchant
+    HAVING COUNT(*) FILTER (WHERE NOT is_refund) > 0
     ORDER BY total DESC
     LIMIT 10
   `);
@@ -825,14 +932,26 @@ async function buildDashboard(sheets, pool) {
   `);
 
   const { rows: totals } = await pool.query(`
-    SELECT
-      COALESCE(SUM(${SPLIT_AMT}), 0) AS total_6mo,
-      COALESCE(AVG(${SPLIT_AMT}), 0) AS avg_txn,
-      COUNT(*) AS txn_count
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND ${WINDOW_6MO}
+    ${catLinesCTE(WINDOW_6MO)},
+    charges AS (
+      SELECT COUNT(DISTINCT transaction_id) AS txn_count, SUM(amount) AS gross
+      FROM cat_lines WHERE NOT is_refund
+    )
+    SELECT COALESCE((SELECT SUM(spent) FROM net_cat_months), 0) AS total_6mo,
+           COALESCE(c.gross / NULLIF(c.txn_count, 0), 0) AS avg_txn,
+           c.txn_count
+    FROM charges c
+  `);
+
+  // Per-month totals for the KPI averages: COMPLETED months only, with their
+  // real day counts — parity with the app's Spending Summary (FAN-6). The
+  // window includes the month to date, so total / 6 understated the average
+  // (cycle-7 F75).
+  const { rows: monthTotals } = await pool.query(`
+    ${catLinesCTE(WINDOW_6MO)}
+    SELECT month, COALESCE(SUM(spent), 0) AS total
+    FROM net_cat_months
+    GROUP BY month
   `);
 
   // Net worth history
@@ -854,7 +973,7 @@ async function buildDashboard(sheets, pool) {
   const { rows: budgetData } = await pool.query(`
     ${catLinesCTE(WINDOW_THIS_MONTH)},
     cat_spend AS (
-      SELECT category, SUM(amount) AS spent FROM cat_lines GROUP BY category
+      SELECT category, spent FROM net_cat_months
     )
     SELECT b.category, b.monthly_limit,
            b.monthly_limit + CASE WHEN b.rollover_enabled THEN COALESCE(bs.rollover_amount, 0) ELSE 0 END AS effective_limit,
@@ -909,11 +1028,7 @@ async function buildDashboard(sheets, pool) {
   );
   const totalYearly = totalMonthly * 12;
   const total6mo = parseFloat(totals[0]?.total_6mo || 0);
-  const avgMonthlySpend = total6mo / 6;
-  // Days actually covered by the whole-month window (1st of the oldest month →
-  // today), not a fixed 180.
-  const windowDays = Math.max(1, Math.round((Date.parse(sheetsTodayStr() + "T00:00:00Z") - Date.parse(WINDOW_6MO_START + "T00:00:00Z")) / 86400000) + 1);
-  const avgDailySpend = total6mo / windowDays;
+  const { avgMonthlySpend, avgDailySpend } = completedMonthAverages(monthTotals, sheetsMonth(0));
 
   await ensureSheet(sheets, SHEET_DASHBOARD);
 
@@ -1570,7 +1685,8 @@ async function syncUtilities(sheets, pool) {
         WHEN NOT is_active THEN 'Inactive'
         ELSE 'Active'
       END AS status,
-      notes
+      notes,
+      NULL::int AS due_day, NULL::text AS bill_cadence, NULL::timestamptz AS created_at
     FROM detected_subscriptions
     WHERE category = 'utility'
 
@@ -1598,29 +1714,26 @@ async function syncUtilities(sheets, pool) {
         WHEN 'yearly' THEN amount
         ELSE amount * 12
       END AS yearly_cost,
-      -- next_due for manual bills: due_day in the current or next month based
-      -- on whether today has passed the due_day. Sheets users want a date,
-      -- not just a day number.
-      CASE
-        WHEN due_day >= EXTRACT(DAY FROM CURRENT_DATE)::int THEN
-          make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, EXTRACT(MONTH FROM CURRENT_DATE)::int,
-                    LEAST(due_day, EXTRACT(DAY FROM (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month - 1 day'))::int))
-        ELSE
-          make_date(
-            EXTRACT(YEAR FROM CURRENT_DATE + INTERVAL '1 month')::int,
-            EXTRACT(MONTH FROM CURRENT_DATE + INTERVAL '1 month')::int,
-            LEAST(due_day, EXTRACT(DAY FROM (date_trunc('month', CURRENT_DATE + INTERVAL '1 month') + INTERVAL '1 month - 1 day'))::int)
-          )
-      END AS next_due,
+      -- next_due for a manual bill is computed below with the app's
+      -- manualBillOccurrences (creation-anchored cadence, real month length,
+      -- APP_TIMEZONE today — cycle-7 F76: it was always next month's due_day,
+      -- so a quarterly or yearly bill read as due every month).
+      NULL::date AS next_due,
       CASE WHEN is_active THEN 'Active' ELSE 'Inactive' END AS status,
-      notes
+      notes,
+      due_day, cadence AS bill_cadence, created_at
     FROM manual_bills
     WHERE category = 'utility'
     ) u
-    ORDER BY
-      CASE WHEN u.status = 'Active' THEN 0 ELSE 1 END,
-      u.next_due NULLS LAST
   `);
+  const today = sheetsTodayStr();
+  for (const r of rows) {
+    r.next_due = r.source === "manual"
+      ? (manualBillOccurrences({ cadence: r.bill_cadence, due_day: r.due_day, created_at: r.created_at }, today, addDaysStr(today, 400))[0] || null)
+      : (r.next_due ? fmtDate(r.next_due) : null);
+  }
+  rows.sort((a, b) => ((a.status === "Active" ? 0 : 1) - (b.status === "Active" ? 0 : 1))
+    || (a.next_due === b.next_due ? 0 : a.next_due === null ? 1 : b.next_due === null ? -1 : a.next_due < b.next_due ? -1 : 1));
 
   const SHEET_UTILITIES = "Utilities";
   await ensureSheet(sheets, SHEET_UTILITIES);
@@ -2272,60 +2385,43 @@ async function syncNetWorthHistory(sheets, pool) {
 async function syncIncome(sheets, pool) {
   console.log("Syncing income summary to Google Sheets...");
 
-  // Byte-mirror of financial-queries.js incomePredicate (FAN-2 / DD-2 / DD-3),
-  // pinned by SX3 in tests/audit-regressions.test.js.
-  function incomeText(a) {
-    return `CONCAT_WS(' ', ${a}.user_merchant_name, ${a}.merchant_name, ${a}.name)`;
-  }
-  function incomePredicate(a = "transactions") {
-    const txt = incomeText(a);
-    return `
-    (
-      (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
-        AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
-      OR (
-        ${txt} ~* 'funds transfer from brokerage'
-        AND NOT EXISTS (
-          SELECT 1 FROM transactions __t2
-          WHERE __t2.account_id <> ${a}.account_id
-            AND __t2.amount = ABS(${a}.amount)
-            AND __t2.pending = false
-            AND __t2.date BETWEEN ${a}.date - INTERVAL '2 days' AND ${a}.date + INTERVAL '2 days'
-        )
-      )
-      OR LOWER(COALESCE(${a}.user_category, ${a}.category[1], '')) = 'income'
-      OR (${a}.user_category IS NULL AND ${a}.personal_finance_category->>'primary' = 'INCOME')
-    )
-  `;
-  }
-  const INCOME_PREDICATE = incomePredicate("transactions");
+  const INCOME_PREDICATE_T = incomePredicate("t");
+  // Mirror of financial-queries INCOME_AMOUNT (F37): a deposit at the joint
+  // account's share — the negation of the SPLIT_AMOUNT CASE.
+  const INCOME_AMOUNT = `(-(CASE
+      WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount
+      WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+      ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+    END))`;
 
   // Monthly totals (last 24 months)
   const monthly = await pool.query(`
-    SELECT TO_CHAR(date, 'YYYY-MM') AS month,
-           SUM(ABS(amount)) AS total,
+    SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
+           SUM(${INCOME_AMOUNT}) AS total,
            COUNT(*) AS deposits
-    FROM transactions
-    WHERE pending = false
-      AND date >= ${sqlDate(sheetsMonth(-23) + "-01")}  -- 24 whole months (SXE-12)
-      AND amount < 0
-      AND ${INCOME_PREDICATE}
-    GROUP BY TO_CHAR(date, 'YYYY-MM')
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false
+      AND t.date >= ${sqlDate(sheetsMonth(-23) + "-01")}  -- 24 whole months (SXE-12)
+      AND t.amount < 0
+      AND ${INCOME_PREDICATE_T}
+    GROUP BY TO_CHAR(t.date, 'YYYY-MM')
     ORDER BY month DESC
   `);
 
   // Top sources (last 12 months) — group by merchant
   const sources = await pool.query(`
-    SELECT COALESCE(merchant_name, name) AS source,
-           SUM(ABS(amount)) AS total,
+    SELECT COALESCE(t.merchant_name, t.name) AS source,
+           SUM(${INCOME_AMOUNT}) AS total,
            COUNT(*) AS deposits,
-           MAX(date) AS most_recent
-    FROM transactions
-    WHERE pending = false
-      AND date >= ${sqlDate(sheetsMonth(-11) + "-01")}  -- 12 whole months (SXE-12)
-      AND amount < 0
-      AND ${INCOME_PREDICATE}
-    GROUP BY COALESCE(merchant_name, name)
+           MAX(t.date) AS most_recent
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false
+      AND t.date >= ${sqlDate(sheetsMonth(-11) + "-01")}  -- 12 whole months (SXE-12)
+      AND t.amount < 0
+      AND ${INCOME_PREDICATE_T}
+    GROUP BY COALESCE(t.merchant_name, t.name)
     ORDER BY total DESC
     LIMIT 50
   `);
@@ -2426,7 +2522,7 @@ async function syncIncome(sheets, pool) {
         },
       },
     ];
-    await formatSheet(sheets, sheetId, requests);
+    await formatSheet(sheets, sheetId, requests, { resetFormats: true }); // section rows move (cycle-7 F77)
   }
 
   console.log(`  ${monthly.rows.length} months + ${sources.rows.length} sources written.`);
@@ -2598,7 +2694,7 @@ async function syncAiTrust(sheets, pool) {
       }
     }
 
-    await formatSheet(sheets, sheetId, requests);
+    await formatSheet(sheets, sheetId, requests, { resetFormats: true }); // section rows move (cycle-7 F77)
   }
 
   console.log(`  ${findings.rows.length} findings + ${ratings.rows.length} ratings written.`);
@@ -2937,10 +3033,11 @@ async function syncCreditScores(sheets, pool) {
 
   const headers = ["Date", "Score", "Type", "Source", "Notes", "Change"];
 
-  // Compute per-row delta vs the next-oldest entry (rows are newest-first;
-  // the "prior" for rows[i] is rows[i+1]).
+  // Per-row delta vs the next-oldest entry OF THE SAME SCORE TYPE (rows are
+  // newest-first). A FICO 760 after a VantageScore 720 is not "+40" (cycle-7
+  // F86 — the delta crossed score types).
   const data = rows.map((r, i) => {
-    const prior = rows[i + 1];
+    const prior = rows.slice(i + 1).find((p) => (p.score_type || "") === (r.score_type || ""));
     const delta = prior ? r.score - prior.score : null;
     return [
       fmtDate(r.checked_at),
@@ -3027,7 +3124,15 @@ async function syncCreditScores(sheets, pool) {
 async function syncImportantDates(sheets, pool) {
   console.log("Syncing important dates to Google Sheets...");
 
-  const { rows } = await pool.query(`
+  // "Today" is the APP_TIMEZONE date (cycle-7 F76 — CURRENT_DATE is UTC's).
+  // Manual bills and transfers are placed with the app's cadence rules:
+  // manualBillOccurrences (every occurrence of a monthly / quarterly / yearly
+  // bill, real month length — it was monthly-only with a 28-day cap) and
+  // seriesOccurrences (calendar-month steps for month-scale transfers — it
+  // added cadence_days to the last transfer).
+  const today = sheetsTodayStr();
+  const horizon = addDaysStr(today, 90);
+  const { rows: sqlRows } = await pool.query(`
     WITH subs AS (
       SELECT next_expected AS event_date,
              'Subscription' AS event_type,
@@ -3037,38 +3142,7 @@ async function syncImportantDates(sheets, pool) {
       FROM detected_subscriptions
       WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
         AND next_expected IS NOT NULL
-        AND next_expected <= CURRENT_DATE + INTERVAL '90 days'
-    ),
-    manual AS (
-      SELECT
-        make_date(
-          CASE WHEN EXTRACT(DAY FROM CURRENT_DATE)::int > LEAST(due_day, 28)
-               THEN EXTRACT(YEAR FROM (CURRENT_DATE + INTERVAL '1 month'))::int
-               ELSE EXTRACT(YEAR FROM CURRENT_DATE)::int END,
-          CASE WHEN EXTRACT(DAY FROM CURRENT_DATE)::int > LEAST(due_day, 28)
-               THEN EXTRACT(MONTH FROM (CURRENT_DATE + INTERVAL '1 month'))::int
-               ELSE EXTRACT(MONTH FROM CURRENT_DATE)::int END,
-          LEAST(due_day, 28)
-        ) AS event_date,
-        'Manual Bill (' || category || ')' AS event_type,
-        name,
-        amount,
-        cadence AS notes
-      FROM manual_bills
-      WHERE is_active = true
-    ),
-    transfers AS (
-      SELECT
-        (last_transferred + (cadence_days || ' days')::interval)::date AS event_date,
-        'Transfer (' || transfer_type || ')' AS event_type,
-        display_name AS name,
-        amount,
-        direction AS notes
-      FROM recurring_transfers
-      WHERE is_active = true AND is_dismissed = false
-        AND last_transferred IS NOT NULL
-        AND (last_transferred + (cadence_days || ' days')::interval)::date <= CURRENT_DATE + INTERVAL '90 days'
-        AND (last_transferred + (cadence_days || ' days')::interval)::date >= CURRENT_DATE
+        AND next_expected <= $1::date + 90
     ),
     goals AS (
       SELECT target_date AS event_date,
@@ -3079,15 +3153,32 @@ async function syncImportantDates(sheets, pool) {
       FROM financial_goals
       WHERE is_active = true
         AND target_date IS NOT NULL
-        AND target_date <= CURRENT_DATE + INTERVAL '90 days'
-        AND target_date >= CURRENT_DATE
+        AND target_date <= $1::date + 90
+        AND target_date >= $1::date
     )
     SELECT * FROM subs
-    UNION ALL SELECT * FROM manual
-    UNION ALL SELECT * FROM transfers
     UNION ALL SELECT * FROM goals
-    ORDER BY event_date ASC, event_type, name
+  `, [today]);
+  const { rows: manualBills } = await pool.query(
+    "SELECT name, amount, category, cadence, due_day, created_at FROM manual_bills WHERE is_active = true"
+  );
+  const { rows: transfers } = await pool.query(`
+    SELECT display_name, amount, cadence_days, transfer_type, direction, last_transferred, next_expected
+    FROM recurring_transfers
+    WHERE is_active = true AND is_dismissed = false AND last_transferred IS NOT NULL
   `);
+  const rows = sqlRows.map((r) => ({ ...r, event_date: fmtDate(r.event_date) }));
+  for (const b of manualBills) {
+    for (const d of manualBillOccurrences(b, today, horizon)) {
+      rows.push({ event_date: d, event_type: `Manual Bill (${b.category})`, name: b.name, amount: b.amount, notes: b.cadence });
+    }
+  }
+  for (const t of transfers) {
+    const next = seriesOccurrences(t.last_transferred, t.next_expected, t.cadence_days, today, horizon)[0];
+    if (next) rows.push({ event_date: next, event_type: `Transfer (${t.transfer_type})`, name: t.display_name, amount: t.amount, notes: t.direction });
+  }
+  rows.sort((a, b) => (a.event_date < b.event_date ? -1 : a.event_date > b.event_date ? 1 : 0)
+    || String(a.event_type).localeCompare(String(b.event_type)) || String(a.name).localeCompare(String(b.name)));
 
   const SHEET_DATES = "Important Dates";
   await ensureSheet(sheets, SHEET_DATES);
@@ -3209,6 +3300,17 @@ async function syncImportantDates(sheets, pool) {
 //  SXE-14: at most MAX_ARCHIVES_PER_RUN tabs are (re)built per run so the first
 //      backfill after a long Plaid link doesn't blow the 60 writes/min quota;
 //      the rest follow on later runs.
+//  Cycle-7 F85: the marker carries a FINGERPRINT of the month's archived
+//      content ("… — YYYY-MM · <12 hex>"). A finished archive used to be final
+//      forever, so a row backfilled into the month later (a new Plaid link with
+//      two years of history, a reconcile, a CSV import) or an edit to an
+//      archived row (rename, category, reimbursed, notes) never reached it. Each
+//      run computes every month's live fingerprint in ONE grouped query
+//      (ARCHIVE_MONTHS_SQL); a tab whose marker doesn't match — including a
+//      legacy marker with no fingerprint — is cleared and rebuilt, within the
+//      same per-run cap. `transactions` has no updated_at, so a content hash is
+//      what catches both new rows and edits. Splits aren't shown in the archive,
+//      so they aren't part of the fingerprint.
 const ARCHIVE_DELAY_DAYS = 10;
 const MAX_ARCHIVES_PER_RUN = 6;
 function archiveReadyOn(month) {
@@ -3217,7 +3319,25 @@ function archiveReadyOn(month) {
   lastDay.setUTCDate(lastDay.getUTCDate() + ARCHIVE_DELAY_DAYS);
   return lastDay.toISOString().slice(0, 10);
 }
-function archiveMarker(month) { return `${ARCHIVE_COMPLETE_PREFIX} — ${month}`; }
+function archiveMarker(month, fp) { return `${ARCHIVE_COMPLETE_PREFIX} — ${month}${fp ? ` · ${fp}` : ""}`; }
+
+// Every archivable month with the fingerprint of the rows its archive shows
+// (the archive query's rows: settled, joined to an account). One query per run.
+const ARCHIVE_MONTHS_SQL = (currentMonth) => `
+    SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
+           LEFT(md5(string_agg(
+             t.transaction_id || '|' || t.amount::text || '|' || t.date::text || '|' || t.account_id || '|' ||
+             COALESCE(t.user_merchant_name, t.merchant_name, t.name, '') || '|' ||
+             COALESCE(t.user_category, t.category[1], '') || '|' ||
+             COALESCE(t.is_reimbursed, false)::text || '|' || COALESCE(t.user_notes, ''),
+             ',' ORDER BY t.transaction_id)), 12) AS fp
+    FROM transactions t
+    JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false
+      AND TO_CHAR(t.date, 'YYYY-MM') < ${currentMonth}  -- tz current month (SXE-12)
+    GROUP BY 1
+    ORDER BY month ASC
+  `;
 
 async function syncMonthArchives(sheets, pool) {
   console.log("Checking month archives...");
@@ -3225,13 +3345,7 @@ async function syncMonthArchives(sheets, pool) {
   // List months with transactions, excluding the current month (still
   // in flight). Older-first so newer archives appear leftmost in the
   // sheet tab bar.
-  const { rows: months } = await pool.query(`
-    SELECT DISTINCT TO_CHAR(date, 'YYYY-MM') AS month
-    FROM transactions
-    WHERE pending = false
-      AND TO_CHAR(date, 'YYYY-MM') < ${sqlMonth(sheetsMonth(0))}  -- tz current month (SXE-12)
-    ORDER BY month ASC
-  `);
+  const { rows: months } = await pool.query(ARCHIVE_MONTHS_SQL(sqlMonth(sheetsMonth(0))));
 
   const today = sheetsTodayStr();
   const ready = months.filter(({ month }) => archiveReadyOn(month) <= today);
@@ -3248,10 +3362,10 @@ async function syncMonthArchives(sheets, pool) {
   const tabs = new Map(meta.data.sheets.map(sh => [sh.properties.title, sh.protectedRanges || []]));
 
   let archivesCreated = 0;
-  for (const { month } of ready) {
+  for (const { month, fp } of ready) {
     const title = `${month} Transactions`;
     const existing = tabs.get(title);
-    const complete = existing && existing.some(pr => pr.description === archiveMarker(month));
+    const complete = existing && existing.some(pr => pr.description === archiveMarker(month, fp));
     if (complete) continue;
     if (archivesCreated >= MAX_ARCHIVES_PER_RUN) {
       console.log(`  archive cap (${MAX_ARCHIVES_PER_RUN}/run) reached — remaining months follow next sync.`);
@@ -3350,7 +3464,7 @@ async function syncMonthArchives(sheets, pool) {
       // Archive tabs are immutable — protect them with the per-month
       // COMPLETION marker (SXE-3), written last: its presence is what marks
       // the archive done on later runs.
-      await applyProtection(sheets, sheetId, archiveMarker(month));
+      await applyProtection(sheets, sheetId, archiveMarker(month, fp));
     }
 
     console.log(`  ${existing ? "rebuilt" : "created"} archive '${title}' with ${rows.length} transactions.`);
@@ -3397,19 +3511,31 @@ async function syncWatchlist(sheets, pool) {
     return 0;
   }
 
-  // For each item, look up recent matching transactions
+  // For each item, look up recent matching transactions. A user value is a
+  // literal: LIKE metacharacters (\ % _) are escaped (F42 / INV-10 — "50%"
+  // or "a_b" acted as wildcards).
+  const likeLiteral = (v) => "%" + String(v).replace(/[\\%_]/g, (c) => "\\" + c) + "%";
+  // The 90-day total is SPENDING at your share (F42): debits only, reimbursed
+  // excluded, the shared-card split applied — the mirror of SPLIT_AMOUNT. It
+  // used to sum the raw signed amounts of at most 100 listed rows, so refunds
+  // and deposits netted in and a joint card counted in full.
+  const WATCH_SPEND = `(CASE
+      WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount
+      WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+      ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+    END)`;
   const sections = [];
   for (const item of items) {
     let where, params;
     if (item.type === "merchant") {
-      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1`;
-      params = ["%" + item.value + "%"];
+      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1 ESCAPE '\\'`;
+      params = [likeLiteral(item.value)];
     } else if (item.type === "category") {
       where = `COALESCE(t.user_category, t.category[1]) = $1`;
       params = [item.value];
     } else { // keyword
-      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1 OR COALESCE(t.user_category, t.category[1]) ILIKE $1`;
-      params = ["%" + item.value + "%"];
+      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1 ESCAPE '\\' OR COALESCE(t.user_category, t.category[1]) ILIKE $1 ESCAPE '\\'`;
+      params = [likeLiteral(item.value)];
     }
     const { rows: matches } = await pool.query(
       `SELECT t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
@@ -3424,11 +3550,21 @@ async function syncWatchlist(sheets, pool) {
        LIMIT 100`,
       params
     );
-    const total = matches.reduce((s, r) => s + parseFloat(r.amount), 0);
+    const { rows: [agg] } = await pool.query(
+      `SELECT COALESCE(SUM(${WATCH_SPEND}), 0) AS spend
+       FROM transactions t
+       JOIN linked_accounts la ON la.account_id = t.account_id
+       WHERE t.pending = false AND t.amount > 0
+         AND COALESCE(t.is_reimbursed, false) = false
+         AND t.date >= CURRENT_DATE - INTERVAL '90 days'
+         AND (${where})`,
+      params
+    );
+    const total = parseFloat((agg && agg.spend) || 0);
     sections.push({ item, matches, total });
   }
 
-  const allRows = [["Watchlist Item", "Type", "Match Count", "90-Day Total", "Notes"]];
+  const allRows = [["Watchlist Item", "Type", "Match Count", "90-Day Spend (your share)", "Notes"]];
   for (const s of sections) {
     allRows.push([s.item.value, s.item.type, s.matches.length, fmtCurrency(s.total), s.item.notes || ""]);
   }
@@ -3505,7 +3641,7 @@ async function syncWatchlist(sheets, pool) {
         },
       },
     ];
-    await formatSheet(sheets, sheetId, requests);
+    await formatSheet(sheets, sheetId, requests, { resetFormats: true }); // section rows move (cycle-7 F77)
     await applyProtection(sheets, sheetId);
   }
 
@@ -3520,7 +3656,30 @@ async function syncWatchlist(sheets, pool) {
 // Used by POST /api/sheets/sync-transactions for faster feedback after a
 // CSV upload (vs running a full syncAll). Only re-runs syncTransactions,
 // which is the only tab affected by a CSV import.
-async function syncTransactionsOnly() {
+// Single-flight (cycle-7 F78, parity with the PSC-12 sync / categorize guard).
+// The scheduled auto-sync and POST /api/sheets/sync can fire together, and the
+// CSV modal's partial sync can land mid-run; two runs clearing and rewriting
+// the same tabs interleave their writes. A caller that arrives while the SAME
+// kind of run is in flight shares its promise and result; a different kind
+// waits for the running one to finish, then runs.
+let sheetsInFlight = null; // { kind, promise }
+function ignoreEarlierRun() { /* the earlier run reports its own outcome to its own caller */ }
+function singleFlight(kind, fn) {
+  if (sheetsInFlight && sheetsInFlight.kind === kind) return sheetsInFlight.promise;
+  const before = sheetsInFlight ? sheetsInFlight.promise.then(ignoreEarlierRun, ignoreEarlierRun) : Promise.resolve();
+  const entry = { kind, promise: null };
+  entry.promise = before.then(() => fn()).finally(() => {
+    if (sheetsInFlight === entry) sheetsInFlight = null;
+  });
+  sheetsInFlight = entry;
+  return entry.promise;
+}
+
+function syncTransactionsOnly() { return singleFlight("transactions", runSyncTransactionsOnly); }
+function syncAll() { return singleFlight("all", runSyncAll); }
+function syncDashboardOnly() { return singleFlight("dashboard", runSyncDashboardOnly); }
+
+async function runSyncTransactionsOnly() {
   const sheets = await getSheetsClient();
   const pool = getPool();
   try {
@@ -3534,7 +3693,7 @@ async function syncTransactionsOnly() {
 // ---------------------------------------------------------------------------
 // API endpoint handler (called from server.js)
 // ---------------------------------------------------------------------------
-async function syncAll() {
+async function runSyncAll() {
   const sheets = await getSheetsClient();
   const pool = getPool();
 
@@ -3601,7 +3760,7 @@ async function syncAll() {
   }
 }
 
-async function syncDashboardOnly() {
+async function runSyncDashboardOnly() {
   const sheets = await getSheetsClient();
   const pool = getPool();
 
@@ -3639,4 +3798,4 @@ if (require.main === module) {
 
 module.exports = { syncAll, syncDashboardOnly, syncTransactionsOnly };
 // Test seams (SXE-2/SXE-14).
-module.exports._internals = { guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };
+module.exports._internals = { buildDashboard, completedMonthAverages, syncUtilities, syncImportantDates, syncCreditScores, singleFlight, PLAIN_NUMBER_RE, syncWatchlist, guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, ARCHIVE_MONTHS_SQL, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };

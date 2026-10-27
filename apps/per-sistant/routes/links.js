@@ -5,6 +5,7 @@
 const express = require("express");
 
 const { serverError } = require("../errors");
+const { announceTodoEvent } = require("../helpers");
 
 module.exports = function ({ pool }) {
   const router = express.Router();
@@ -18,14 +19,14 @@ module.exports = function ({ pool }) {
           CASE el.target_type
             WHEN 'todo' THEN (SELECT title FROM todos WHERE id = el.target_id)
             WHEN 'email' THEN (SELECT subject FROM emails WHERE id = el.target_id)
-            WHEN 'note' THEN (SELECT COALESCE(title, LEFT(content,50)) FROM notes WHERE id = el.target_id)
+            WHEN 'note' THEN (SELECT COALESCE(title, CASE WHEN sensitivity = 'secret' THEN 'Secret note' ELSE LEFT(content, 50) END) FROM notes WHERE id = el.target_id)
           END as target_title
           FROM entity_links el WHERE el.source_type = $1 AND el.source_id = $2`, [type, id]),
         pool.query(`SELECT el.*,
           CASE el.source_type
             WHEN 'todo' THEN (SELECT title FROM todos WHERE id = el.source_id)
             WHEN 'email' THEN (SELECT subject FROM emails WHERE id = el.source_id)
-            WHEN 'note' THEN (SELECT COALESCE(title, LEFT(content,50)) FROM notes WHERE id = el.source_id)
+            WHEN 'note' THEN (SELECT COALESCE(title, CASE WHEN sensitivity = 'secret' THEN 'Secret note' ELSE LEFT(content, 50) END) FROM notes WHERE id = el.source_id)
           END as source_title
           FROM entity_links el WHERE el.target_type = $1 AND el.target_id = $2`, [type, id]),
       ]);
@@ -73,6 +74,7 @@ module.exports = function ({ pool }) {
       // Create cross-entity link
       await pool.query("INSERT INTO entity_links (source_type, source_id, target_type, target_id) VALUES ('note', $1, 'todo', $2) ON CONFLICT DO NOTHING",
         [n.id, todo.rows[0].id]);
+      announceTodoEvent("todo_created", todo.rows[0]); // F124 parity
       res.json(todo.rows[0]);
     } catch (err) { serverError(res, err); }
   });
@@ -90,6 +92,7 @@ module.exports = function ({ pool }) {
       );
       await pool.query("INSERT INTO entity_links (source_type, source_id, target_type, target_id) VALUES ('email', $1, 'todo', $2) ON CONFLICT DO NOTHING",
         [e.id, todo.rows[0].id]);
+      announceTodoEvent("todo_created", todo.rows[0]); // F124 parity
       res.json(todo.rows[0]);
     } catch (err) { serverError(res, err); }
   });

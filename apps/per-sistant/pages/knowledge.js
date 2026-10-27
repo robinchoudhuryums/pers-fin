@@ -1,4 +1,5 @@
 const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
+const { MERMAID_CDN_BASE } = require("../config");
 
 module.exports = function() {
   return (req, res) => {
@@ -18,7 +19,7 @@ ${navBar("/knowledge")}
   <div class="section">
     <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
       <textarea id="k-query" rows="2" placeholder="Ask anything in your knowledge base… e.g. 'what's my car insurance deductible?'" style="flex:1;min-width:240px;min-height:52px;"></textarea>
-      <button id="k-mic-btn" class="btn" title="Voice input" aria-label="Voice input" style="font-size:16px;">&#127908;</button>
+      <button data-e2e-skip id="k-mic-btn" class="btn" title="Voice input" aria-label="Voice input" style="font-size:16px;">&#127908;</button>
     </div>
     <div class="actions" style="margin-top:10px;">
       <button class="btn primary" id="k-ask-btn">Ask</button>
@@ -107,7 +108,7 @@ function showEmpty(msg){ document.getElementById('k-empty-msg').textContent = ms
 var _mermaid = null;
 async function loadMermaid(){
   if(_mermaid) return _mermaid;
-  var mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+  var mod = await import('${MERMAID_CDN_BASE}dist/mermaid.esm.min.mjs');
   _mermaid = mod.default;
   _mermaid.initialize({ startOnLoad:false, securityLevel:'strict', theme:'neutral' });
   return _mermaid;
@@ -147,7 +148,8 @@ async function ask(){
     if(r.answer){
       document.getElementById('k-ungrounded').style.display = (r.grounded === false) ? 'block' : 'none';
       document.getElementById('k-similar').style.display = r.sources_from_similar_query ? 'block' : 'none';
-      document.getElementById('k-answer').innerHTML = renderMd(r.answer);
+      document.getElementById('k-answer').innerHTML = renderMd(r.answer) +
+        (r.truncated ? '<p style="font-size:11px;color:var(--warn)">This answer was cut off. Ask a narrower question for the rest.</p>' : '');
       kShow('k-answer-wrap', true);
     } else if(r.note){
       document.getElementById('k-empty-msg').textContent = r.note;
@@ -203,13 +205,15 @@ async function loadKStatus(){
   } catch(e){}
 }
 async function reindex(){
-  var btn = document.getElementById('k-reindex-btn');
-  btn.disabled = true;
-  try {
-    var r = await fetch('/api/rag/reindex', {method:'POST'}).then(function(r){return r.json();});
-    if(r && r.error){ document.getElementById('k-status-text').textContent = r.error; btn.disabled = false; return; }
+  // The button is re-enabled when this returns; loadKStatus then disables it
+  // again while the background reindex runs.
+  return withPending(document.getElementById('k-reindex-btn'), 'reindex', async function(){
+    try {
+      var r = await fetch('/api/rag/reindex', {method:'POST'}).then(function(r){return r.json();});
+      if(r && r.error){ document.getElementById('k-status-text').textContent = r.error; return; }
+    } catch(e){ return; }
     loadKStatus();
-  } catch(e){ btn.disabled = false; }
+  });
 }
 
 async function capture(){
@@ -217,15 +221,17 @@ async function capture(){
   if(!t) return;
   var st = document.getElementById('k-capture-status');
   var btn = document.getElementById('k-capture-btn');
-  st.textContent = 'Saving…'; btn.disabled = true;
+  st.textContent = 'Saving…';
+  return withPending(btn, 'capture', async function(){
   try {
     var r = await fetch('/api/rag/capture', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t, sensitivity:document.getElementById('k-capture-sensitivity').value})}).then(function(r){return r.json();});
     if(r.error){ st.textContent = r.error; return; }
-    st.innerHTML = 'Saved as <code>'+esc(r.path)+'</code> ('+esc(r.type)+'). Searchable after the next sync.';
+    st.innerHTML = 'Saved as <code>'+esc(r.path)+'</code> ('+esc(r.type)+'). Searchable after the next sync.' +
+      (r.note ? ' ' + esc(r.note) : '');
     document.getElementById('k-capture-text').value = '';
     loadKStatus();
   } catch(e){ st.textContent = 'Capture failed.'; }
-  finally { btn.disabled = false; }
+  });
 }
 
 bindEvents([
@@ -282,7 +288,9 @@ document.addEventListener('click', function(e){
     attribute: decodeURIComponent(b.dataset.attr),
     value: decodeURIComponent(b.dataset.value),
     verified: newV,
-  })}).then(function(){ loadFacts(); }).catch(function(){});
+  })}).catch(function(){ return null; }).then(function(res){
+    return writeOk(res, 'Could not update the fact').then(function(){ loadFacts(); });
+  });
 });
 document.getElementById('k-query').addEventListener('keydown',function(e){
   if(e.key==='Enter' && (e.metaKey || e.ctrlKey)){ e.preventDefault(); ask(); }

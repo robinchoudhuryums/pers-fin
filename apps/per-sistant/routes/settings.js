@@ -1,6 +1,6 @@
 const express = require("express");
 const { isAIAvailable } = require("../ai");
-const { loadKeepAliveConfig } = require("../services/keep-alive");
+const { loadKeepAliveConfig, alwaysOn } = require("../services/keep-alive");
 
 const VALID_PALETTES = ["copper", "indigo", "forest", "slate", "plum", "mono"];
 // The Settings page's theme options. theme and perfin_url used to be stored
@@ -23,6 +23,7 @@ function normalizePerfinUrl(v) {
 }
 
 const { serverError } = require("../errors");
+const { todayStr } = require("./health");
 
 module.exports = function ({ pool, config }) {
   const router = express.Router();
@@ -33,7 +34,7 @@ module.exports = function ({ pool, config }) {
     try {
       const cfg = await loadKeepAliveConfig();
       res.json({
-        enabled: cfg.keep_alive_enabled,
+        enabled: !alwaysOn() && !!cfg.keep_alive_enabled,
         start: cfg.keep_alive_start,
         end: cfg.keep_alive_end,
         timezone: cfg.keep_alive_timezone,
@@ -60,7 +61,7 @@ module.exports = function ({ pool, config }) {
 
   router.patch("/api/settings", async (req, res) => {
     try {
-      const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, vault_enabled, vault_repo, vault_branch, job_radar_enabled } = req.body;
+      const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, vault_enabled, vault_repo, vault_branch, job_radar_enabled, ai_monthly_budget_cents } = req.body;
       const fields = [];
       const params = [];
       let idx = 1;
@@ -75,7 +76,13 @@ module.exports = function ({ pool, config }) {
         if (url === undefined) return res.status(400).json({ error: "perfin_url must be an http(s) URL (or empty to clear it)." });
         fields.push(`perfin_url = $${idx++}`); params.push(url);
       }
-      if (perfin_webhook_recipient !== undefined) { fields.push(`perfin_webhook_recipient = $${idx++}`); params.push(perfin_webhook_recipient || null); }
+      if (perfin_webhook_recipient !== undefined) {
+        // F112: one valid address (or empty to clear) — an invalid one used to
+        // be stored, and every Perfin digest then failed at send time unseen.
+        const rcpt = perfin_webhook_recipient == null ? "" : String(perfin_webhook_recipient).trim();
+        if (rcpt && !config.EMAIL_REGEX.test(rcpt)) return res.status(400).json({ error: "perfin_webhook_recipient must be one email address (or empty to clear it)." });
+        fields.push(`perfin_webhook_recipient = $${idx++}`); params.push(rcpt || null);
+      }
       if (palette !== undefined) {
         if (!VALID_PALETTES.includes(palette)) return res.status(400).json({ error: `palette must be one of ${VALID_PALETTES.join(", ")}` });
         fields.push(`palette = $${idx++}`); params.push(palette);
@@ -97,6 +104,20 @@ module.exports = function ({ pool, config }) {
       // VAULT_GITHUB_TOKEN env var, never stored here).
       if (vault_enabled !== undefined) { fields.push(`vault_enabled = $${idx++}`); params.push(!!vault_enabled); }
       if (job_radar_enabled !== undefined) { fields.push(`job_radar_enabled = $${idx++}`); params.push(!!job_radar_enabled); }
+      // Roadmap T2.3 C4: the monthly AI budget in cents — an integer 1–10000
+      // ($0.01–$100), or null to fall back to PERSISTENT_AI_BUDGET_CENTS / $1.00.
+      // Number(), not parseInt(): "6abc" or 1.5 is refused, never truncated (INV-59).
+      if (ai_monthly_budget_cents !== undefined) {
+        if (ai_monthly_budget_cents === null) {
+          fields.push("ai_monthly_budget_cents = NULL");
+        } else {
+          const cents = typeof ai_monthly_budget_cents === "string" && ai_monthly_budget_cents.trim() === "" ? NaN : Number(ai_monthly_budget_cents);
+          if (!["number", "string"].includes(typeof ai_monthly_budget_cents) || !Number.isInteger(cents) || cents < 1 || cents > 10000) {
+            return res.status(400).json({ error: "ai_monthly_budget_cents must be an integer between 1 and 10000 (cents), or null to use the default." });
+          }
+          fields.push(`ai_monthly_budget_cents = $${idx++}`); params.push(cents);
+        }
+      }
       // Switching the vault repo or branch invalidates the last-indexed SHA:
       // an incremental diff from the OLD repo's commit is meaningless, and
       // the old repo's documents/facts would never be swept. NULLing it forces
@@ -136,7 +157,7 @@ module.exports = function ({ pool, config }) {
   router.get("/api/stats", async (req, res) => {
     try {
       const [todos, emails, notes] = await Promise.all([
-        pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false)) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= CURRENT_DATE) as overdue FROM todos WHERE deleted_at IS NULL"),
+        pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false)) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL", [todayStr()]),
         pool.query("SELECT count(*) FILTER (WHERE status = 'draft') as drafts, count(*) FILTER (WHERE status = 'scheduled') as scheduled, count(*) FILTER (WHERE status = 'sent') as sent, count(*) FILTER (WHERE status = 'failed') as failed FROM emails WHERE deleted_at IS NULL"),
         pool.query("SELECT count(*) as total FROM notes WHERE deleted_at IS NULL"),
       ]);
@@ -152,3 +173,19 @@ module.exports = function ({ pool, config }) {
 
   return router;
 };
+
+// Open tasks due today and overdue (due before today), as of `today` — an
+// APP_TIMEZONE 'YYYY-MM-DD' (design D7: the shell landing page's Per-sistant
+// line). Trashed tasks are left out, like /api/stats. Note /api/stats' own
+// "overdue" counts a task due today too; this splits the two.
+async function taskDueCounts(pool, today = todayStr()) {
+  const r = await pool.query(
+    "SELECT count(*) FILTER (WHERE due_date = $1::date)::int AS due_today, " +
+    "count(*) FILTER (WHERE due_date < $1::date)::int AS overdue " +
+    "FROM todos WHERE deleted_at IS NULL AND NOT completed",
+    [today],
+  );
+  const row = r.rows[0] || {};
+  return { due_today: Number(row.due_today) || 0, overdue: Number(row.overdue) || 0 };
+}
+module.exports.taskDueCounts = taskDueCounts;

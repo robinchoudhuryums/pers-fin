@@ -400,8 +400,9 @@ async function completeRecurringTodo(pool, id) {
     const isOnTime = !todo.due_date || today <= ymdLocal(new Date(todo.due_date));
     const newStreak = isOnTime ? (todo.streak_count || 0) + 1 : 1;
     const newBest = Math.max(newStreak, todo.best_streak || 0);
-    await client.query("UPDATE todos SET completed = true, completed_at = now(), streak_count = $2, best_streak = $3, last_streak_date = $4 WHERE id = $1",
-      [todo.id, newStreak, newBest, today]);
+    // streak_before_completion lets Undo restore the real streak (F124).
+    await client.query("UPDATE todos SET completed = true, completed_at = now(), streak_count = $2, best_streak = $3, last_streak_date = $4, streak_before_completion = $5 WHERE id = $1",
+      [todo.id, newStreak, newBest, today, todo.streak_count || 0]);
     // The chain keeps its ORIGINAL day-of-month (PD-2) and the next instance
     // is due after today (PD-3).
     const anchor = recurrenceAnchorDay(todo);
@@ -461,8 +462,12 @@ async function undoCompleteRecurringTodo(pool, id, nextId) {
          AND created_at >= now() - interval '1 day'
        RETURNING streak_count`, [nid, chain]);
     if (!del.rows.length) { await client.query("ROLLBACK"); return { status: 409, error: "The next instance has already changed — undo it by hand." }; }
-    // Its streak_count is the value this completion set; step back by one.
-    const prevStreak = Math.max(0, (del.rows[0].streak_count || 0) - 1);
+    // The streak before this completion (F124 — a late completion reset it
+    // to 1, so stepping the next instance's streak back by one gave 0); rows
+    // completed before db/027 fall back to that step-back.
+    const prevStreak = todo.streak_before_completion != null
+      ? todo.streak_before_completion
+      : Math.max(0, (del.rows[0].streak_count || 0) - 1);
     await client.query("UPDATE todos SET completed = false, completed_at = NULL, streak_count = $2 WHERE id = $1", [todo.id, prevStreak]);
     await client.query("COMMIT");
     return { ok: true, reopened: todo.id, removed_next: nid };

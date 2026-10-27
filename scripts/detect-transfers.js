@@ -69,6 +69,42 @@ function isTransferMerchant(merchantKey) {
   return classifyTransfer(merchantKey) !== null;
 }
 
+// F49: a raw bank description is matched only against the PHRASE-like types —
+// peer apps (except PayPal, which also prefixes ordinary purchases: "PAYPAL
+// *NETFLIX"), bill payments and internal transfers. Brand words (Vanguard,
+// Schwab, "savings") stay merchant-only, like NOT_TRANSFER's brand list (F32).
+const RAW_DESCRIPTION_TYPES = ["peer_transfer", "bill_payment", "internal"];
+const RAW_DESCRIPTION_SKIP = new Set(["paypal"]);
+function classifyTransferDescription(description) {
+  if (!description) return null;
+  const lower = String(description).toLowerCase();
+  for (const type of RAW_DESCRIPTION_TYPES) {
+    if (TRANSFER_PATTERNS[type].some((kw) => {
+      if (RAW_DESCRIPTION_SKIP.has(kw)) return false;
+      if (kw.includes(" ")) return lower.includes(kw);
+      const re = new RegExp("\\b" + kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      return re.test(lower);
+    })) return type;
+  }
+  return null;
+}
+
+// The type a transaction reads as: its merchant key first, then (F49) its raw
+// description — "ZELLE TO JOHN SMITH" with counterparty "John Smith" is a
+// peer transfer even though the key is just a name.
+function classifyTransferTxn(merchantKey, rawDescription) {
+  return classifyTransfer(merchantKey) || classifyTransferDescription(rawDescription);
+}
+
+// The group's type: the most common per-transaction type (ties → first seen).
+function groupTransferType(txns) {
+  const counts = new Map();
+  for (const t of txns) if (t.transfer_type) counts.set(t.transfer_type, (counts.get(t.transfer_type) || 0) + 1);
+  let best = null, bestN = 0;
+  for (const [type, n] of counts) if (n > bestN) { best = type; bestN = n; }
+  return best;
+}
+
 async function detectRecurringTransfers(externalPool) {
   const ownPool = !externalPool;
   const pool = externalPool || new Pool({
@@ -88,6 +124,8 @@ async function detectRecurringTransfers(externalPool) {
         transaction_id,
         COALESCE(user_merchant_name, merchant_name, LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9 ]', '', 'g'))) AS merchant_key,
         COALESCE(user_merchant_name, merchant_name, name) AS display_name,
+        -- F49: the raw description, read only when the user hasn't renamed.
+        CASE WHEN user_merchant_name IS NULL THEN name END AS raw_description,
         amount,
         date
       FROM transactions
@@ -101,8 +139,11 @@ async function detectRecurringTransfers(externalPool) {
     for (const txn of txns) {
       const key = txn.merchant_key?.trim();
       if (!key) continue;
-      // Only include transactions that match transfer patterns
-      if (!isTransferMerchant(key)) continue;
+      // Only include transactions that match transfer patterns — on the
+      // merchant key or (F49) the raw description.
+      const type = classifyTransferTxn(key, txn.raw_description);
+      if (!type) continue;
+      txn.transfer_type = type;
       if (!groups[key]) groups[key] = [];
       groups[key].push(txn);
     }
@@ -183,7 +224,7 @@ async function detectRecurringTransfers(externalPool) {
               last_transferred: lastTxn.date,
               next_expected: nextOccurrence(lastTxn.date, targetCadence), // DC-9 calendar-month stepping
               is_active: true,
-              transfer_type: classifyTransfer(merchantKey) || "other",
+              transfer_type: classifyTransfer(merchantKey) || groupTransferType(filtered) || "other",
               direction,
               amount_changed: priorAmount !== null && Math.abs(latestAmount - priorAmount) > 0.01,
             });
@@ -269,4 +310,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { detectRecurringTransfers, classifyTransfer, isTransferMerchant, TRANSFER_PATTERNS };
+module.exports = { detectRecurringTransfers, classifyTransfer, classifyTransferDescription, classifyTransferTxn, isTransferMerchant, TRANSFER_PATTERNS };

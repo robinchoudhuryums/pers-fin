@@ -267,7 +267,7 @@ ${themeScript()}
     <p>Enter your password to continue</p>
     <form id="login-form">
       <input type="password" id="pw" placeholder="Password" autofocus required>
-      <button type="submit">Sign In</button>
+      <button type="submit">Sign in</button>
     </form>
     <div id="error" class="error-msg"></div>
     `}
@@ -339,8 +339,11 @@ ${themeScript()}
           document.getElementById('dot-' + i).className = 'pin-dot' + (i < pin.length ? ' filled' : '');
         }
       }
+      // F124 (parity with Perfin IF-6): the 8 dots are only a mask — a longer
+      // PIN can be typed (it used to stop at 8, so a 9+ digit PIN could never
+      // log in). 64 is a sanity bound.
       function handleDigit(n) {
-        if (pin.length >= pinLen || submitting) return;
+        if (pin.length >= 64 || submitting) return;
         pin += n;
         updateDots();
         errEl.style.display = 'none';
@@ -390,9 +393,10 @@ ${themeScript()}
     const { password } = req.body;
     if (!AUTH_SECRET) return res.json({ ok: true });
     if (!password) return res.status(400).json({ error: (AUTH_MODE === "pin" ? "PIN" : "Password") + " required" });
-    const providedBuf = Buffer.from(String(password));
-    const expectedBuf = Buffer.from(AUTH_SECRET);
-    if (providedBuf.length === expectedBuf.length && crypto.timingSafeEqual(providedBuf, expectedBuf)) {
+    // Fixed-length SHA-256 digests (INV-104; seams audit #3) — a raw-buffer
+    // compare behind a length check leaked the secret's length.
+    const digest = (v) => crypto.createHash("sha256").update(String(v)).digest();
+    if (crypto.timingSafeEqual(digest(password), digest(AUTH_SECRET))) {
       let timeout = 15;
       try {
         const r = await pool.query("SELECT session_timeout_minutes FROM user_settings WHERE id = 1");

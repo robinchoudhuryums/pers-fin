@@ -347,20 +347,20 @@ function importCsvsFromDrive() {
     const result = parseCsvFile_(content, filename, importId, existingIds);
 
     if (result.rows.length > 0) {
-      txnSheet.getRange(txnSheet.getLastRow() + 1, 1, result.rows.length, 8).setValues(result.rows);
+      txnSheet.getRange(txnSheet.getLastRow() + 1, 1, result.rows.length, 8).setValues(guardRows_(result.rows));
       // Add new IDs to the set
       result.rows.forEach(r => existingIds.add(r[7]));
     }
 
     // Log the import
-    logSheet.appendRow([
+    logSheet.appendRow(guardRows_([[
       new Date(),
       filename,
       result.institution,
       result.format,
       result.imported,
       result.skipped,
-    ]);
+    ]])[0]);
 
     totalImported += result.imported;
     totalSkipped += result.skipped;
@@ -417,12 +417,12 @@ function autoImportFromDrive() {
     const result = parseCsvFile_(content, file.getName(), importId, existingIds);
 
     if (result.rows.length > 0) {
-      txnSheet.getRange(txnSheet.getLastRow() + 1, 1, result.rows.length, 8).setValues(result.rows);
+      txnSheet.getRange(txnSheet.getLastRow() + 1, 1, result.rows.length, 8).setValues(guardRows_(result.rows));
       result.rows.forEach(r => existingIds.add(r[7]));
       anyImported = true;
     }
 
-    logSheet.appendRow([new Date(), file.getName(), result.institution, result.format, result.imported, result.skipped]);
+    logSheet.appendRow(guardRows_([[new Date(), file.getName(), result.institution, result.format, result.imported, result.skipped]])[0]);
     file.moveTo(processedFolder);
   }
 
@@ -717,7 +717,7 @@ function detectSubscriptions() {
     subSheet.getRange(2, 1, subSheet.getLastRow() - 1, 12).clearContent();
   }
   if (finalRows.length > 0) {
-    subSheet.getRange(2, 1, finalRows.length, 12).setValues(finalRows);
+    subSheet.getRange(2, 1, finalRows.length, 12).setValues(guardRows_(finalRows));
   }
 
   // Format
@@ -940,10 +940,10 @@ function buildDashboard() {
 
   // Write all rows
   if (rows.length > 0) {
-    dashSheet.getRange(1, 1, rows.length, 6).setValues(rows.map(r => {
+    dashSheet.getRange(1, 1, rows.length, 6).setValues(guardRows_(rows.map(r => {
       while (r.length < 6) r.push("");
       return r.slice(0, 6);
-    }));
+    })));
   }
 
   // Apply formatting (pass section positions for sparklines + charts)
@@ -1122,7 +1122,7 @@ function syncSubscriptionsFromServer_(ss) {
     subSheet.getRange(2, 1, subSheet.getLastRow() - 1, 12).clearContent();
   }
   if (finalRows.length > 0) {
-    subSheet.getRange(2, 1, finalRows.length, 12).setValues(finalRows);
+    subSheet.getRange(2, 1, finalRows.length, 12).setValues(guardRows_(finalRows));
   }
 
   formatSubscriptionsSheet_(subSheet, finalRows.length);
@@ -1187,7 +1187,7 @@ function syncTransactionsFromServer_(ss) {
   }
 
   if (newRows.length > 0) {
-    txnSheet.getRange(txnSheet.getLastRow() + 1, 1, newRows.length, 8).setValues(newRows);
+    txnSheet.getRange(txnSheet.getLastRow() + 1, 1, newRows.length, 8).setValues(guardRows_(newRows));
     // Sort by date descending
     if (txnSheet.getLastRow() > 1) {
       txnSheet.getRange(2, 1, txnSheet.getLastRow() - 1, 8).sort({ column: 1, ascending: false });
@@ -1199,7 +1199,7 @@ function syncTransactionsFromServer_(ss) {
 
 function logSync_(ss, source, txnCount, subCount, status) {
   const logSheet = ss.getSheetByName(CONFIG.SHEET_SYNC_LOG) || ensureSheet_(ss, CONFIG.SHEET_SYNC_LOG, ["Timestamp", "Source", "Transactions Synced", "Subscriptions Synced", "Status"]);
-  logSheet.appendRow([new Date(), source, txnCount, subCount, status]);
+  logSheet.appendRow(guardRows_([[new Date(), source, txnCount, subCount, status]])[0]);
 }
 
 // ============================================================================
@@ -1502,6 +1502,23 @@ function runAll() {
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+
+// Formula-injection guard (cycle-7 F84 — parity with scripts/sheets-sync.js
+// guardCell, SXE-13). setValues / appendRow treat a string starting with
+// = + - @ as a formula, so a merchant or file name "=IMPORTXML(…)" would run.
+// Such strings get a leading apostrophe (Sheets' literal-text marker); plain
+// signed numbers / amounts / percentages pass through as data. This script
+// writes no formulas of its own through these calls.
+var PLAIN_NUMBER_RE_ = /^[+-]?\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$/;
+function guardCell_(v) {
+  if (typeof v !== "string") return v;
+  if (PLAIN_NUMBER_RE_.test(v)) return v;
+  if (/^[=+\-@\t\r]/.test(v)) return "'" + v;
+  return v;
+}
+function guardRows_(rows) {
+  return rows.map(function (row) { return row.map(guardCell_); });
+}
 
 /**
  * SXE-15: the server's scripts/sheets-sync.js ALSO writes tabs named

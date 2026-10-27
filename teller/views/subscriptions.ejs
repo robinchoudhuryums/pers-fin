@@ -46,18 +46,18 @@
   <p class="subtitle">Detected recurring charges and manually tracked subscriptions</p>
 
   <div class="summary">
-    <div class="card"><div class="label">Subscriptions/mo</div><div class="value cost" id="subs-cost">--</div><div class="sub" id="subs-count"></div></div>
-    <div class="card"><div class="label">Utilities/mo</div><div class="value cost" id="utils-cost">--</div><div class="sub" id="utils-count"></div></div>
-    <div class="card"><div class="label">Total Monthly</div><div class="value cost" id="monthly-cost">--</div></div>
+    <div class="card"><div class="label">Subscriptions/mo</div><div class="value" id="subs-cost">--</div><div class="sub" id="subs-count"></div></div>
+    <div class="card"><div class="label">Utilities/mo</div><div class="value" id="utils-cost">--</div><div class="sub" id="utils-count"></div></div>
+    <div class="card"><div class="label">Total Monthly</div><div class="value" id="monthly-cost">--</div></div>
     <div class="card"><div class="label">Total Yearly</div><div class="value count" id="yearly-cost">--</div></div>
   </div>
 
   <div class="actions">
-    <button class="primary" id="sync-btn">Sync Transactions</button>
-    <button class="primary" id="detect-btn">Run Detection</button>
-    <button id="add-btn">+ Add Manual</button>
+    <button class="primary" id="sync-btn">Sync transactions</button>
+    <button class="primary" id="detect-btn">Run detection</button>
+    <button id="add-btn">+ Add manual</button>
     <button id="sheets-btn">Sync to Sheets</button>
-    <select id="filter-select">
+    <select id="filter-select" aria-label="Show subscriptions">
       <option value="active">Active</option>
       <option value="dismissed">Dismissed</option>
       <option value="cancelled">Cancelled</option>
@@ -70,18 +70,18 @@
   <div class="manual-form" id="manual-form">
     <h3>Add Subscription Manually</h3>
     <div class="fields">
-      <div class="field"><label>Service Name</label><input name="name" placeholder="e.g. Netflix"></div>
-      <div class="field"><label>Amount ($)</label><input name="amount" type="number" step="0.01" placeholder="15.99"></div>
+      <div class="field"><label for="manual-sub-name">Service Name</label><input id="manual-sub-name" name="name" placeholder="e.g. Netflix"></div>
+      <div class="field"><label for="manual-sub-amount">Amount ($)</label><input id="manual-sub-amount" name="amount" type="number" step="0.01" placeholder="15.99"></div>
       <div class="field">
-        <label>Billing Cycle</label>
-        <select name="cadence">
+        <label for="manual-sub-cadence">Billing Cycle</label>
+        <select id="manual-sub-cadence" name="cadence">
           <option value="30">Monthly</option>
           <option value="90">Quarterly</option>
           <option value="365">Yearly</option>
           <option value="60">Every 2 months</option>
         </select>
       </div>
-      <div class="field"><label>Notes (optional)</label><input name="notes" placeholder="Family plan, etc."></div>
+      <div class="field"><label for="manual-sub-notes">Notes (optional)</label><input id="manual-sub-notes" name="notes" placeholder="Family plan, etc."></div>
       <div class="field"><label>&nbsp;</label><button class="primary" id="add-manual-btn">Add</button></div>
     </div>
   </div>
@@ -140,18 +140,25 @@
         document.getElementById('monthly-cost').textContent = fmt(data.summary.monthly_cost);
         document.getElementById('yearly-cost').textContent = fmt(data.summary.yearly_cost);
         if (!data.subscriptions.length) {
-          tbody.innerHTML = '<tr><td colspan="6" class="empty">No subscriptions found. Import transactions or add manually.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">' + emptyState({ title: 'No subscriptions found',
+            text: 'Run detection over your transactions, or add one by hand with + Add manual.',
+            action: { label: 'Run detection', click: 'detect-btn' } }) + '</td></tr>';
           return;
         }
         tbody.innerHTML = data.subscriptions.map(s => {
           const badges = [];
           if (s.is_new) badges.push('<span class="badge badge-new">NEW</span>');
-          if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
+          // F53: say how much a price RISE was; any other change keeps the generic badge.
+          const rise = s.amount_changed && Number(s.prior_amount) > 0 ? Number(s.amount) - Number(s.prior_amount) : 0;
+          if (rise > 0) badges.push('<span class="badge badge-price">PRICE UP ' + fmt(rise) + '</span>');
+          else if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
           if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
           if (s.category === 'utility') badges.push('<span class="badge badge-utility">UTILITY</span>');
           else if (s.display_category && s.display_category !== 'other') badges.push('<span class="badge badge-category">' + esc(s.display_category) + '</span>');
           if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
           if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
+          // F53: a cancelled subscription the merchant charged again after the cancellation.
+          if (s.cancelled_at && s.still_charging_at) badges.push('<span class="badge badge-cancelled" title="Charged ' + esc(fmt(s.still_charging_amount)) + ' on ' + esc(parseCalDate(s.still_charging_at).toLocaleDateString()) + ' after you cancelled it">STILL CHARGING</span>');
           const overdue = !s.cancelled_at && isOverdue(s.next_expected);
           const nextClass = overdue ? 'next-date overdue' : 'next-date';
           const nextLabel = s.cancelled_at ? 'Cancelled ' + new Date(s.cancelled_at).toLocaleDateString() : parseCalDate(s.next_expected).toLocaleDateString();
@@ -199,7 +206,7 @@
         }
         else showMsg('Sync failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
       } catch (e) { showMsg('Sync failed: Could not reach server. ' + e.message, false); }
-      btnLoading(btn, false, 'Sync Transactions');
+      btnLoading(btn, false, 'Sync transactions');
     }
 
     async function runDetection() {
@@ -211,12 +218,13 @@
         if (res.ok) { showMsg('Detection complete: ' + data.detected_count + ' subscriptions found.', true); loadSubscriptions(); }
         else showMsg('Detection failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
       } catch (e) { showMsg('Detection failed: Could not reach server. ' + e.message, false); }
-      btnLoading(btn, false, 'Run Detection');
+      btnLoading(btn, false, 'Run detection');
     }
 
     function toggleManualForm() {
+      // F100: hidden by CSS at first, so style.display is '' — use the computed value.
       const form = document.getElementById('manual-form');
-      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+      form.style.display = getComputedStyle(form).display === 'none' ? 'block' : 'none';
     }
 
     async function addManual() {

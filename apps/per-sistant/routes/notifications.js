@@ -7,6 +7,7 @@ const express = require("express");
 const { serverError } = require("../errors");
 const { upcomingFacts } = require("./rag");
 const { gatherHealthSummary, todayStr } = require("./health");
+const APP_TIMEZONE = process.env.APP_TIMEZONE || "UTC";
 const { gatherJobRadarSummary } = require("./jobs");
 const { housingDue, housingDueSuffix } = require("./housing-due");
 
@@ -18,7 +19,8 @@ async function jobRadarLeads(pool) {
     const s = await pool.query("SELECT job_radar_enabled FROM user_settings WHERE id = 1");
     if (!s.rows.length || !s.rows[0].job_radar_enabled) return { count: 0, top: null };
     const summary = await gatherJobRadarSummary(pool);
-    return { count: summary.counts.main, top: summary.top_pick };
+    // F114: new (not saved) high-fit roles only, keyed to the newest one.
+    return { count: summary.counts.main_new || 0, top: summary.top_new, stamp: summary.newest_first_seen };
   } catch { return { count: 0, top: null }; }
 }
 
@@ -36,6 +38,23 @@ async function vaultSyncError(pool) {
   } catch { return null; }
 }
 
+// Emails that failed to send (F112): the scheduled-send cron and Perfin's
+// digests mark a failure 'failed' with an error_message, and nothing ever
+// showed it — a broken SMTP setup or bad recipient went unnoticed. Surfaced
+// for FAILED_EMAIL_DAYS after the failure; opening it and pressing Send now
+// retries (the send claim accepts any status but 'sent'). Fail-soft.
+const FAILED_EMAIL_DAYS = 14;
+async function failedEmails(pool) {
+  try {
+    const r = await pool.query(
+      `SELECT id, subject, recipient_email, error_message, updated_at FROM emails
+        WHERE deleted_at IS NULL AND status = 'failed'
+          AND updated_at > now() - make_interval(days => $1)
+        ORDER BY updated_at DESC LIMIT 10`, [FAILED_EMAIL_DAYS]);
+    return r.rows;
+  } catch { return []; }
+}
+
 // How far ahead to surface a fact's renewal/expiration (days).
 const FACT_LOOKAHEAD_DAYS = 30;
 
@@ -49,11 +68,13 @@ module.exports = function ({ pool }) {
       // the evening tomorrow's tasks read "due today").
       const today = todayStr();
       const perfinPool = req.app.get("perfinPool");
-      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar, vaultErr] = await Promise.all([
+      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar, vaultErr, failedMail] = await Promise.all([
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
         pool.query("SELECT id, title, streak_count, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND recurring = true AND streak_count >= 3 AND due_date = $1", [today]),
-        pool.query("SELECT id, COALESCE(title, LEFT(content,50)) as title, reminder_at FROM notes WHERE deleted_at IS NULL AND reminder_at IS NOT NULL AND DATE(reminder_at) = $1", [today]),
+        // F115: the reminder's LOCAL (APP_TIMEZONE) day — DATE(reminder_at) is
+        // the UTC day, so an evening reminder west of UTC showed a day late.
+        pool.query("SELECT id, COALESCE(title, CASE WHEN sensitivity = 'secret' THEN 'Secret note' ELSE LEFT(content, 50) END) as title, reminder_at FROM notes WHERE deleted_at IS NULL AND reminder_at IS NOT NULL AND (reminder_at AT TIME ZONE $2)::date = $1", [today, APP_TIMEZONE]),
         upcomingFacts(pool, FACT_LOOKAHEAD_DAYS),
         // Fail-soft: a health-tables error degrades to "no habit alerts"
         // rather than 500ing the whole notification check.
@@ -63,6 +84,7 @@ module.exports = function ({ pool }) {
         // Job Radar high-fit leads (fail-soft; no-op when disabled).
         jobRadarLeads(pool),
         vaultSyncError(pool),
+        failedEmails(pool),
       ]);
       const notifications = [];
       dueSoon.rows.forEach(t => notifications.push({ type: "due_today", title: t.title, id: t.id, entity: "todo" }));
@@ -110,10 +132,18 @@ module.exports = function ({ pool }) {
         notifications.push({
           type: "job_radar",
           title: `Job Radar: ${jobRadar.count} new high-fit role${jobRadar.count === 1 ? "" : "s"} — top: ${lead}`,
-          id: null,
+          // The newest new lead's first_seen: the client re-notifies only when
+          // it changes (a newer listing), not every 12 hours (F114).
+          id: jobRadar.stamp || null,
           entity: "job",
         });
       }
+      failedMail.forEach(e => notifications.push({
+        type: "email_failed",
+        title: `"${e.subject}" to ${e.recipient_email}${e.error_message ? ": " + String(e.error_message).slice(0, 100) : ""}`,
+        id: e.id,
+        entity: "email",
+      }));
       if (vaultErr) {
         const since = vaultErr.last_ok ? ` (last good sync ${new Date(vaultErr.last_ok).toISOString().slice(0, 10)})` : "";
         notifications.push({
@@ -136,6 +166,7 @@ module.exports = function ({ pool }) {
           housing_due: housing ? 1 : 0,
           job_radar: jobRadar ? jobRadar.count : 0,
           vault_sync_error: vaultErr ? 1 : 0,
+          email_failed: failedMail.length,
         },
       });
     } catch (err) { serverError(res, err); }

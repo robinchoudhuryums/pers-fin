@@ -54,11 +54,59 @@ if (!ENCRYPTION_PASSPHRASE) {
 // (gated on `currentVersion < 3`) instead of on every boot.
 const SCHEMA_VERSION = 3;
 
-async function runMigrations() {
+// Migration locking (cycle-7 F10). Each boot re-runs ~100 idempotent ALTER
+// TABLE statements in one transaction, and ALTER TABLE takes an ACCESS
+// EXCLUSIVE lock even when the column already exists. Two things bound that:
+//   - an advisory lock (MIGRATION_LOCK_KEY), so a second instance booting
+//     during a deploy overlap waits for the first instead of interleaving;
+//   - lock_timeout, so a migration stuck behind a long query on the old
+//     instance gives up in seconds — while it waits, every new query on that
+//     table queues behind its lock request and the live app freezes.
+// A lock timeout (SQLSTATE 55P03) rolls back and is retried with backoff;
+// any other failure, or running out of attempts, is still fatal (INV-17).
+const MIGRATION_LOCK_KEY = 727274001; // Per-sistant uses 727274002
+const MIGRATION_LOCK_TIMEOUT = "5s";
+const MIGRATION_ATTEMPTS = 5;
+
+async function runMigrations({ attempts = MIGRATION_ATTEMPTS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await runMigrationsOnce();
+    } catch (err) {
+      if (err && err.code === "55P03" && attempt < attempts) {
+        console.warn(`Migration lock timeout (attempt ${attempt}/${attempts}) — retrying: ${err.message}`);
+        await sleep(2000 * attempt);
+        continue;
+      }
+      console.error("FATAL: Migration failed:", err.message);
+      throw err;
+    }
+  }
+}
+
+async function runMigrationsOnce() {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // Advisory lock FIRST, with no timeout: a second instance waits for the
+    // first runner (whose own statements are bounded by lock_timeout below).
+    await client.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK_KEY]);
+    await client.query(`SET LOCAL lock_timeout = '${MIGRATION_LOCK_TIMEOUT}'`);
     await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    // Cycle-7 F17: pgp_sym_decrypt RAISES on a wrong key (it doesn't return
+    // NULL), so one row encrypted under an old TOKEN_ENCRYPTION_PASSPHRASE
+    // failed the whole items query — every Teller/Plaid sync, the balance sync
+    // and the reconcile — and the per-row `decryption_failed` branches were
+    // dead code. Every token read goes through this wrapper: a row that won't
+    // decrypt is NULL, which those branches report and skip.
+    await client.query(`CREATE OR REPLACE FUNCTION perfin_try_decrypt(data bytea, key text)
+      RETURNS text LANGUAGE plpgsql STABLE AS $fn$
+      BEGIN
+        RETURN pgp_sym_decrypt(data, key);
+      EXCEPTION WHEN OTHERS THEN
+        RETURN NULL;
+      END
+      $fn$`);
 
     // Schema versioning — track which migration version has been applied
     await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -128,6 +176,20 @@ async function runMigrations() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_account_date ON transactions (account_id, date DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_merchant ON transactions (merchant_name) WHERE merchant_name IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions (date)`);
+    // Cycle-7 F54: when the categorize AI last saw this row and left it
+    // unanswered — it isn't re-sent for 30 days.
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS ai_skipped_at TIMESTAMPTZ");
+    // Cycle-7 F20: transactions the user deleted. The Teller and Plaid upserts
+    // skip these ids so a re-fetch (lookback, reconcile) can't resurrect them.
+    await client.query(`CREATE TABLE IF NOT EXISTS deleted_transactions (
+      transaction_id TEXT PRIMARY KEY,
+      deleted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    // Roadmap T2.5 U1: the deleted row (and its splits) as it was —
+    // { row, splits } — so Restore can put it back, and the connection it came
+    // from (teller / plaid / csv / manual). NULL on a tombstone written before.
+    await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS snapshot JSONB");
+    await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS source TEXT");
     await client.query(`CREATE TABLE IF NOT EXISTS detected_subscriptions (
       id             SERIAL PRIMARY KEY,
       merchant_key   TEXT NOT NULL,
@@ -188,6 +250,13 @@ async function runMigrations() {
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancel_confirmed BOOLEAN NOT NULL DEFAULT false");
+    // Subscription watchdog (cycle-7 F53 / G5): the latest post-cancellation
+    // charge already alerted (one alert per charge) and the price last alerted
+    // (one alert per new price).
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS still_charging_txn TEXT");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS still_charging_at DATE");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS still_charging_amount NUMERIC(12,2)");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS price_alerted_amount NUMERIC(12,2)");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS notes TEXT");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'subscription'");
     // 004_balances.sql
@@ -202,6 +271,9 @@ async function runMigrations() {
     // (same pattern as the manual Discover credit limit). Drives the
     // dashboard's loan payoff projection (computeLoanPayoff).
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS monthly_payment NUMERIC(12,2)");
+    // Roadmap T2.2 L4: a per-account current-balance floor for the cash alerts
+    // (services/cash-alerts.js) — NULL = none; depository, non-investment only.
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS low_balance_floor NUMERIC(12,2)");
     // keep-alive settings
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
@@ -213,6 +285,9 @@ async function runMigrations() {
     // Enforce a sane lower bound at write time, not here, so existing rows
     // don't break if the bound shifts.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS shell_idle_timeout_minutes INT NOT NULL DEFAULT 60");
+    // Shell session epoch (cycle-7 F12): "Sign out everywhere" bumps it and the
+    // shell refuses any cookie signed with an older epoch.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS shell_session_epoch INT NOT NULL DEFAULT 0");
     // Pyramid visualization settings
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_data_source TEXT NOT NULL DEFAULT 'wellness'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_color_mode TEXT NOT NULL DEFAULT 'single'");
@@ -463,6 +538,12 @@ async function runMigrations() {
     // for the hint.
     await client.query(`ALTER TABLE webauthn_credentials
       ADD COLUMN IF NOT EXISTS transports TEXT[]`);
+    // Seams audit #3: credential ids used to be stored double-encoded, so no
+    // biometric login could match. Rewrite them to the real id (idempotent).
+    {
+      const n = await require("./webauthn-ids").repairCredentialIds(client);
+      if (n) console.log(`Repaired ${n} biometric credential id(s)`);
+    }
     // Recurring transfers — detected recurring transfers between accounts
     await client.query(`CREATE TABLE IF NOT EXISTS recurring_transfers (
       id SERIAL PRIMARY KEY,
@@ -530,6 +611,21 @@ async function runMigrations() {
       UNIQUE(merchant_pattern, category)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_categorization_rules_active ON categorization_rules (is_active) WHERE is_active = true");
+    // Merchant rename rules (cycle-7 F55 / ST2): raw merchant pattern → display
+    // name, applied at sync time; user_merchant_rule_id marks the rows a rule
+    // renamed (NULL = renamed by hand, which always wins).
+    await client.query(`CREATE TABLE IF NOT EXISTS merchant_rename_rules (
+      id SERIAL PRIMARY KEY,
+      merchant_pattern TEXT NOT NULL,
+      match_type TEXT NOT NULL DEFAULT 'exact' CHECK (match_type IN ('exact', 'starts_with', 'contains')),
+      rename_to TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      times_applied INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (merchant_pattern, match_type)
+    )`);
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_merchant_rule_id INT");
 
     // ---- Budget rollover / monthly snapshots ----
     await client.query("ALTER TABLE budgets ADD COLUMN IF NOT EXISTS rollover_enabled BOOLEAN NOT NULL DEFAULT false");
@@ -686,6 +782,10 @@ async function runMigrations() {
     // survives restarts — it used to be a 24-hour setInterval that needed 24h
     // of continuous uptime and essentially never fired).
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_csv_reminder_at TIMESTAMPTZ");
+    // Cycle-7 F63: the AI-insights auto-trigger stamps every ATTEMPT here, so a
+    // run that fails (cap reached, empty answer, DB error) isn't re-attempted —
+    // full Teller+Plaid sync chain included — on every 6-hour tick.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_last_attempt_at TIMESTAMPTZ");
 
     // ---- Self-healing reconcile watermark ----
     // Tracks the last time the trailing-window backfill (POST /api/sync/reconcile
@@ -724,6 +824,35 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS ai_monthly_budget_cents INT");
     // Critical-alert emails (budget exceeded / anomaly charges) — opt-in.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS critical_alert_emails_enabled BOOLEAN NOT NULL DEFAULT false");
+    // Insight emails (cycle-7 F81): every insight run emails the report
+    // (insights_generated). On by default — the old behaviour — and switchable
+    // off in Settings → AI Insights.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_emails_enabled BOOLEAN NOT NULL DEFAULT true");
+    // Cycle-7 G1 / ST4: the set of failing operator checks last notified, so a
+    // persistent problem (no backups, a disabled backstop) notifies once.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS operator_checks_signature TEXT");
+    // VPS move: deploy/vps/backup.sh stamps each verified nightly backup here;
+    // with SERVER_BACKUPS=true Operator Checks reads it (services/hosting.js).
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_backup_at TIMESTAMPTZ");
+    // Roadmap T2.2 L2: the low projected cash alert (services/cash-alerts.js) —
+    // off by default; the alert's dedup state and the last evaluation time.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_threshold NUMERIC(12,2) NOT NULL DEFAULT 500");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_horizon_days INT NOT NULL DEFAULT 14");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_state JSONB");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alerts_checked_at TIMESTAMPTZ");
+    // Roadmap T2.2 L3: payday alerts (services/payday-alerts.js) — off by
+    // default; the "Paycheck landed" watermark over transactions.created_at.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS payday_alerts_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_income_alert_at TIMESTAMPTZ");
+    // Roadmap T2.4 X2a: linked tasks — Perfin items kept as Per-sistant tasks
+    // (services/linked-tasks.js). Off by default; which sources (decision 5 —
+    // manual bills off); how many days before a manual bill its task opens;
+    // the last run's record (written by the runner, X2b).
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS linked_tasks_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS linked_tasks_sources JSONB NOT NULL DEFAULT '{"still_charging": true, "housing": true, "utility_amount": true, "bills": false}'::jsonb`);
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS linked_tasks_bill_lead_days INT NOT NULL DEFAULT 3");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS linked_tasks_state JSONB");
     // FIRE / runway projection assumptions (Goals page card). NULLs fall back
     // to defaults in GET /api/fire-projection (return 5%, withdrawal 4%,
     // spending derived from trailing months).
@@ -791,6 +920,17 @@ async function runMigrations() {
       UNIQUE(payee, period, category, label)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_payee_obligations_status ON payee_obligations (status, period)");
+    // Cycle-7 F33: an auto-generated obligation the user removes (a utility
+    // bill that won't come, a month with no rent) is remembered here, so the
+    // 6-hourly generation doesn't put it straight back. Keyed like the
+    // generation's own existence check (period + category + label, any payee).
+    await client.query(`CREATE TABLE IF NOT EXISTS payee_obligation_skips (
+      period     TEXT NOT NULL,
+      category   TEXT NOT NULL,
+      label      TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (period, category, label)
+    )`);
     await client.query(`CREATE TABLE IF NOT EXISTS payee_payments (
       id          SERIAL PRIMARY KEY,
       payee       TEXT NOT NULL,
@@ -808,6 +948,17 @@ async function runMigrations() {
     // status = 'GOOD', so flipping status would STOP retrying the item and it
     // could never self-clear. status stays 'GOOD' | 'CSV'. ----
     await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS last_error_code TEXT");
+    // When the item's transaction walk last reached the end of its cursor —
+    // the per-connection freshness a webhook-triggered sync advances without
+    // touching the global last_txn_sync_at (roadmap T2.1 W3).
+    await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ");
+    // The webhook URL each Plaid item was last registered with (link token or
+    // POST /api/plaid/webhooks/register — roadmap T2.1 W4); NULL = none known.
+    await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS webhook_url TEXT");
+    await client.query("ALTER TABLE plaid_investment_items ADD COLUMN IF NOT EXISTS webhook_url TEXT");
+    // When a Teller enrollment last synced every account and row — the
+    // per-connection freshness a webhook sync advances (roadmap T2.1 W5).
+    await client.query("ALTER TABLE teller_enrollments ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ");
 
     // ---- Settle-up log: one row per month the user marks squared with the
     // partner (combined shared-card + housing even-up). UNIQUE(period) so
@@ -880,6 +1031,66 @@ async function runMigrations() {
     )`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_flows_src_date ON investment_flows (source, source_id, flow_date)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_flows_date ON investment_flows (flow_date)`);
+    // Cycle-7 F24: when a Plaid account's external flows last synced
+    // completely. TWR/XIRR count a Plaid account as flow-covered only once
+    // this is set — before, every Plaid account counted as covered even if
+    // its flows never synced, so its deposits read as market return.
+    await client.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS flows_synced_at TIMESTAMPTZ");
+    // Cycle-7 G3: a Plaid investment account's mask (last digits), written by
+    // the holdings sync + both exchange paths, so the investments-only link
+    // can refuse a duplicate of an earlier investments-only Item (F18 guard).
+    await client.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS mask TEXT");
+    // Roadmap T3.3 K1: every Plaid investment transaction (buys, sells,
+    // dividends, interest, fees, corporate actions — investment_flows keeps only
+    // the external cash flows), written by the same investmentsTransactionsGet
+    // pages the flow sync reads. Kept beyond Plaid's 24-month window, so the
+    // lot history behind realized gains grows from here on. No FK to
+    // investment_accounts (like investment_flows): reset-fresh truncates both.
+    await client.query(`CREATE TABLE IF NOT EXISTS investment_transactions (
+      id SERIAL PRIMARY KEY,
+      plaid_investment_transaction_id TEXT NOT NULL UNIQUE,
+      investment_account_id INT NOT NULL,
+      txn_date DATE NOT NULL,
+      type TEXT NOT NULL,
+      subtype TEXT,
+      security_id TEXT,
+      ticker TEXT,
+      security_name TEXT,
+      security_type TEXT,
+      quantity NUMERIC(24,8),
+      price NUMERIC(24,8),
+      amount NUMERIC(18,4),
+      fees NUMERIC(18,4),
+      name TEXT,
+      cancel_transaction_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_txn_account_date
+      ON investment_transactions (investment_account_id, txn_date)`);
+
+    // Roadmap T3.3 K2: the year-end tax documents checklist (decision 5). One
+    // row per (tax year, form, issuer — case-insensitive). 'suggested' rows are
+    // derived from the year's data (services/tax-documents.js) and inserted ON
+    // CONFLICT DO NOTHING, so a row the user marked received or dismissed is
+    // never re-suggested; 'manual' rows are added by hand. The form list is
+    // services/tax-documents.FORMS (a test pins the two equal).
+    await client.query(`CREATE TABLE IF NOT EXISTS tax_documents (
+      id SERIAL PRIMARY KEY,
+      tax_year INT NOT NULL CHECK (tax_year BETWEEN 2000 AND 9999),
+      form TEXT NOT NULL CHECK (form IN ('W-2', '1099-INT', '1099-DIV', '1099-B', '1099-R',
+        '1099-NEC', '1099-MISC', '1099-K', '1099-G', '1098', '1098-E', '1098-T', '1095', 'other')),
+      issuer TEXT NOT NULL DEFAULT '',
+      expected_by DATE,
+      received_at DATE,
+      dismissed_at TIMESTAMPTZ,
+      origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('suggested', 'manual')),
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_tax_documents_year_form_issuer
+      ON tax_documents (tax_year, form, (LOWER(issuer)))`);
 
     // Scheduled-job heartbeat table (F4 — missed-job detection). One row per
     // background job in teller/startup.js, UPSERTed by services/job-health.js
@@ -893,6 +1104,45 @@ async function runMigrations() {
       last_error  TEXT,
       updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+
+    // In-app error log (roadmap T1.4): server errors grouped by fingerprint,
+    // written by services/error-log.js (the shell's console.error wrapper) and
+    // shown in Settings → Sync Health. A resolved row reopens when the error
+    // happens again; notified_at caps the notifications.
+    await client.query(`CREATE TABLE IF NOT EXISTS app_errors (
+      fingerprint TEXT PRIMARY KEY,
+      source      TEXT NOT NULL DEFAULT 'app',
+      message     TEXT NOT NULL,
+      sample      TEXT,
+      count       INT NOT NULL DEFAULT 1,
+      first_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ,
+      notified_at TIMESTAMPTZ
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_app_errors_last_seen ON app_errors (last_seen DESC)");
+
+    // Bank webhook event log (roadmap T2.1, W1): one row per VERIFIED Plaid /
+    // Teller delivery, written by routes/webhooks.js before it answers 200.
+    // dedupe_key is provider-supplied (Teller's event id; Plaid's signed
+    // verification header) so a replayed or re-delivered request is recorded
+    // and processed once. The request body is never stored. Pruned after 30
+    // days.
+    await client.query(`CREATE TABLE IF NOT EXISTS webhook_events (
+      id           BIGSERIAL PRIMARY KEY,
+      provider     TEXT NOT NULL CHECK (provider IN ('plaid', 'teller')),
+      event_type   TEXT,
+      event_code   TEXT,
+      subject      TEXT,
+      dedupe_key   TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'received'
+                   CHECK (status IN ('received', 'processing', 'done', 'failed', 'ignored')),
+      error        TEXT,
+      received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      processed_at TIMESTAMPTZ,
+      UNIQUE (provider, dedupe_key)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events (received_at DESC)");
 
     // One-shot cleanup: detection-key migration orphans (PSA1 — now genuinely
     // one-shot, gated on the schema version so it doesn't re-run every boot).
@@ -942,11 +1192,10 @@ async function runMigrations() {
     console.log("Migrations complete.");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
-    console.error("FATAL: Migration failed:", err.message);
     throw err;
   } finally {
     client.release();
   }
 }
 
-module.exports = { pool, ENCRYPTION_PASSPHRASE, runMigrations };
+module.exports = { pool, ENCRYPTION_PASSPHRASE, runMigrations, MIGRATION_LOCK_KEY };

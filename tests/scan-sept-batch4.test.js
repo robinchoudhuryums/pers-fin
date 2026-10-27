@@ -210,9 +210,10 @@ describe("DC-9 — month-scale cadences step by calendar month", () => {
     const subs = read("teller", "routes", "subscriptions.js");
     assert.match(subs, /nextExpected = nextOccurrence\(today, parsedCadence\)/);
     assert.doesNotMatch(subs, /cadence(_days)? \* 86400000/);
-    const sa = read("teller", "routes", "spending-analytics.js");
-    assert.match(sa, /seriesOccurrences\(sub\.last_date, sub\.next_expected, sub\.cadence_days, todayUtc, endUtc\)/);
-    assert.doesNotMatch(sa, /cadence \* 86400000/);
+    // The forecast moved to services/cash-flow.js (roadmap T2.2 L1).
+    const cf = read("teller", "services", "cash-flow.js");
+    assert.match(cf, /seriesOccurrences\(b\.last_date, b\.next_expected, b\.cadence_days, today, end\)/);
+    assert.doesNotMatch(cf, /cadence(_days)? \* 86400000/);
   });
 });
 
@@ -291,12 +292,11 @@ describe("DC-4 — a user's transfer-type reclassification sticks", () => {
 // ---------------------------------------------------------------------------
 describe("DC-5 — csv-overlap identifies CSV accounts by their virtual item", () => {
   const app = () => mountApp("../teller/routes/transactions");
-  it("GET joins plaid_items status = 'CSV' (not is_manual) and counts DISTINCT CSV rows", async () => {
+  it("GET joins plaid_items status = 'CSV' (not is_manual); rows are paired one-to-one (cycle-7 F21)", async () => {
     let sql = "";
-    dbModule.pool.query = async (s) => { sql = s; return { rows: [] }; };
+    dbModule.pool.query = async (s) => { if (/AS csv_txn/.test(s)) sql = s; return { rows: [] }; };
     await supertest(app()).get("/api/transactions/csv-overlap").expect(200);
     assert.match(sql, /pi_csv\.status = 'CSV'/);
-    assert.match(sql, /SELECT DISTINCT/);
     assert.match(sql, /pi_s\.status <> 'CSV'/);
     assert.doesNotMatch(sql, /is_manual = true/);
   });
@@ -323,8 +323,11 @@ describe("DC-5 — csv-overlap identifies CSV accounts by their virtual item", (
       { id: 3, account_id: "csv_other", plaid_item_id: 8, teller_enrollment_id: null, plaid_status: "CSV" },
     ];
     dbModule.pool.query = async (s, p) => {
-      if (/FROM linked_accounts la/.test(s)) return { rows: rows.filter(r => p[0].includes(r.id)) };
-      if (/SELECT t_csv\.transaction_id/.test(s)) return { rows: [{ transaction_id: "x1" }, { transaction_id: "x2" }] };
+      if (/AS csv_txn/.test(s)) return { rows: [
+        { csv_id: 1, synced_id: 2, csv_txn: "x1", synced_txn: "s1", day_gap: 0, csv_merchant: "SAFEWAY 123", synced_merchant: "Safeway" },
+        { csv_id: 1, synced_id: 2, csv_txn: "x2", synced_txn: "s2", day_gap: 1, csv_merchant: "SHELL OIL", synced_merchant: "Shell" },
+      ] };
+      if (/FROM linked_accounts la\b/.test(s)) return { rows: rows.filter(r => p[0].includes(r.id)) };
       return { rows: [] };
     };
     const ok = await supertest(app()).post("/api/transactions/csv-overlap/resolve").send({ csv_account_id: 1, synced_account_id: 2, dry_run: true });
@@ -371,7 +374,9 @@ describe("DC-6 / DC-15 — CSV import", () => {
     assert.equal(res.body.rows_skipped, 1, "rows_skipped no longer double-counts duplicates (matches the preview)");
     const upd = state.log.find(q => /UPDATE linked_accounts SET current_balance/.test(q.sql));
     assert.ok(upd, "balance update issued");
-    assert.deepEqual(upd.params, [980, 42], "1000 − 20 (only the Sep-10 row post-dates the balance)");
+    // 1000 − 20 (only the Sep-10 row post-dates the balance); the balance is
+    // then known as of that row's date (cycle-7 F25), not "now".
+    assert.deepEqual([upd.params[0], upd.params[1], upd.params[3]], [980, "2026-09-10", 42]);
     assert.ok(!state.log.some(q => /SELECT SUM\(amount\) AS net FROM transactions/.test(q.sql)));
     const hist = state.log.find(q => /INSERT INTO csv_imports/.test(q.sql));
     assert.equal(hist.params[4], 2, "history keeps 'not imported' = skipped + duplicates");

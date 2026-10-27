@@ -1,0 +1,129 @@
+# ============================================================================
+# Deploy to the VPS (deploy/vps/) — build the image, push it to GHCR, and have
+# the server pull and restart it.
+# ============================================================================
+# Runs after CI passes on main, or by hand (Actions → Deploy to VPS → Run
+# workflow, optionally with an existing tag to roll back to). Does NOTHING
+# until the repository variable VPS_DEPLOY_ENABLED is "true", so it can sit in
+# the repo while the app still runs on Render.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST         — the server's hostname or IP
+#   VPS_SSH_KEY      — the private half of the deploy key. Its public half is
+#                      pinned to /opt/pers-fin/deploy.sh in ~deploy/.ssh/
+#                      authorized_keys, so it can only deploy a tag
+#   VPS_KNOWN_HOSTS  — `ssh-keyscan -t ed25519 <host>` output, checked against
+#                      the server's fingerprint once (no trust-on-first-use)
+# Repository variables:
+#   VPS_DEPLOY_ENABLED — "true" to turn deploys on
+#   VPS_DOMAIN         — the public hostname, for the post-deploy check
+#
+# The server logs in to GHCR with this run's short-lived GITHUB_TOKEN (sent on
+# stdin), so no long-lived registry credential lives on the server. Like every
+# workflow here, nothing prints a response body (the repo's logs are public).
+
+name: Deploy to VPS
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing image tag (commit SHA) to deploy instead of building — a rollback"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.VPS_DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/pers-fin
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      ROLLBACK_TAG: ${{ github.event.inputs.tag }}
+    steps:
+      - name: Pick the tag
+        id: tag
+        run: |
+          if [ -n "$ROLLBACK_TAG" ]; then
+            [[ "$ROLLBACK_TAG" =~ ^[0-9a-f]{7,40}$ ]] || { echo "::error::tag must be a commit SHA"; exit 1; }
+            echo "tag=$ROLLBACK_TAG" >> "$GITHUB_OUTPUT"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$SHA" >> "$GITHUB_OUTPUT"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.tag.outputs.build == 'true'
+        with:
+          ref: ${{ env.SHA }}
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.tag.outputs.build == 'true'
+
+      - uses: docker/login-action@v3
+        if: steps.tag.outputs.build == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        if: steps.tag.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy on the server
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          missing=""
+          for v in VPS_HOST VPS_SSH_KEY VPS_KNOWN_HOSTS; do [ -n "${!v}" ] || missing="$missing $v"; done
+          [ -z "$missing" ] || { echo "::error::missing secrets:$missing"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The key's forced command runs deploy.sh with this tag as
+          # SSH_ORIGINAL_COMMAND; the registry token goes over stdin.
+          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes "deploy@$VPS_HOST" "deploy $TAG"
+
+      - name: Check the public endpoint
+        env:
+          DOMAIN: ${{ vars.VPS_DOMAIN }}
+        run: |
+          [ -n "$DOMAIN" ] || { echo "::warning::VPS_DOMAIN not set — skipping the public check"; exit 0; }
+          for i in 1 2 3 4 5 6; do
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$DOMAIN/health" || true)
+            [ "$STATUS" = 200 ] && { echo "health: 200"; exit 0; }
+            sleep 10
+          done
+          echo "::error::https://$DOMAIN/health answered ${STATUS:-no response} after a successful deploy (Caddy / DNS?)"
+          exit 1

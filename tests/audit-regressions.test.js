@@ -457,7 +457,24 @@ describe("SX3 — sheets-sync inlined SQL fragments match financial-queries cano
     assert.ok(m, "CAT_EXPR_* not found");
     assert.doesNotMatch(m[1] + m[2], /personal_finance_category/);
   });
+  // F35: the refund predicate, the prior-charge category join and the refund
+  // category expression are mirrored too.
+  pin("REFUND_PREDICATE", /const REFUND_PREDICATE = `\( t\.amount < 0[\s\S]*?\.trim\(\)\}, false\) \)`;/, true);
+  pin("REFUND_PRIOR_CATEGORY_JOIN", /const REFUND_PRIOR_CATEGORY_JOIN = `LEFT JOIN LATERAL \([\s\S]*?\) prior ON true`;/, true);
+  pin("refund category expression", /COALESCE\(t\.user_category, prior\.category, t\.category\[1\], 'Uncategorized'\)/);
   pin("SPLIT_AMOUNT CASE",
     /personal_for = 'self' THEN t\.amount WHEN la\.is_shared AND t\.personal_for = 'partner' THEN 0 ELSE t\.amount \* COALESCE\(la\.spending_split_pct, 100\) \/ 100\.0/,
     true);
+  // Seams audit #3: pin() checks only the FIRST match — every SPLIT_AMOUNT CASE
+  // copy in the script (the Dashboard, the split-row variant, the tax tab, the
+  // Income tab's negation and the Watchlist spend) must match it, with only the
+  // split-row variant reading s.amount.
+  it("every SPLIT_AMOUNT CASE copy in sheets-sync matches the canonical", () => {
+    const canon = norm(fqSrc).match(/WHEN la\.is_shared AND t\.personal_for = 'self' THEN t\.amount WHEN la\.is_shared AND t\.personal_for = 'partner' THEN 0 ELSE t\.amount \* COALESCE\(la\.spending_split_pct, 100\) \/ 100\.0 END/);
+    assert.ok(canon, "canonical SPLIT_AMOUNT not found");
+    const copies = norm(ssSrc).match(/WHEN \w+\.is_shared AND \w+\.personal_for = 'self' THEN [\s\S]*? END/g) || [];
+    assert.equal(copies.length, 5, "five copies today — a new one must be added deliberately");
+    for (const c of copies) assert.equal(c.replace(/\bs\.amount\b/g, "t.amount"), canon[0]);
+    assert.equal(copies.filter((c) => /\bs\.amount\b/.test(c)).length, 1, "only SPLIT_AMT_S reads the split line");
+  });
 });

@@ -355,9 +355,9 @@ describe("db/021_jobs.sql is idempotent + pgvector-defensive", () => {
     assert.match(sql, /INSERT INTO job_sources[\s\S]*ON CONFLICT \(key\) DO NOTHING/);
     assert.match(sql, /INSERT INTO job_target_companies[\s\S]*ON CONFLICT \(ats, slug\) DO NOTHING/);
   });
-  it("guards the vector column + HNSW index behind the pg_available_extensions check (db/014 pattern)", () => {
+  it("guards the vector column + HNSW index behind the INSTALLED-extension check (db/014 pattern, cycle-7 F10)", () => {
     assert.match(sql, /DO \$vec\$/);
-    assert.match(sql, /pg_available_extensions WHERE name = 'vector'/);
+    assert.match(sql, /pg_extension WHERE extname = 'vector'/);
     assert.match(sql, /ADD COLUMN IF NOT EXISTS embedding vector\(1024\)/);
     assert.match(sql, /USING hnsw \(embedding vector_cosine_ops\)/);
   });

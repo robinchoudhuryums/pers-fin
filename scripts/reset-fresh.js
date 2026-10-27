@@ -55,6 +55,12 @@ const WIPE_TABLES = [
   // housing_config. tests/scan-sept-batch9.test.js asserts every table the
   // migrations create is classified in one of the three lists.
   "investment_flows", "payee_obligations", "payee_payments", "settlements",
+  "payee_obligation_skips", "deleted_transactions",
+  "merchant_rename_rules",
+  // Roadmap T3.3 K1: re-synced from Plaid (24 months) like transactions.
+  "investment_transactions",
+  // Roadmap T3.3 K2: the tax documents checklist (user data, like budgets).
+  "tax_documents",
 ];
 
 // Preserved so the dry-run can show what's kept.
@@ -64,9 +70,9 @@ const KEEP_TABLES = [
   "push_subscriptions", "user_settings",
 ];
 
-// Never touched: migration bookkeeping, scheduler heartbeats, and the S&P 500
-// close cache (market data, not the user's).
-const UNTOUCHED_TABLES = ["schema_migrations", "job_runs", "benchmark_prices"];
+// Never touched: migration bookkeeping, scheduler heartbeats, the S&P 500
+// close cache (market data, not the user's) and the server error log.
+const UNTOUCHED_TABLES = ["schema_migrations", "job_runs", "benchmark_prices", "app_errors", "webhook_events"];
 
 let pool = null;
 

@@ -36,17 +36,22 @@ function notifyKey(n) { return n.type + '|' + (n.id == null ? '' : n.id) + '|' +
 function snoozeUntil() { return parseInt(localStorage.getItem(NOTIFY_SNOOZE_KEY) || '0', 10) || 0; }
 function remindersSnoozed() { return Date.now() < snoozeUntil(); }
 
+// Job Radar is a weekly feed keyed to its newest lead (F114): a week's window,
+// not 12h, so the same lead doesn't re-fire twice a day.
+var NOTIFY_WINDOW_BY_TYPE = { job_radar: 7 * 24 * 60 * 60 * 1000 };
+function notifyWindow(type) { return NOTIFY_WINDOW_BY_TYPE[type] || NOTIFY_WINDOW_MS; }
 function shouldNotifyReminder(n) {
   if (remindersSnoozed()) return false;
   var last = notifyLedger()[notifyKey(n)] || 0;
-  return (Date.now() - last) >= NOTIFY_WINDOW_MS;
+  return (Date.now() - last) >= notifyWindow(n.type);
 }
 function markReminderNotified(n) {
   var ledger = notifyLedger();
   ledger[notifyKey(n)] = Date.now();
-  // Keep the map bounded — drop entries older than 2x the re-notify window.
-  var cutoff = Date.now() - NOTIFY_WINDOW_MS * 2;
-  Object.keys(ledger).forEach(function (k) { if (ledger[k] < cutoff) delete ledger[k]; });
+  // Keep the map bounded — drop entries older than 2x their re-notify window.
+  Object.keys(ledger).forEach(function (k) {
+    if (ledger[k] < Date.now() - notifyWindow(k.split('|')[0]) * 2) delete ledger[k];
+  });
   try { localStorage.setItem(NOTIFY_LEDGER_KEY, JSON.stringify(ledger)); } catch (e) {}
 }
 
@@ -72,22 +77,9 @@ function doSearch(q) {
   clearTimeout(searchTimeout);
   if (!q || q.length < 2) { document.getElementById('search-results').style.display='none'; return; }
   searchTimeout = setTimeout(async function() {
-    var results = await fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json());
-    if (!results.length) { document.getElementById('search-results').innerHTML='<div class="empty-msg">No results</div>'; }
-    else {
-      document.getElementById('search-results').innerHTML = results.map(r => {
-        var href = BP + (r.type==='todo'?'/todos':r.type==='email'?'/emails':r.type==='note'?'/notes':'/contacts');
-        var actions = '';
-        if (r.type === 'todo' && !r.completed) {
-          actions = '<div style="display:flex;gap:6px;margin-top:6px;"><button data-action="search-complete" data-id="'+r.id+'" data-recurring="'+!!r.recurring+'" class="btn">Complete</button></div>';
-        } else if (r.type === 'email' && r.status === 'scheduled') {
-          actions = '<div style="display:flex;gap:6px;margin-top:6px;"><button data-action="search-send" data-id="'+r.id+'" class="btn primary">Send Now</button></div>';
-        } else if (r.type === 'note') {
-          actions = '<div style="display:flex;gap:6px;margin-top:6px;"><button data-action="search-pin" data-id="'+r.id+'" data-pinned="'+!!r.pinned+'" class="btn">'+(r.pinned?'Unpin':'Pin')+'</button></div>';
-        }
-        return '<a href="'+href+'" class="result-item" style="display:block;text-decoration:none;color:inherit;"><div class="result-type">'+r.type+(r.type==='todo'&&r.completed?' (done)':'')+'</div><div style="font-size:14px;">'+esc(r.title||'')+'</div>'+(r.description?'<div style="font-size:11px;color:var(--muted);margin-top:2px;">'+esc(r.description)+'</div>':'')+actions+'</a>';
-      }).join('');
-    }
+    var results = await fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json()).catch(function(){ return []; });
+    // T2.4 X3b: the shared renderer (views/js.js) — Perfin rows link into Perfin.
+    document.getElementById('search-results').innerHTML = renderSearchResults(results, { actions: true });
     document.getElementById('search-results').style.display='block';
   }, 300);
 }
@@ -119,7 +111,7 @@ function renderDashTasks() {
       html += '</div>';
     });
   } else if (dashView === 'due') {
-    var withDue = allTodos.filter(t=>t.due_date).sort((a,b)=>new Date(a.due_date)-new Date(b.due_date));
+    var withDue = allTodos.filter(t=>t.due_date).sort((a,b)=>parseCalDate(a.due_date)-parseCalDate(b.due_date));
     if (!withDue.length) { container.innerHTML = '<div class="empty-msg">No tasks with due dates</div>'; return; }
     withDue.slice(0,10).forEach(t => { html += renderDashTodo(t); });
   } else {
@@ -130,7 +122,7 @@ function renderDashTasks() {
 }
 
 function renderDashTodo(t) {
-  var overdue = t.due_date && new Date(t.due_date) <= new Date() ? ' style="color:var(--warn)"' : '';
+  var overdue = t.due_date && parseCalDate(t.due_date) <= new Date() ? ' style="color:var(--warn)"' : '';
   var completeBtn = t.recurring
     ? '<button data-action="dash-complete-recurring" data-id="'+t.id+'" title="Complete & create next" style="background:none;border:1px solid var(--good);color:var(--good);width:22px;height:22px;border-radius:2px;cursor:pointer;font-size:12px;flex-shrink:0;display:flex;align-items:center;justify-content:center;">&#10003;</button>'
     : '<button data-action="dash-complete" data-id="'+t.id+'" title="Mark complete" style="background:none;border:1px solid var(--good);color:var(--good);width:22px;height:22px;border-radius:2px;cursor:pointer;font-size:12px;flex-shrink:0;display:flex;align-items:center;justify-content:center;">&#10003;</button>';
@@ -142,7 +134,7 @@ function renderDashTodo(t) {
     var subPct = Math.round(subDone/subTotal*100);
     subBar = '<div class="subtask-progress-row" style="margin-top:6px;"><div class="subtask-progress"><div class="subtask-progress-fill" style="width:'+subPct+'%"></div></div><span class="subtask-progress-label">'+subDone+'/'+subTotal+'</span></div>';
   }
-  return '<div class="todo-item" style="display:flex;align-items:center;gap:10px;">'+completeBtn+'<div class="todo-content" style="flex:1;"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.category?'<span>'+esc(t.category)+'</span>':'')+(t.due_date?'<span'+overdue+'>Due: '+new Date(t.due_date).toLocaleDateString()+'</span>':'')+(t.recurring?'<span class="badge recurring">recurring</span>':'')+streakBadge+'</div>'+subBar+'</div></div>';
+  return '<div class="todo-item" style="display:flex;align-items:center;gap:10px;">'+completeBtn+'<div class="todo-content" style="flex:1;"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta">'+linkedTaskChip(t)+'<span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.category?'<span>'+esc(t.category)+'</span>':'')+(t.due_date?'<span'+overdue+'>Due: '+fmtCalDate(t.due_date)+'</span>':'')+(t.recurring?'<span class="badge recurring">recurring</span>':'')+streakBadge+'</div>'+subBar+'</div></div>';
 }
 
 async function dashComplete(id) {
@@ -157,7 +149,7 @@ async function dashComplete(id) {
 }
 
 async function dashCompleteRecurring(id) {
-  await fetch('/api/todos/'+id+'/complete-recurring', {method:'POST'});
+  if (!(await writeOk(await tryFetch('/api/todos/'+id+'/complete-recurring', {method:'POST'}), 'Could not complete the task'))) return;
   allTodos = await fetch('/api/todos?completed=false&limit=50').then(r=>r.json());
   renderDashTasks();
 }
@@ -180,46 +172,64 @@ async function searchComplete(id, isRecurring) {
   load();
 }
 async function searchSendEmail(id) {
-  var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json());
-  if (r.ok) { showUndo('Email sent','email',id,'info'); }
+  var res = await tryFetch('/api/emails/'+id+'/send', {method:'POST'});
+  if (await writeOk(res, 'Could not send the email')) showUndo('Email sent','email',id,'info');
   document.getElementById('search-results').style.display='none';
   document.getElementById('global-search').value='';
   load();
 }
 async function searchTogglePin(id, pinned) {
-  await fetch('/api/notes/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({pinned:pinned})});
+  if (!(await writeOk(await tryFetch('/api/notes/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({pinned:pinned})}), 'Could not update the note'))) return;
   document.getElementById('search-results').style.display='none';
   document.getElementById('global-search').value='';
   load();
 }
 
+// Design pass D1: a tile's colour says something about its VALUE — red only for
+// urgent / overdue work that exists, green only for work done; every other
+// tile, and every zero, is plain text. (Colour used to be fixed per tile, so
+// "Urgent 0" was red and "Overdue 0" green side by side.)
+function statTileClass(kind, value) {
+  var n = Number(value) || 0;
+  if (n <= 0) return '';
+  if (kind === 'urgent' || kind === 'overdue') return 'red';
+  if (kind === 'completed') return 'green';
+  return '';
+}
+function statTiles(stats) {
+  return [
+    {kind:'pending',label:'Pending Tasks',value:stats.todos.pending},
+    {kind:'urgent',label:'Urgent',value:stats.todos.urgent},
+    {kind:'overdue',label:'Overdue',value:stats.todos.overdue},
+    {kind:'completed',label:'Completed',value:stats.todos.done},
+    {kind:'drafts',label:'Email Drafts',value:stats.emails.drafts},
+    {kind:'scheduled',label:'Scheduled',value:stats.emails.scheduled},
+    {kind:'sent',label:'Emails Sent',value:stats.emails.sent},
+    {kind:'notes',label:'Notes',value:stats.notes.total},
+  ].map(function(c) {
+    var cls = statTileClass(c.kind, c.value);
+    return '<div class="card"><div class="label">'+c.label+'</div><div class="value'+(cls ? ' '+cls : '')+'">'+(Number(c.value) || 0)+'</div></div>';
+  }).join('');
+}
+
 async function load() {
   const stats = await fetch('/api/stats').then(r=>r.json());
-  document.getElementById('cards').innerHTML = [
-    {label:'Pending Tasks',value:stats.todos.pending,cls:'warm'},
-    {label:'Urgent',value:stats.todos.urgent,cls:'red'},
-    {label:'Overdue',value:stats.todos.overdue,cls:stats.todos.overdue > 0 ? 'red' : 'green'},
-    {label:'Completed',value:stats.todos.done,cls:'green'},
-    {label:'Email Drafts',value:stats.emails.drafts,cls:'teal'},
-    {label:'Scheduled',value:stats.emails.scheduled,cls:'warm'},
-    {label:'Emails Sent',value:stats.emails.sent,cls:'green'},
-    {label:'Notes',value:stats.notes.total,cls:'teal'},
-  ].map(c => '<div class="card"><div class="label">'+c.label+'</div><div class="value '+c.cls+'">'+c.value+'</div></div>').join('');
+  document.getElementById('cards').innerHTML = statTiles(stats);
 
   renderMiniCal();
 
   allTodos = await fetch('/api/todos?completed=false&limit=50').then(r=>r.json());
   renderDashTasks();
 
-  const upcoming = allTodos.filter(t=>t.due_date).sort((a,b)=>new Date(a.due_date)-new Date(b.due_date)).slice(0,5);
+  const upcoming = allTodos.filter(t=>t.due_date).sort((a,b)=>parseCalDate(a.due_date)-parseCalDate(b.due_date)).slice(0,5);
   document.getElementById('upcoming-tasks').innerHTML = upcoming.length
-    ? upcoming.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.recurring?'<span class="badge recurring">recurring</span>':'')+'<span>Due: '+new Date(t.due_date).toLocaleDateString()+'</span></div></div></div>').join('')
+    ? upcoming.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta">'+linkedTaskChip(t)+'<span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.recurring?'<span class="badge recurring">recurring</span>':'')+'<span>Due: '+fmtCalDate(t.due_date)+'</span></div></div></div>').join('')
     : '<div class="empty-msg">No upcoming tasks with due dates</div>';
 
   const emails = await fetch('/api/emails?status=scheduled').then(r=>r.json());
   document.getElementById('scheduled-emails').innerHTML = emails.length
     ? emails.slice(0,5).map(e => '<div class="todo-item" style="display:flex;align-items:center;gap:10px;"><button data-action="dash-send-email" data-id="'+e.id+'" title="Send now" class="btn primary">Send</button><div class="todo-content" style="flex:1;"><div class="todo-title">'+esc(e.subject)+'</div><div class="todo-meta"><span>To: '+esc(e.recipient_name||e.recipient_email)+'</span><span>'+new Date(e.scheduled_at).toLocaleString()+'</span></div></div></div>').join('')
-    : '<div class="empty-msg">No scheduled emails</div>';
+    : emptyState({ title: 'No scheduled emails', text: 'Write one and choose when it goes out.', action: { label: '+ Compose', href: '/emails' } });
 
   try {
     var perfin = await fetch('/api/perfin/stats').then(r=>r.json());
@@ -233,7 +243,7 @@ async function load() {
       if (perfin.upcoming && perfin.upcoming.length) {
         html += '<div style="margin-top:16px;">';
         perfin.upcoming.forEach(s => {
-          html += '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(s.display_name||s.merchant_key)+'</div><div class="todo-meta"><span>$'+parseFloat(s.amount).toFixed(2)+'</span><span>Due: '+new Date(s.next_expected).toLocaleDateString()+'</span></div></div></div>';
+          html += '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(s.display_name||s.merchant_key)+'</div><div class="todo-meta"><span>$'+parseFloat(s.amount).toFixed(2)+'</span><span>Due: '+parseCalDate(s.next_expected).toLocaleDateString()+'</span></div></div></div>';
         });
         html += '</div>';
       }
@@ -266,9 +276,12 @@ async function load() {
     }
   }).catch(function(){});
 
+  // Roadmap T2.3 C4: over the monthly AI budget the briefing / suggestions
+  // say so (the response's error) instead of silently disappearing.
   fetch('/api/ai/daily-briefing').then(r=>r.json()).then(d => {
-    if (d.briefing) {
-      document.getElementById('briefing-content').textContent = d.briefing;
+    var text = d.briefing || ((d.ai_cap || d.ai_cap_check_failed) && d.error);
+    if (text) {
+      document.getElementById('briefing-content').textContent = text;
       document.getElementById('briefing-section').style.display = 'block';
     }
   }).catch(function(){});
@@ -279,6 +292,9 @@ async function load() {
         '<div style="padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;line-height:1.55;color:var(--ink);">'+
         '<span style="color:var(--accent);margin-right:8px;">&#9733;</span>'+esc(s.suggestion)+'</div>'
       ).join('');
+      document.getElementById('suggestions-section').style.display = 'block';
+    } else if ((d.ai_cap || d.ai_cap_check_failed) && d.error) {
+      document.getElementById('suggestions-content').textContent = d.error;
       document.getElementById('suggestions-section').style.display = 'block';
     }
   }).catch(function(){});
@@ -294,13 +310,13 @@ async function load() {
 var REMINDER_PREFIX = {
   overdue: 'Overdue: ', due_today: 'Due today: ', streak_at_risk: 'Streak at risk: ',
   habit_streak_at_risk: 'Habit streak at risk: ', reminder: 'Reminder: ',
-  fact_upcoming: 'Upcoming: ', housing_due: '', job_radar: '', vault_sync_error: ''
+  fact_upcoming: 'Upcoming: ', housing_due: '', job_radar: '', vault_sync_error: '', email_failed: 'Email not sent: '
 };
 function reminderPrefix(n) { return REMINDER_PREFIX[n.type] != null ? REMINDER_PREFIX[n.type] : ''; }
 function isImportantReminder(n) {
   if (n.type === 'overdue' || n.type === 'due_today' || n.type === 'streak_at_risk' ||
       n.type === 'habit_streak_at_risk' || n.type === 'reminder' || n.type === 'job_radar' ||
-      n.type === 'vault_sync_error') return true;
+      n.type === 'vault_sync_error' || n.type === 'email_failed') return true;
   if (n.type === 'fact_upcoming') return n.days_away != null && n.days_away <= 7;
   // Rent: only once it is due, overdue or within 3 days (an upcoming balance
   // weeks out is shown in the in-page list, not pushed).
@@ -313,6 +329,7 @@ function reminderHref(n) {
   if (n.entity === 'habit') return BP + '/health';
   if (n.entity === 'fact' || n.entity === 'knowledge') return BP + '/knowledge';
   if (n.entity === 'job') return BP + '/jobs';
+  if (n.entity === 'email') return BP + '/emails';
   if (n.entity === 'housing') return (window.PERFIN_URL || '/perfin') + '/housing';
   return null;
 }
@@ -395,7 +412,7 @@ function resetLayout() {
 }
 
 async function saveLayout() {
-  await fetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({dashboard_layout:dashLayout})});
+  await writeOk(await tryFetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({dashboard_layout:dashLayout})}), 'Could not save the layout');
 }
 
 function wdragStart(e,w) { wdragSrcWidget = (w||e.target.closest('.dash-widget')).dataset.widget; (w||e.target.closest('.dash-widget')).style.opacity = '0.4'; }
@@ -481,7 +498,7 @@ function showMiniCalEvents(day) {
   }
 
   if (!dayEvents.length) {
-    eventsEl.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:4px 0;font-style:italic;">No events on this day</div>';
+    eventsEl.innerHTML = emptyState({ compact: true, title: 'Nothing on this day', text: 'Tasks due, emails scheduled and note reminders show here.', action: { label: '+ New task', href: '/todos' } });
     return;
   }
   eventsEl.innerHTML = dayEvents.slice(0, 5).map(function(ev) {

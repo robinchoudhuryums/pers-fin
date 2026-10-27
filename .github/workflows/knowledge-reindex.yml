@@ -14,9 +14,49 @@ on:
     - cron: '30 6,18 * * *'  # 6:30 and 18:30 UTC
   workflow_dispatch:          # manual trigger
 
+# Read-only token: nothing here writes to the repository (cycle-7 F16).
+permissions:
+  contents: read
+
 jobs:
   reindex:
     runs-on: ubuntu-latest
+    # PUBLIC-LOG SAFETY (F2): this repo's Actions logs are world-readable
+    # while the repo is public, so response bodies are never printed — they
+    # carry account names, balances, net worth and merchant names. SUMMARY_JS
+    # prints only the listed keys: numbers/booleans as-is, arrays as a count,
+    # strings only when the key is suffixed ":str". Details live in the app
+    # (Settings -> Sync Health).
+    env:
+      # CHECK_STATUS reports a curl timeout or unreachable server ("000") as an
+      # error annotation instead of the step dying silently under `bash -e`
+      # (Batch 3 follow-on). Usage: check_status <label> <status> [expected…]
+      CHECK_STATUS: |
+        check_status() {
+          local label="$1" status="$2"; shift 2
+          if [ "$status" = "000" ]; then
+            echo "::error::$label: no response (timed out or server unreachable). The server may still be working."
+            return 1
+          fi
+          for ok in "${@:-200}"; do [ "$status" = "$ok" ] && { echo "$label: HTTP $status"; return 0; }; done
+          echo "::error::$label failed with HTTP $status"
+          return 1
+        }
+      SUMMARY_JS: |
+        const fs = require("fs");
+        const [file, ...keys] = process.argv.slice(1);
+        let d;
+        try { d = JSON.parse(fs.readFileSync(file, "utf8")); } catch { console.log("(no JSON body)"); process.exit(0); }
+        for (const k of keys) {
+          const str = k.endsWith(":str");
+          const path = (str ? k.slice(0, -4) : k).split(".");
+          let v = d;
+          for (const p of path) v = v && typeof v === "object" ? v[p] : undefined;
+          const name = path.join(".");
+          if (Array.isArray(v)) console.log(name + ": " + v.length);
+          else if (typeof v === "number" || typeof v === "boolean") console.log(name + ": " + v);
+          else if (str && typeof v === "string") console.log(name + ": " + v.slice(0, 40));
+        }
     steps:
       - name: Wake server (Render free tier cold start)
         run: |
@@ -24,20 +64,24 @@ jobs:
           sleep 10
 
       - name: Trigger reindex
+        id: trigger
         run: |
           # Knowledge runs under the Per-sistant sub-app behind the unified
           # shell; the shell's requireAuth honors x-api-key. Returns 202 (queued)
           # or 409 (a sync is already running — nothing to check, exit green).
-          STATUS=$(curl -s -o /tmp/reindex.json -w "%{http_code}" \
+          eval "$CHECK_STATUS"
+          STATUS=$(curl -s -o /tmp/reindex.json -w "%{http_code}" --max-time 90 \
             -X POST "${{ secrets.SERVER_URL }}/per-sistant/api/rag/reindex" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
-            -H "Content-Type: application/json")
-          echo "Reindex trigger status: $STATUS"
-          cat /tmp/reindex.json || true
-          if [ "$STATUS" = "409" ]; then echo "already running"; exit 0; fi
-          if [ "$STATUS" != "202" ]; then echo "Reindex trigger failed"; exit 1; fi
+            -H "Content-Type: application/json") || true
+          node -e "$SUMMARY_JS" /tmp/reindex.json started running
+          # A 409 (a sync already running) has no reindex of ours to wait for —
+          # skip the wait step instead of polling an idle or stale state.
+          if [ "$STATUS" = "409" ]; then echo "already running"; echo "skip_wait=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          check_status "Reindex trigger" "$STATUS" 202
 
       - name: Wait for the reindex result
+        if: ${{ steps.trigger.outputs.skip_wait != 'true' }}
         run: |
           # The 202 comes back before any work happens (KR-11), so poll the
           # status endpoint and fail the job when the reindex itself failed —
@@ -51,7 +95,9 @@ jobs:
             echo "poll $i: $STATE"
             if [ "$STATE" = "ok" ]; then exit 0; fi
             if [ "$STATE" = "failed" ]; then
-              node -e 'const s=require("/tmp/status.json");console.log(JSON.stringify({reindex:s.reindex,vault:s.vault},null,2))'
+              # Counts only — the status JSON names the vault repo, file paths and
+              # error text, and this log is public while the repo is (INV-103).
+              node -e 'const s=require("/tmp/status.json");const r=(s.reindex&&s.reindex.result&&s.reindex.result.vault)||{};console.log("reindex failed: files failed=" + (Array.isArray(r.failures) ? r.failures.length : (r.failed || 0)) + " — see the Knowledge page / Settings for details")'
               exit 1
             fi
           done

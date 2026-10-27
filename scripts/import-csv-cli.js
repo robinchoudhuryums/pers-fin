@@ -9,6 +9,9 @@
 //   node scripts/import-csv-cli.js                     # process csv-uploads/
 //   node scripts/import-csv-cli.js path/to/dir         # process custom dir
 //   node scripts/import-csv-cli.js path/to/file.csv    # process single file
+//   node scripts/import-csv-cli.js file.csv --positive-means=deposits
+//       # a GENERIC file whose positive amounts are deposits (cycle-7 F26;
+//       # default 'charges'). Known bank formats ignore it — their sign is fixed.
 //
 // Bank is auto-detected from the CSV content (headers / row shape — the
 // filename is not used): Chase card, Chase checking, Capital One, Discover,
@@ -28,7 +31,7 @@ const { parse } = require("csv-parse/sync");
 // CSV_FORMATS is the single source of truth in teller/data/csv-formats.js;
 // this CLI used to redefine it inline (and drift). We now import it so any
 // future bank-format change propagates to both the API route and the CLI.
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, makeCsvTxnIdGenerator } = require("../teller/data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, POSITIVE_MEANS, parseDate, makeCsvTxnIdGenerator } = require("../teller/data/csv-formats");
 
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 const pool = new Pool({
@@ -48,7 +51,7 @@ const pool = new Pool({
 // ---------------------------------------------------------------------------
 // Import a single CSV file
 // ---------------------------------------------------------------------------
-async function importCsvFile(filePath) {
+async function importCsvFile(filePath, opts = {}) {
   const filename = path.basename(filePath);
   const content = fs.readFileSync(filePath, "utf-8");
 
@@ -93,6 +96,16 @@ async function importCsvFile(filePath) {
   const institution = INSTITUTION_LABELS[format] || "CSV Import";
   const accountLabel = `${institution} Account`;
 
+  // Generic files only: what a positive amount means (F26) — same default and
+  // parser option as /api/import-csv, so the two produce the same dedup IDs.
+  const parseOpts = { positiveMeans: format === "generic" ? (opts.positiveMeans || "charges") : null };
+  if (format === "generic") {
+    const guess = guessGenericSign(records);
+    if (guess !== parseOpts.positiveMeans) {
+      console.warn(`  ! ${filename}: positive amounts look like ${guess}, importing them as ${parseOpts.positiveMeans} — pass --positive-means=${guess} if that's wrong`);
+    }
+  }
+
   const institutionSlug = institution.toLowerCase().replace(/[^a-z0-9]+/g, "_");
   const accountSlug = accountLabel.toLowerCase().replace(/[^a-z0-9]+/g, "_");
   const virtualItemId = `csv_${institutionSlug}`;
@@ -122,6 +135,7 @@ async function importCsvFile(filePath) {
 
     let imported = 0;
     let skipped = 0;
+    let deletedCount = 0;
     // One occurrence-tracking generator per import (mirrors the route) so the
     // CLI and /api/import-csv produce IDENTICAL dedup IDs for the same file,
     // including for genuinely-distinct same-day/same-amount/same-merchant rows (F1).
@@ -133,7 +147,7 @@ async function importCsvFile(filePath) {
       try {
         // The teller/data/csv-formats.js parsers all share the (row, headers)
         // signature; for headerless formats, headers === fmt.columns.
-        parsed = fmt.parse(row, fmt.headerless ? fmt.columns : Object.keys(row));
+        parsed = fmt.parse(row, fmt.headerless ? fmt.columns : Object.keys(row), parseOpts);
       } catch {
         skipped++;
         continue;
@@ -154,18 +168,35 @@ async function importCsvFile(filePath) {
       // re-import dedup intact while still separating genuinely-identical rows (F1).
       const transactionId = nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name);
 
+      // A savepoint per row (cycle-7 F19): a failed INSERT used to abort the
+      // whole transaction, so every later row "failed" and the final COMMIT
+      // silently rolled the file back — while the CLI reported it imported and
+      // the workflow then deleted the CSV.
+      await client.query("SAVEPOINT csv_row");
       try {
+        // A transaction the user deleted is never imported again (roadmap T2.5
+        // U1 — the same rule as /api/import-csv); Restore brings it back.
         const ins = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, false)
-           ON CONFLICT (transaction_id) DO NOTHING`,
+           SELECT $1::text, $2::text, $3::numeric, $4::date, $5::text, $6::text, $7::text[], false
+           WHERE NOT EXISTS (SELECT 1 FROM deleted_transactions dt WHERE dt.transaction_id = $2::text)
+           ON CONFLICT (transaction_id) DO NOTHING
+           RETURNING transaction_id`,
           [virtualAccountId, transactionId, parsed.amount, date, parsed.merchant_name, parsed.merchant_name, parsed.category ? [parsed.category] : null]
         );
-        // ON CONFLICT DO NOTHING → rowCount 1 on a real insert, 0 on a dup.
-        // Count dups as skipped, not imported (F30).
+        let wasDeleted = false;
+        if (!ins.rowCount) {
+          const d = await client.query("SELECT 1 FROM deleted_transactions WHERE transaction_id = $1", [transactionId]);
+          wasDeleted = d.rows.length > 0;
+        }
+        await client.query("RELEASE SAVEPOINT csv_row");
+        // rowCount 1 on a real insert, 0 on a dup or a deleted row. Neither is
+        // imported; both count as skipped (F30), deleted ones also on their own.
         if (ins.rowCount > 0) imported++;
-        else skipped++;
-      } catch {
+        else { skipped++; if (wasDeleted) deletedCount++; }
+      } catch (rowErr) {
+        await client.query("ROLLBACK TO SAVEPOINT csv_row");
+        console.error(`  row ${i + 1}: ${rowErr.message}`);
         skipped++;
       }
     }
@@ -177,8 +208,9 @@ async function importCsvFile(filePath) {
     );
 
     await client.query("COMMIT");
-    console.log(`  ✓ ${filename} → ${format} format | ${imported} imported, ${skipped} skipped`);
-    return { filename, format, institution, imported, skipped };
+    console.log(`  ✓ ${filename} → ${format} format | ${imported} imported, ${skipped} skipped` +
+      (deletedCount ? ` (${deletedCount} you deleted earlier, not imported again)` : ""));
+    return { filename, format, institution, imported, skipped, deleted: deletedCount };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     console.error(`  ✗ ${filename}: ${err.message}`);
@@ -192,7 +224,14 @@ async function importCsvFile(filePath) {
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-  const target = process.argv[2] || path.resolve(__dirname, "../csv-uploads");
+  const args = process.argv.slice(2);
+  const pmArg = args.find(a => a.startsWith("--positive-means="));
+  const positiveMeans = pmArg ? pmArg.slice("--positive-means=".length) : null;
+  if (positiveMeans && !POSITIVE_MEANS.includes(positiveMeans)) {
+    console.error(`--positive-means must be one of: ${POSITIVE_MEANS.join(", ")}`);
+    process.exit(1);
+  }
+  const target = args.find(a => !a.startsWith("--")) || path.resolve(__dirname, "../csv-uploads");
   const stat = fs.statSync(target, { throwIfNoEntry: false });
 
   if (!stat) {
@@ -212,12 +251,19 @@ async function main() {
   console.log(`\nImporting ${files.length} CSV file(s)...\n`);
 
   const results = [];
+  const imported = [];
   for (const file of files) {
-    const result = await importCsvFile(file);
-    if (result) results.push(result);
+    const result = await importCsvFile(file, { positiveMeans });
+    if (result) { results.push(result); imported.push(file); }
   }
 
   console.log(`\nDone: ${results.length}/${files.length} files imported successfully.`);
+  // Cycle-7 F19: tell the caller exactly which files made it in. The
+  // csv-import workflow removes ONLY these from the repo (it used to `git rm`
+  // every CSV, including one that failed to import — the only copy of it).
+  if (process.env.CSV_IMPORTED_LIST) {
+    fs.writeFileSync(process.env.CSV_IMPORTED_LIST, imported.map(f => f + "\n").join(""));
+  }
 
   // Run subscription detection
   if (results.length > 0) {
@@ -232,6 +278,8 @@ async function main() {
   }
 
   await pool.end();
+  // A file that failed must fail the run (it used to exit 0).
+  if (results.length < files.length) process.exitCode = 1;
 }
 
 main().catch((err) => {

@@ -232,9 +232,14 @@ describe("KR-1 — vault sync mark-and-sweep", () => {
         [/\/contents\/a\.md/, privateFile],
       ]),
     });
-    assert.equal(r.ok, true);
+    // Cycle-7 F127: the files it did list are ingested, but the run is a
+    // reported failure (it used to say ok and advance the SHA).
+    assert.equal(r.ok, false);
+    assert.equal(r.partial, true);
+    assert.match(r.error, /truncated/);
     assert.equal(r.removed, 0);
     assert.deepEqual(removedRefs(pool), []);
+    assert.ok(!pool.calls.some((c) => /vault_last_sha = \$1/.test(c.sql)), "the SHA does not advance");
   }));
 
   it("a malformed tree response (no tree array) is treated as truncated — never sweeps everything", () => withEnv(async () => {
@@ -246,7 +251,7 @@ describe("KR-1 — vault sync mark-and-sweep", () => {
         [/\/git\/trees\/HEAD1/, { message: "unexpected" }],
       ]),
     });
-    assert.equal(r.ok, true);
+    assert.equal(r.ok, false, "reported, not ok (F127)");
     assert.deepEqual(removedRefs(pool), []);
   }));
 

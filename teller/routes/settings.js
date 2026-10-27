@@ -5,8 +5,10 @@
 const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
+const errorLog = require("../services/error-log");
 const { INSIGHT_MODULES } = require("../data/reference-data");
 const { csvText, csvDate } = require("../services/csv-export");
+const operatorChecksService = require("../services/operator-checks");
 
 let sheetsSync;
 try {
@@ -22,11 +24,16 @@ router.get("/api/settings", async (req, res) => {
   // suppresses the "configure the webhook" prereq warning.
   const embedded = req.app.get("embedded") === true;
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override FROM user_settings WHERE id = 1");
-    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false };
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, insight_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override, cash_alert_enabled, cash_alert_threshold, cash_alert_horizon_days, cash_alert_state, cash_alerts_checked_at, payday_alerts_enabled, linked_tasks_enabled, linked_tasks_sources, linked_tasks_bill_lead_days, linked_tasks_state FROM user_settings WHERE id = 1");
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false, insight_emails_enabled: true, cash_alert_enabled: false, cash_alert_threshold: 500, cash_alert_horizon_days: 14, cash_alert_state: null, cash_alerts_checked_at: null, payday_alerts_enabled: false, linked_tasks_enabled: false, linked_tasks_sources: { ...require("../services/linked-tasks").DEFAULT_SOURCES }, linked_tasks_bill_lead_days: 3, linked_tasks_state: null };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
-    res.json({ ...defaults, ...row, embedded, available_modules: INSIGHT_MODULES });
+    // The stored sources over the defaults, so a source added later (T3.3 K2's
+    // tax_documents) shows as it runs — on — until the user switches it off.
+    row.linked_tasks_sources = require("../services/linked-tasks").effectiveSources(row.linked_tasks_sources);
+    // always_on (services/hosting.js): the host never sleeps, so Settings
+    // replaces the Keep-Alive controls with a note.
+    res.json({ ...defaults, ...row, embedded, always_on: require("../services/hosting").alwaysOn(), available_modules: INSIGHT_MODULES });
   } catch {
     res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", available_modules: INSIGHT_MODULES });
   }
@@ -44,6 +51,21 @@ function toInt(v) {
   if (typeof v === "number") return v;
   if (typeof v === "string" && /^\s*-?\d+\s*$/.test(v)) return parseInt(v, 10);
   return NaN;
+}
+
+// persistent_url (F82): an http(s) URL with no embedded credentials, at most
+// 500 chars, stored trimmed without a trailing slash; "" / null clears it.
+// Returns { value } or { error }. (Private hosts stay allowed — a standalone
+// Per-sistant is often on localhost/LAN; the fetches don't follow redirects.)
+function normalizePersistentUrl(v) {
+  if (v === null || v === undefined || (typeof v === "string" && !v.trim())) return { value: null };
+  if (typeof v !== "string" || v.trim().length > 500) return { error: "persistent_url must be an http(s) URL of at most 500 characters" };
+  const trimmed = v.trim().replace(/\/+$/, "");
+  let u;
+  try { u = new URL(trimmed); } catch { return { error: "persistent_url must be a valid http(s) URL" }; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return { error: "persistent_url must be an http(s) URL" };
+  if (u.username || u.password) return { error: "persistent_url must not contain credentials" };
+  return { value: trimmed };
 }
 
 function isValidTimeZone(tz) {
@@ -65,28 +87,35 @@ router.patch("/api/settings", async (req, res) => {
   const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, partner_name } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
+    // Cycle-7 F86: an invalid value for any of the fields below is a 400. They
+    // used to be dropped (or clamped) silently and the request still returned
+    // 200, so the Settings page reported a save that didn't happen.
     if (session_timeout_minutes !== undefined) {
-      updates.push("session_timeout_minutes = $" + idx++);
-      values.push(Math.max(1, Math.min(parseInt(session_timeout_minutes) || 15, 1440)));
-      if (req.session) req.session.timeoutMinutes = values[values.length - 1];
+      const m = toInt(session_timeout_minutes);
+      if (!Number.isInteger(m) || m < 1 || m > 1440) return res.status(400).json({ error: "session_timeout_minutes must be an integer 1-1440" });
+      updates.push("session_timeout_minutes = $" + idx++); values.push(m);
+      if (req.session) req.session.timeoutMinutes = m;
     }
-    if (theme !== undefined && ["dark", "light"].includes(theme)) {
+    if (theme !== undefined) {
+      if (!["dark", "light"].includes(theme)) return res.status(400).json({ error: "theme must be dark or light" });
       updates.push("theme = $" + idx++); values.push(theme);
     }
     if (dashboard_months !== undefined) {
-      updates.push("dashboard_months = $" + idx++);
-      values.push(Math.max(1, Math.min(parseInt(dashboard_months) || 6, 24)));
+      const m = toInt(dashboard_months);
+      if (!Number.isInteger(m) || m < 1 || m > 24) return res.status(400).json({ error: "dashboard_months must be an integer 1-24" });
+      updates.push("dashboard_months = $" + idx++); values.push(m);
     }
     if (insights_enabled !== undefined) {
       updates.push("insights_enabled = $" + idx++); values.push(!!insights_enabled);
     }
-    if (insights_model !== undefined && ["haiku", "sonnet", "opus"].includes(insights_model)) {
+    if (insights_model !== undefined) {
+      if (!["haiku", "sonnet", "opus"].includes(insights_model)) return res.status(400).json({ error: "insights_model must be haiku, sonnet or opus" });
       updates.push("insights_model = $" + idx++); values.push(insights_model);
     }
     if (insights_cadence_days !== undefined) {
-      const valid = [7, 14, 30, 60, 90];
-      const val = parseInt(insights_cadence_days);
-      if (valid.includes(val)) { updates.push("insights_cadence_days = $" + idx++); values.push(val); }
+      const val = toInt(insights_cadence_days);
+      if (![7, 14, 30, 60, 90].includes(val)) return res.status(400).json({ error: "insights_cadence_days must be 7, 14, 30, 60 or 90" });
+      updates.push("insights_cadence_days = $" + idx++); values.push(val);
     }
     if (keep_alive_enabled !== undefined) {
       updates.push("keep_alive_enabled = $" + idx++); values.push(!!keep_alive_enabled);
@@ -115,12 +144,15 @@ router.patch("/api/settings", async (req, res) => {
     }
     if (insight_modules !== undefined) {
       const clean = sanitizeBoolMap(insight_modules);
-      if (clean) { updates.push("insight_modules = $" + idx++); values.push(JSON.stringify(clean)); }
+      if (!clean) return res.status(400).json({ error: "insight_modules must be an object of {module: boolean}" });
+      updates.push("insight_modules = $" + idx++); values.push(JSON.stringify(clean));
     }
-    if (pyramid_data_source !== undefined && ["wellness", "debt_payoff", "goal_progress", "spending_categories", "net_worth"].includes(pyramid_data_source)) {
+    if (pyramid_data_source !== undefined) {
+      if (!["wellness", "debt_payoff", "goal_progress", "spending_categories", "net_worth"].includes(pyramid_data_source)) return res.status(400).json({ error: "unknown pyramid_data_source" });
       updates.push("pyramid_data_source = $" + idx++); values.push(pyramid_data_source);
     }
-    if (pyramid_color_mode !== undefined && ["single", "multi"].includes(pyramid_color_mode)) {
+    if (pyramid_color_mode !== undefined) {
+      if (!["single", "multi"].includes(pyramid_color_mode)) return res.status(400).json({ error: "pyramid_color_mode must be single or multi" });
       updates.push("pyramid_color_mode = $" + idx++); values.push(pyramid_color_mode);
     }
     if (partner_name !== undefined) {
@@ -128,15 +160,15 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("partner_name = $" + idx++); values.push(v || null);
     }
     if (debt_baseline_amount !== undefined) {
-      const val = debt_baseline_amount === null ? null : parseFloat(debt_baseline_amount);
-      if (val === null || (!isNaN(val) && val >= 0)) {
-        updates.push("debt_baseline_amount = $" + idx++); values.push(val);
-      }
+      const val = debt_baseline_amount === null ? null : Number(debt_baseline_amount);
+      if (!(val === null || (Number.isFinite(val) && val >= 0))) return res.status(400).json({ error: "debt_baseline_amount must be a number >= 0 or null" });
+      updates.push("debt_baseline_amount = $" + idx++); values.push(val);
     }
     if (req.body.sheets_auto_sync_enabled !== undefined) {
       updates.push("sheets_auto_sync_enabled = $" + idx++); values.push(!!req.body.sheets_auto_sync_enabled);
     }
-    if (req.body.sheets_auto_sync_interval !== undefined && ["daily", "weekly", "monthly"].includes(req.body.sheets_auto_sync_interval)) {
+    if (req.body.sheets_auto_sync_interval !== undefined) {
+      if (!["daily", "weekly", "monthly"].includes(req.body.sheets_auto_sync_interval)) return res.status(400).json({ error: "sheets_auto_sync_interval must be daily, weekly or monthly" });
       updates.push("sheets_auto_sync_interval = $" + idx++); values.push(req.body.sheets_auto_sync_interval);
     }
     // Bank auto-sync (Phase A)
@@ -156,12 +188,16 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body.csv_reminder_enabled !== undefined) {
       updates.push("csv_reminder_enabled = $" + idx++); values.push(!!req.body.csv_reminder_enabled);
     }
-    if (req.body.dashboard_widgets !== undefined && sanitizeBoolMap(req.body.dashboard_widgets)) {
-      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(sanitizeBoolMap(req.body.dashboard_widgets)));
+    if (req.body.dashboard_widgets !== undefined) {
+      const clean = sanitizeBoolMap(req.body.dashboard_widgets);
+      if (!clean) return res.status(400).json({ error: "dashboard_widgets must be an object of {widget: boolean}" });
+      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(clean));
     }
     // Per-sistant integration settings
     if (req.body.persistent_url !== undefined) {
-      updates.push("persistent_url = $" + idx++); values.push(req.body.persistent_url || null);
+      const pu = normalizePersistentUrl(req.body.persistent_url);
+      if (pu.error) return res.status(400).json({ error: pu.error });
+      updates.push("persistent_url = $" + idx++); values.push(pu.value);
     }
     if (req.body.persistent_webhook_secret !== undefined) {
       // Stored encrypted at rest with TOKEN_ENCRYPTION_PASSPHRASE. Empty string
@@ -193,9 +229,63 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body.daily_digest_enabled !== undefined) {
       updates.push("daily_digest_enabled = $" + idx++); values.push(!!req.body.daily_digest_enabled);
     }
+    // Insight emails (cycle-7 F81) — on by default. A strict boolean (INV-59).
+    if (req.body.insight_emails_enabled !== undefined) {
+      if (typeof req.body.insight_emails_enabled !== "boolean") {
+        return res.status(400).json({ error: "insight_emails_enabled must be true or false" });
+      }
+      updates.push("insight_emails_enabled = $" + idx++); values.push(req.body.insight_emails_enabled);
+    }
     // Critical-alert emails (budget exceeded / anomaly) — opt-in
     if (req.body.critical_alert_emails_enabled !== undefined) {
       updates.push("critical_alert_emails_enabled = $" + idx++); values.push(!!req.body.critical_alert_emails_enabled);
+    }
+    // Low projected cash alert (roadmap T2.2 L2 — services/cash-alerts.js).
+    // Strict: a non-boolean switch, a threshold that isn't a number 0-10,000,000
+    // ("" and null included) or a horizon outside 7-60 days is a 400 (INV-59).
+    if (req.body.cash_alert_enabled !== undefined) {
+      if (typeof req.body.cash_alert_enabled !== "boolean") return res.status(400).json({ error: "cash_alert_enabled must be true or false" });
+      updates.push("cash_alert_enabled = $" + idx++); values.push(req.body.cash_alert_enabled);
+    }
+    if (req.body.cash_alert_threshold !== undefined) {
+      const v = req.body.cash_alert_threshold;
+      const n = (typeof v === "number" || (typeof v === "string" && v.trim() !== "")) ? Number(v) : NaN;
+      if (!Number.isFinite(n) || n < 0 || n > 1e7) return res.status(400).json({ error: "cash_alert_threshold must be a number 0-10000000" });
+      updates.push("cash_alert_threshold = $" + idx++); values.push(Math.round(n * 100) / 100);
+    }
+    if (req.body.cash_alert_horizon_days !== undefined) {
+      const d = toInt(req.body.cash_alert_horizon_days);
+      if (!Number.isInteger(d) || d < 7 || d > 60) return res.status(400).json({ error: "cash_alert_horizon_days must be an integer 7-60" });
+      updates.push("cash_alert_horizon_days = $" + idx++); values.push(d);
+    }
+    // Payday alerts (roadmap T2.2 L3). Switching them ON moves the "landed"
+    // watermark to now (the CASE reads the row's old switch), so deposits that
+    // arrived while they were off aren't announced.
+    if (req.body.payday_alerts_enabled !== undefined) {
+      if (typeof req.body.payday_alerts_enabled !== "boolean") return res.status(400).json({ error: "payday_alerts_enabled must be true or false" });
+      updates.push("payday_alerts_enabled = $" + idx++); values.push(req.body.payday_alerts_enabled);
+      if (req.body.payday_alerts_enabled) updates.push("last_income_alert_at = CASE WHEN payday_alerts_enabled THEN last_income_alert_at ELSE now() END");
+    }
+    // Linked tasks (roadmap T2.4 X2a — services/linked-tasks.js). Strict
+    // (INV-59): a non-boolean switch, a sources map that isn't an object of
+    // known sources, or a lead outside 0-14 days is a 400. A sources map is
+    // merged over the stored one, so sending one source keeps the others.
+    if (req.body.linked_tasks_enabled !== undefined) {
+      if (typeof req.body.linked_tasks_enabled !== "boolean") return res.status(400).json({ error: "linked_tasks_enabled must be true or false" });
+      updates.push("linked_tasks_enabled = $" + idx++); values.push(req.body.linked_tasks_enabled);
+    }
+    if (req.body.linked_tasks_sources !== undefined) {
+      const { SOURCE_KEYS } = require("../services/linked-tasks");
+      const clean = sanitizeBoolMap(req.body.linked_tasks_sources);
+      const unknown = clean ? Object.keys(clean).filter((k) => !SOURCE_KEYS.includes(k)) : [];
+      const nonBool = clean ? Object.values(req.body.linked_tasks_sources).some((v) => typeof v !== "boolean") : true;
+      if (!clean || unknown.length || nonBool) return res.status(400).json({ error: "linked_tasks_sources must map " + SOURCE_KEYS.join(" / ") + " to true or false" });
+      updates.push("linked_tasks_sources = linked_tasks_sources || $" + idx++ + "::jsonb"); values.push(JSON.stringify(clean));
+    }
+    if (req.body.linked_tasks_bill_lead_days !== undefined) {
+      const d = toInt(req.body.linked_tasks_bill_lead_days);
+      if (!Number.isInteger(d) || d < 0 || d > 14) return res.status(400).json({ error: "linked_tasks_bill_lead_days must be an integer 0-14" });
+      updates.push("linked_tasks_bill_lead_days = $" + idx++); values.push(d);
     }
     // FIRE projection assumptions (null clears back to defaults)
     if (req.body.fire_expected_return_pct !== undefined) {
@@ -270,7 +360,8 @@ router.patch("/api/settings", async (req, res) => {
     // silently disable auth or lock the user out from too-tight an idle.
     let invalidateShellIdleCache = false;
     if (req.body.shell_idle_timeout_minutes !== undefined) {
-      const m = parseInt(req.body.shell_idle_timeout_minutes);
+      // toInt, not parseInt: parseInt("30abc") is 30 (cycle-7 F86).
+      const m = toInt(req.body.shell_idle_timeout_minutes);
       // F11: 400 on out-of-bounds instead of silently dropping (consistent with
       // the other bounded numeric settings) so a bad value isn't a silent no-op.
       if (!(Number.isFinite(m) && m >= 5 && m <= 10080)) {
@@ -294,9 +385,48 @@ router.patch("/api/settings", async (req, res) => {
     if (Object.keys(req.body || {}).some(k => k.startsWith("keep_alive_"))) {
       try { require("../services/keep-alive").invalidateKeepAliveCache(); } catch {}
     }
-    res.json(result.rows[0]);
+    // The cash alert skips its DB read for the day once it found itself off;
+    // a change to its settings makes the next hourly tick look again.
+    if (Object.keys(req.body || {}).some(k => k.startsWith("cash_alert_"))) {
+      require("../services/cash-alerts").invalidate();
+    }
+    if (req.body && req.body.payday_alerts_enabled !== undefined) {
+      require("../services/payday-alerts").invalidate();
+    }
+    // Linked tasks: the runner skips its settings read for the day once it
+    // found itself off; a change makes the next run look again.
+    if (Object.keys(req.body || {}).some(k => k.startsWith("linked_tasks_"))) {
+      require("../services/linked-tasks").invalidate();
+    }
+    // Never echo ciphertext columns (persistent_webhook_secret_enc) to the
+    // client — RETURNING * included them (F82).
+    const row = { ...result.rows[0] };
+    for (const k of Object.keys(row)) if (k.endsWith("_enc")) delete row[k];
+    res.json(row);
   } catch (err) {
     console.error("settings error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/linked-tasks/run — run the linked-task sync now (roadmap T2.4
+// X2c, Settings → Per-sistant tasks "Run now"). 501 standalone (no Per-sistant
+// pool), 409 while a run is going (the hourly job or a route's refresh),
+// 400 while the switch is off; else the run's record (the shape stored in
+// linked_tasks_state) with status ok | partial. Errors are fixed sentences.
+router.post("/api/linked-tasks/run", async (req, res) => {
+  const lt = require("../services/linked-tasks");
+  const persistentPool = req.app.get("persistentPool") || undefined;
+  if (lt.isRunning()) return res.status(409).json({ error: "A run is already going — try again in a moment." });
+  try {
+    lt.invalidate(); // a manual run always reads the switch
+    const r = await lt.runLinkedTasks(pool, persistentPool);
+    if (r.status === "no_persistent") return res.status(501).json({ error: "Per-sistant tasks are available under the unified shell only." });
+    if (r.status === "disabled") return res.status(400).json({ error: "Turn on Per-sistant tasks first." });
+    const { status, at, desired, created, updated, closed, reopened, skipped, errors } = r;
+    res.json({ status, at, desired, created, updated, closed, reopened, skipped, errors });
+  } catch (err) {
+    console.error("linked tasks run error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -343,7 +473,10 @@ router.get("/api/data-freshness", async (_req, res) => {
 // in logs. Note: we intentionally do NOT live-decrypt tokens to detect a
 // passphrase mismatch — pgp_sym_decrypt throws (not NULL) on a wrong key, which
 // would error the whole query; that condition surfaces via sync errors instead.
-router.get("/api/data-health", async (_req, res) => {
+// The data-health payload (design D3 — the route below and the dashboard
+// summary's Sync Health item read this one function). Throws only when the
+// settings read itself fails; every other part is fail-soft as before.
+async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
   const FRESH_SEC = 6 * 60 * 60;
   const STALE_SEC = 24 * 60 * 60;
   const now = Date.now();
@@ -353,96 +486,221 @@ router.get("/api/data-health", async (_req, res) => {
     const level = age < FRESH_SEC ? "fresh" : age < STALE_SEC ? "aging" : "stale";
     return { timestamp: ts, age_seconds: age, level };
   }
+  const [settingsRow, teller, plaid, events] = await Promise.all([
+    db.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result, last_sheets_sync_result FROM user_settings WHERE id = 1"),
+    db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
+    // CSV virtual items (status='CSV') are not Plaid links — exclude them from
+    // both counts; they used to raise a permanent "need re-authentication"
+    // warning after any CSV import (BSI-10). A real re-auth need is the
+    // last_error_code the sync paths record on an ITEM_* error.
+    db.query("SELECT COUNT(*) FILTER (WHERE status <> 'CSV')::int AS total, COUNT(*) FILTER (WHERE status <> 'CSV' AND (status <> 'GOOD' OR last_error_code IS NOT NULL))::int AS not_good FROM plaid_items").catch(() => ({ rows: [{ total: 0, not_good: 0 }] })),
+    db.query("SELECT type, title, body, created_at FROM notification_log WHERE type IN ('auto-sync','csv-reminder') OR title ILIKE '%sync%' ORDER BY created_at DESC LIMIT 8").catch(() => ({ rows: [] })),
+  ]);
+  const s = settingsRow.rows[0] || {};
+  const t = teller.rows[0] || { total: 0, disconnected: 0 };
+  const p = plaid.rows[0] || { total: 0, not_good: 0 };
+
+  const freshness = {
+    transactions: ageInfo(s.last_txn_sync_at),
+    balances: ageInfo(s.last_balance_sync_at),
+    auto_sync: ageInfo(s.last_auto_sync_at),
+    insights: ageInfo(s.insights_last_run),
+  };
+
+  const issues = [];
+  if (t.disconnected > 0) issues.push({ severity: "warning", message: `${t.disconnected} Teller enrollment(s) disconnected — re-link in Accounts.` });
+  // Fixed in place on the Accounts page (Link update mode, cycle-7 G3).
+  if (p.not_good > 0) issues.push({ severity: "warning", message: `${p.not_good} Plaid item(s) need re-authentication — open Accounts → Re-authenticate.`, link: "/accounts" });
+  if (!s.last_txn_sync_at && !s.last_auto_sync_at) {
+    issues.push({ severity: "info", message: "No transaction sync has run yet." });
+  } else if (freshness.transactions.level === "stale") {
+    issues.push({ severity: "warning", message: "Transactions haven't synced in over 24h." });
+  }
+  if (s.last_balance_sync_at && freshness.balances.level === "stale") {
+    issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
+  }
+  // Per-item errors from the most recent sync run (addition D) — these are the
+  // silent ones: a `decryption_failed` does NOT mark an enrollment
+  // DISCONNECTED (INV-22), so it wouldn't show above. Surface each explicitly.
+  const syncErrors = (s.last_sync_result && Array.isArray(s.last_sync_result.errors)) ? s.last_sync_result.errors : [];
+  for (const e of syncErrors) {
+    const who = e.institution || e.provider || "a sync source";
+    const hint = e.error === "decryption_failed"
+      ? " — TOKEN_ENCRYPTION_PASSPHRASE mismatch; restore the passphrase, or unlink and link the account again"
+      : "";
+    issues.push({ severity: "warning", message: `Last sync error — ${who}: ${e.error}${hint}` });
+  }
+
+  // Google Sheets export (SXE-1): the last sync's failed tabs.
+  const sheetsResult = s.last_sheets_sync_result;
+  if (sheetsResult && Array.isArray(sheetsResult.errors) && sheetsResult.errors.length) {
+    const steps = sheetsResult.errors.map(e => e.step).join(", ");
+    issues.push({ severity: "warning", message: `Google Sheets sync: ${sheetsResult.errors.length} tab(s) failed last run (${steps}) — ${sheetsResult.errors[0].error}` });
+  }
+
+  // Scheduled-job heartbeats (F4 surface): job_runs rows + per-job staleness
+  // so the Sync Health card shows scheduler liveness, not just data
+  // freshness. Defensive — a pre-migration DB just omits the block.
+  let jobs = [];
   try {
-    const [settingsRow, teller, plaid, events] = await Promise.all([
-      pool.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result, last_sheets_sync_result FROM user_settings WHERE id = 1"),
-      pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
-      // CSV virtual items (status='CSV') are not Plaid links — exclude them from
-      // both counts; they used to raise a permanent "need re-authentication"
-      // warning after any CSV import (BSI-10). A real re-auth need is the
-      // last_error_code the sync paths record on an ITEM_* error.
-      pool.query("SELECT COUNT(*) FILTER (WHERE status <> 'CSV')::int AS total, COUNT(*) FILTER (WHERE status <> 'CSV' AND (status <> 'GOOD' OR last_error_code IS NOT NULL))::int AS not_good FROM plaid_items").catch(() => ({ rows: [{ total: 0, not_good: 0 }] })),
-      pool.query("SELECT type, title, body, created_at FROM notification_log WHERE type IN ('auto-sync','csv-reminder') OR title ILIKE '%sync%' ORDER BY created_at DESC LIMIT 8").catch(() => ({ rows: [] })),
-    ]);
-    const s = settingsRow.rows[0] || {};
-    const t = teller.rows[0] || { total: 0, disconnected: 0 };
-    const p = plaid.rows[0] || { total: 0, not_good: 0 };
-
-    const freshness = {
-      transactions: ageInfo(s.last_txn_sync_at),
-      balances: ageInfo(s.last_balance_sync_at),
-      auto_sync: ageInfo(s.last_auto_sync_at),
-      insights: ageInfo(s.insights_last_run),
-    };
-
-    const issues = [];
-    if (t.disconnected > 0) issues.push({ severity: "warning", message: `${t.disconnected} Teller enrollment(s) disconnected — re-link in Accounts.` });
-    if (p.not_good > 0) issues.push({ severity: "warning", message: `${p.not_good} Plaid item(s) need re-authentication.` });
-    if (!s.last_txn_sync_at && !s.last_auto_sync_at) {
-      issues.push({ severity: "info", message: "No transaction sync has run yet." });
-    } else if (freshness.transactions.level === "stale") {
-      issues.push({ severity: "warning", message: "Transactions haven't synced in over 24h." });
+    const jobHealth = require("../services/job-health");
+    // Persist this process's in-memory heartbeats + outcomes first (cycle-7
+    // F8): ticks are only flushed by the activity-gated watchdog, so after
+    // time away every job read as "stale" here although it had been ticking.
+    await jobHealth.flush(db);
+    const jr = await db.query(
+      "SELECT job_name, last_run_at, last_status, last_error FROM job_runs WHERE job_name != '_watchdog' ORDER BY job_name"
+    );
+    const nowMs = Date.now();
+    jobs = jr.rows.map(j => ({
+      job: j.job_name,
+      last_run_at: j.last_run_at,
+      last_status: j.last_status || null,
+      last_error: j.last_status === "error" ? (j.last_error || null) : null,
+      stale: j.last_run_at ? (nowMs - new Date(j.last_run_at).getTime()) > jobHealth.thresholdMs(j.job_name) : false,
+    }));
+    const staleJobs = jobs.filter(j => j.stale).map(j => j.job);
+    if (staleJobs.length) {
+      issues.push({ severity: "warning", message: `Scheduled job(s) haven't run recently: ${staleJobs.join(", ")} — server likely asleep (check keep-alive).` });
     }
-    if (s.last_balance_sync_at && freshness.balances.level === "stale") {
-      issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
+    // A job that ran but FAILED (its outcome, not just its heartbeat — F8).
+    for (const j of jobs.filter(j => j.last_status === "error")) {
+      issues.push({ severity: "warning", message: `Scheduled job ${j.job} failed its last run: ${j.last_error || "unknown error"}` });
     }
-    // Per-item errors from the most recent sync run (addition D) — these are the
-    // silent ones: a `decryption_failed` does NOT mark an enrollment
-    // DISCONNECTED (INV-22), so it wouldn't show above. Surface each explicitly.
-    const syncErrors = (s.last_sync_result && Array.isArray(s.last_sync_result.errors)) ? s.last_sync_result.errors : [];
-    for (const e of syncErrors) {
-      const who = e.institution || e.provider || "a sync source";
-      const hint = e.error === "decryption_failed"
-        ? " — TOKEN_ENCRYPTION_PASSPHRASE mismatch; re-link or restore the passphrase"
-        : "";
-      issues.push({ severity: "warning", message: `Last sync error — ${who}: ${e.error}${hint}` });
-    }
+  } catch (e) { /* job_runs not migrated yet — omit */ }
 
-    // Google Sheets export (SXE-1): the last sync's failed tabs.
-    const sheetsResult = s.last_sheets_sync_result;
-    if (sheetsResult && Array.isArray(sheetsResult.errors) && sheetsResult.errors.length) {
-      const steps = sheetsResult.errors.map(e => e.step).join(", ");
-      issues.push({ severity: "warning", message: `Google Sheets sync: ${sheetsResult.errors.length} tab(s) failed last run (${steps}) — ${sheetsResult.errors[0].error}` });
-    }
+  // Server errors (roadmap T1.4): unresolved errors from the last 24h in the
+  // in-app error log. The shell flushes it every minute; flush first so a
+  // just-logged error counts.
+  try {
+    await errorLog.flush();
+    const n = await errorLog.recentUnresolvedCount(db, 24);
+    if (n > 0) issues.push({ severity: "warning", message: `${n} server error(s) in the last 24 hours — see Settings → Sync Health → Recent errors.`, link: "/settings#recent-errors" });
+  } catch (e) { console.error("data-health error-log read failed:", e.message); }
 
-    // Scheduled-job heartbeats (F4 surface): job_runs rows + per-job staleness
-    // so the Sync Health card shows scheduler liveness, not just data
-    // freshness. Defensive — a pre-migration DB just omits the block.
-    let jobs = [];
-    try {
-      const jobHealth = require("../services/job-health");
-      const jr = await pool.query(
-        "SELECT job_name, last_run_at, last_status FROM job_runs WHERE job_name != '_watchdog' ORDER BY job_name"
-      );
-      const nowMs = Date.now();
-      jobs = jr.rows.map(j => ({
-        job: j.job_name,
-        last_run_at: j.last_run_at,
-        stale: j.last_run_at ? (nowMs - new Date(j.last_run_at).getTime()) > jobHealth.thresholdMs(j.job_name) : false,
-      }));
-      const staleJobs = jobs.filter(j => j.stale).map(j => j.job);
-      if (staleJobs.length) {
-        issues.push({ severity: "warning", message: `Scheduled job(s) haven't run recently: ${staleJobs.join(", ")} — server likely asleep (check keep-alive).` });
+  // Operator state (cycle-7 F14 → G1 / ST4): the operator checks — the
+  // compromised Teller cert (F14 used to raise it here directly), disabled or
+  // failing backstop workflows, no recent backup, missing workflow secrets, a
+  // public repo, a stale Knowledge index. Cached GitHub results only: this
+  // route never waits on GitHub (a stale cache refreshes in the background).
+  // Bank webhooks (roadmap T2.1 W6): per provider the last event, the last
+  // 24 hours' count + failures and the Plaid registration — read once and
+  // shared with the operator checks below.
+  let webhooks = null;
+  try {
+    webhooks = await require("../services/webhook-status").getWebhookStatus(db);
+  } catch (e) { console.error("data-health webhook status failed:", e.message); }
+  if (webhooks) {
+    for (const [provider, w] of [["Plaid", webhooks.plaid], ["Teller", webhooks.teller]]) {
+      if (w.failed_24h > 0) {
+        issues.push({ severity: "warning", message: `${w.failed_24h} ${provider} webhook event(s) failed in the last 24 hours — the scheduled sync is the backstop; see the server log.` });
       }
-    } catch (e) { /* job_runs not migrated yet — omit */ }
+    }
+  }
 
-    res.json({
-      thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
-      ok: issues.filter(i => i.severity !== "info").length === 0,
-      jobs,
-      freshness,
-      providers: {
-        teller: { total: t.total, disconnected: t.disconnected },
-        plaid: { total: p.total, not_good: p.not_good },
-      },
-      last_reconcile_at: s.last_reconcile_at || null,
-      last_sync_result: s.last_sync_result || null,
-      last_sheets_sync_result: s.last_sheets_sync_result || null,
-      issues,
-      recent_events: events.rows,
+  // Per-connection freshness (roadmap T2.1 W6): when each Teller enrollment /
+  // Plaid item last synced completely (its own last_synced_at — W3 / W5).
+  let connections = [];
+  try {
+    const cr = await db.query(
+      `SELECT 'teller' AS provider, id, institution_name, status, last_synced_at
+         FROM teller_enrollments WHERE status <> 'SUSPENDED'
+       UNION ALL
+       SELECT 'plaid', id, institution_name,
+              CASE WHEN last_error_code IS NOT NULL THEN 'NEEDS_REAUTH' ELSE status END,
+              last_synced_at
+         FROM plaid_items WHERE status <> 'CSV'
+       ORDER BY 1, 3`
+    );
+    connections = cr.rows.map(c => ({
+      provider: c.provider,
+      id: c.id,
+      institution: c.institution_name,
+      status: c.status,
+      last_synced: ageInfo(c.last_synced_at),
+    }));
+  } catch (e) { console.error("data-health connections read failed:", e.message); }
+
+  let operatorChecks = null;
+  try {
+    operatorChecks = await operatorChecksService.getOperatorChecks({
+      cachedOnly: true,
+      pool: db,
+      persistentPool,
+      webhookStatus: webhooks || undefined,
     });
+    issues.push(...operatorChecksService.toIssues(operatorChecks));
+  } catch (e) { console.error("data-health operator checks failed:", e.message); }
+
+  return {
+    thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
+    ok: issues.filter(i => i.severity !== "info").length === 0,
+    jobs,
+    freshness,
+    providers: {
+      teller: { total: t.total, disconnected: t.disconnected },
+      plaid: { total: p.total, not_good: p.not_good },
+    },
+    last_reconcile_at: s.last_reconcile_at || null,
+    last_sync_result: s.last_sync_result || null,
+    last_sheets_sync_result: s.last_sheets_sync_result || null,
+    operator_checks: operatorChecks,
+    webhooks,
+    connections,
+    issues,
+    recent_events: events.rows,
+  };
+}
+
+router.get("/api/data-health", async (req, res) => {
+  try {
+    res.json(await gatherDataHealth(pool, { persistentPool: req.app.get("persistentPool") || null }));
   } catch (err) {
     console.error("data-health error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/operator-checks — the operator doctor (cycle-7 G1 + ST4) for
+// Settings → Sync Health. Waits for the GitHub checks (cached 6h; ?refresh=1
+// forces a re-read). Read-only: no secret value is requested or returned, and
+// the GitHub token never appears in the response.
+// GET /api/errors — the in-app error log (roadmap T1.4) for Settings → Sync
+// Health → Recent errors: unresolved errors, newest first (?all=1 includes
+// resolved ones). The buffer is flushed first so the list is current.
+router.get("/api/errors", async (req, res) => {
+  try {
+    await errorLog.flush();
+    const errors = await errorLog.listErrors(pool, { limit: req.query.limit, includeResolved: req.query.all === "1" });
+    res.json({ errors });
+  } catch (err) {
+    console.error("errors list failed:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/errors/:fingerprint/resolve — hide an error until it happens again.
+router.post("/api/errors/:fingerprint/resolve", async (req, res) => {
+  try {
+    const r = await errorLog.resolveError(pool, req.params.fingerprint);
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("error resolve failed:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+router.get("/api/operator-checks", async (req, res) => {
+  try {
+    const result = await operatorChecksService.getOperatorChecks({
+      force: req.query.refresh === "1",
+      pool,
+      persistentPool: req.app.get("persistentPool") || null,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error("operator-checks error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -524,6 +782,10 @@ router.post("/api/sheets/sync-transactions", async (_req, res) => {
     res.json(result);
   } catch (err) {
     console.error("Sheets sync-transactions error:", err.message);
+    // A failed partial sync is recorded like a failed tab (cycle-7 F86 — it
+    // was only logged). A partial SUCCESS isn't recorded: it says nothing
+    // about the other tabs, so it mustn't clear a full sync's failure.
+    await recordSheetsSyncResult({ errors: [{ step: "transactions", error: err.message }] });
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -533,10 +795,17 @@ router.post("/api/sheets/dashboard", async (_req, res) => {
   if (!sheetsSync) {
     return res.status(501).json({ error: "Google Sheets integration not available." });
   }
+  // Same configuration check as the other Sheets endpoints (cycle-7 F86 — this
+  // one skipped it and failed inside the Google client with a 500).
+  if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    return res.status(400).json({ error: "Set GOOGLE_SHEETS_ID and GOOGLE_SERVICE_ACCOUNT_KEY in .env" });
+  }
   try {
     const result = await sheetsSync.syncDashboardOnly();
     res.json(result);
   } catch (err) {
+    console.error("Sheets dashboard sync error:", err.message);
+    await recordSheetsSyncResult({ errors: [{ step: "dashboard", error: err.message }] });
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -586,45 +855,16 @@ router.get("/api/export", async (req, res) => {
 
 // GET /api/export/tax-report — Year-end tax deduction summary
 router.get("/api/export/tax-report", async (req, res) => {
-  const { todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
+  const { todayStr, getTaxDeductionReport } = require("../services/financial-queries");
   const year = parseInt(req.query.year) || parseInt(todayStr().slice(0, 4), 10);
   const format = req.query.format || "csv";
   try {
     // SXE-7: computed at EXPORT time from the transactions ledger — one row
     // per matching transaction (with its date), no LIMIT, the whole calendar
-    // year. The tax_deductions table (written by insights runs) is only the
-    // ANNOTATION layer here: a merchant's confirm flag / notes / category
-    // apply to that merchant's rows. (The export used to list those per-
-    // merchant snapshot rows directly: frozen at the last insights run, top
-    // 15 merchants only, double-counted renames, blank Date column.)
-    const [txns, notes] = await Promise.all([
-      getTaxDeductionTransactions(pool, year),
-      pool.query(
-        `SELECT merchant, category, is_confirmed, notes
-         FROM tax_deductions WHERE tax_year = $1 AND transaction_id IS NULL`,
-        [year]
-      ).catch(() => ({ rows: [] })),
-    ]);
-    const noteByMerchant = new Map();
-    for (const n of notes.rows) if (n.merchant) noteByMerchant.set(String(n.merchant).toLowerCase(), n);
-    const deductions = {
-      rows: txns.map(t => {
-        const n = noteByMerchant.get(String(t.merchant || "").toLowerCase());
-        const userCat = n && n.category && !["flagged", "uncategorized"].includes(n.category) ? n.category : null;
-        const d = t.date ? String(t.date).slice(0, 10) : ""; // 'YYYY-MM-DD' text from SQL
-        return {
-          tax_year: year,
-          txn_date: d,
-          transaction_id: t.transaction_id,
-          merchant: t.merchant,
-          amount: parseFloat(t.amount).toFixed(2),
-          category: userCat || t.category,
-          deduction_type: "keyword_match",
-          notes: n ? n.notes : null,
-          is_confirmed: !!(n && n.is_confirmed),
-        };
-      }).sort((a, b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : (a.txn_date < b.txn_date ? -1 : a.txn_date > b.txn_date ? 1 : 0))),
-    };
+    // year, annotated by the tax_deductions merchant notes. One definition,
+    // getTaxDeductionReport, shared with the year-end tax package (roadmap
+    // T3.3 K3).
+    const deductions = { rows: await getTaxDeductionReport(pool, year) };
 
     if (format === "json") {
       // Group by category
@@ -696,29 +936,11 @@ router.get("/api/export/tax-report", async (req, res) => {
       }
     }
 
-    // CSV format
-    const header = "Tax Year,Date,Merchant,Amount,Category,Type,Notes,Confirmed\n";
-    const rows = deductions.rows.map(d =>
-      `${d.tax_year},${csvDate(d.txn_date)},` +
-      `${csvText(d.merchant)},` +
-      `${d.amount},${csvText(d.category)},${csvText(d.deduction_type)},` +
-      `${csvText(d.notes)},${d.is_confirmed}`
-    ).join("\n");
-
-    // Add summary section
-    const byCategory = {};
-    for (const d of deductions.rows) {
-      if (!byCategory[d.category]) byCategory[d.category] = 0;
-      byCategory[d.category] += parseFloat(d.amount);
-    }
-    const grandTotal = deductions.rows.reduce((s, d) => s + parseFloat(d.amount), 0);
-    const summary = "\n\nSUMMARY BY CATEGORY\nCategory,Total\n" +
-      Object.entries(byCategory).map(([cat, total]) => `${csvText(cat)},${total.toFixed(2)}`).join("\n") +
-      `\n\nGRAND TOTAL,${grandTotal.toFixed(2)}`;
-
+    // CSV format — the same builder the tax package's deductions.csv uses.
+    const { taxReportCsv } = require("../services/tax-package");
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename=tax_deductions_${year}.csv`);
-    res.send(header + rows + summary);
+    res.send(taxReportCsv(deductions.rows));
   } catch (err) {
     console.error("tax report error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -730,3 +952,5 @@ module.exports = router;
 // `module.exports = router` so the router assignment doesn't drop it (INV-19).
 module.exports.sanitizeBoolMap = sanitizeBoolMap;
 module.exports.recordSheetsSyncResult = recordSheetsSyncResult;
+module.exports.normalizePersistentUrl = normalizePersistentUrl;
+module.exports.gatherDataHealth = gatherDataHealth;

@@ -251,10 +251,11 @@ describe("WD-17 — stale history chart + reconcile message", () => {
     assert.match(enr.summarizeReconcile({ teller: { transactions_added: 3, errors: [{ error: "x" }] } }), /3 recovered \(1 error\)/);
   });
 
-  it("the background job folds leg errors into reconcileJob.error and Settings checks the legs", () => {
+  it("the background job folds leg errors into its error and Settings checks the legs", () => {
     const src = read("teller", "routes", "enrollments.js");
     assert.match(src, /const errs = reconcileErrors\(out\);/);
-    assert.match(src, /title: reconcileJob\.error \? "Reconcile finished with errors" : "Reconcile complete"/);
+    // The reconcile job lives in the shared background tracker since cycle-7 ST1.
+    assert.match(src, /title: job\.error \? "Reconcile finished with errors" : "Reconcile complete"/);
     const ui = read("teller", "views", "settings.ejs");
     assert.match(ui, /else if \(legErrs\) showMsg\('Reconcile finished with ' \+ legErrs/);
   });

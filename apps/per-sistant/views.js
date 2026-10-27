@@ -61,6 +61,14 @@ function nonceAttr() {
   return n ? ` nonce="${n}"` : "";
 }
 
+// Where each linked-task source app lives (roadmap T2.4 X1b) — the task chip
+// joins this with the task's source_url. '<' escaped so a configured URL can't
+// close the script tag.
+function linkedAppBases(isEmbedded) {
+  const bases = { perfin: isEmbedded ? "/perfin" : (PERFIN_URL || "") };
+  return JSON.stringify(bases).replace(/</g, "\\u003c");
+}
+
 function pageHead(title) {
   const bp = basePath();
   const isEmbedded = embedded();
@@ -96,7 +104,8 @@ function pageHead(title) {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">${materializeAssets}
   <style>${SHARED_CSS}${NAV_CHROME_CSS}</style>
-  <script${nonceAttr()}>window.BASE_PATH = ${JSON.stringify(bp)};</script>
+  <script${nonceAttr()}>window.BASE_PATH = ${JSON.stringify(bp)};
+  window.LINKED_APP_BASES = ${linkedAppBases(isEmbedded)};</script>
   <script${nonceAttr()}>${SHARED_JS}</script>
   <script${nonceAttr()}>${PRIMITIVES_JS}</script>
   <script${nonceAttr()}>${SETTINGS_PATCH}</script>
@@ -106,6 +115,7 @@ function pageHead(title) {
 const NAV = [
   { href: "/today",    label: "Today",     id: "today" },
   { href: "/",         label: "Dashboard", id: "dashboard" },
+  { href: "/search",   label: "Search",    id: "search" },
   { href: "/todos",    label: "To-Dos",    id: "todos" },
   { href: "/emails",   label: "Emails",    id: "emails" },
   { href: "/notes",    label: "Notes",     id: "notes" },
@@ -124,11 +134,13 @@ function navIcon(id) {
   switch (id) {
     case 'today': return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="7" y1="7" x2="7" y2="4" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/><line x1="7" y1="7" x2="9.5" y2="7" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/></svg>`;
     case 'dashboard': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" fill="none" stroke="${c}" stroke-width="${sw}"/><rect x="8" y="1" width="5" height="5" fill="none" stroke="${c}" stroke-width="${sw}"/><rect x="1" y="8" width="5" height="5" fill="none" stroke="${c}" stroke-width="${sw}"/><rect x="8" y="8" width="5" height="5" fill="none" stroke="${c}" stroke-width="${sw}"/></svg>`;
+    case 'search': return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="9" y1="9" x2="12.5" y2="12.5" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
     case 'todos': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1.5" y="1.5" width="11" height="11" fill="none" stroke="${c}" stroke-width="${sw}"/><path d="M4 7 L6 9 L10 5" fill="none" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
     case 'emails': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1.5" y="3" width="11" height="8" fill="none" stroke="${c}" stroke-width="${sw}"/><path d="M1.5 3.5 L7 8 L12.5 3.5" fill="none" stroke="${c}" stroke-width="${sw}"/></svg>`;
     case 'notes': return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M3 1.5 L11 1.5 L11 12.5 L3 12.5 Z" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="5" y1="5" x2="9" y2="5" stroke="${c}" stroke-width="1"/><line x1="5" y1="7.5" x2="9" y2="7.5" stroke="${c}" stroke-width="1"/><line x1="5" y1="10" x2="7.5" y2="10" stroke="${c}" stroke-width="1"/></svg>`;
     case 'knowledge': return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1.5 A3.5 3.5 0 0 1 9.2 7.7 Q8.5 8.3 8.5 9.5 L5.5 9.5 Q5.5 8.3 4.8 7.7 A3.5 3.5 0 0 1 7 1.5 Z" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="5.6" y1="11" x2="8.4" y2="11" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/><line x1="6.1" y1="12.5" x2="7.9" y2="12.5" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/></svg>`;
     case 'health': return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12 C4 9.5 1.5 7.5 1.5 5 A2.8 2.8 0 0 1 7 3.5 A2.8 2.8 0 0 1 12.5 5 C12.5 7.5 10 9.5 7 12 Z" fill="none" stroke="${c}" stroke-width="${sw}" stroke-linejoin="round"/><path d="M3.5 7 L5.5 7 L6.3 5.5 L7.7 8.5 L8.5 7 L10.5 7" fill="none" stroke="${c}" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    case 'jobs': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1.5" y="4.5" width="11" height="7.5" rx="1" fill="none" stroke="${c}" stroke-width="${sw}"/><path d="M5 4.5 V3 A1 1 0 0 1 6 2 L8 2 A1 1 0 0 1 9 3 V4.5" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="1.5" y1="8" x2="12.5" y2="8" stroke="${c}" stroke-width="1"/></svg>`;
     case 'contacts': return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="5" r="2.3" fill="none" stroke="${c}" stroke-width="${sw}"/><path d="M2.5 12.5 Q2.5 8.5 7 8.5 Q11.5 8.5 11.5 12.5" fill="none" stroke="${c}" stroke-width="${sw}"/></svg>`;
     case 'calendar': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1.5" y="2.5" width="11" height="10" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="1.5" y1="5.5" x2="12.5" y2="5.5" stroke="${c}" stroke-width="1"/><line x1="4.5" y1="1" x2="4.5" y2="4" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/><line x1="9.5" y1="1" x2="9.5" y2="4" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/></svg>`;
     case 'review': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="2" y="8" width="2" height="5" fill="${c}"/><rect x="6" y="5" width="2" height="8" fill="${c}"/><rect x="10" y="2" width="2" height="11" fill="${c}"/></svg>`;
@@ -145,9 +157,8 @@ const NAV_CHROME_CSS = `
 .appbar .ui-controls { display: flex; align-items: center; gap: 10px; }
 .mode-toggle {
   background: transparent; border: 1px solid var(--line); cursor: pointer;
-  padding: 5px 10px; border-radius: 2px; color: var(--muted);
-  font-family: var(--mono); font-size: 10px; font-weight: 500;
-  letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 5px 10px; border-radius: var(--radius-control); color: var(--muted);
+  font-family: var(--ui); font-size: var(--fs-xs); font-weight: 500;
 }
 .mode-toggle:hover { background: var(--paper-2); color: var(--ink); }
 
@@ -158,10 +169,9 @@ const NAV_CHROME_CSS = `
 /* Cross-app link in the appbar — mirror the mode toggle's chrome */
 .appbar .cross-app-link {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 10px; border: 1px solid var(--line); border-radius: 2px;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--radius-control);
   color: var(--muted); text-decoration: none;
-  font-family: var(--mono); font-size: 10px; font-weight: 500;
-  letter-spacing: 0.1em; text-transform: uppercase;
+  font-family: var(--ui); font-size: var(--fs-xs); font-weight: 500;
 }
 .appbar .cross-app-link:hover { background: var(--paper-2); color: var(--ink); }
 .appbar .cross-app-link .icon { display: inline-flex; }
@@ -174,10 +184,9 @@ const NAV_CHROME_CSS = `
    shared #ask-ps-popover wired in views/js.js (available on every page). */
 .appbar .ask-ps-btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 10px; border: 1px solid var(--line); border-radius: 2px;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--radius-control);
   background: transparent; color: var(--muted); cursor: pointer;
-  font-family: var(--mono); font-size: 10px; font-weight: 500;
-  letter-spacing: 0.1em; text-transform: uppercase;
+  font-family: var(--ui); font-size: var(--fs-xs); font-weight: 500;
 }
 .appbar .ask-ps-btn:hover { background: var(--paper-2); color: var(--ink); }
 .appbar .ask-ps-btn .icon { display: inline-flex; }

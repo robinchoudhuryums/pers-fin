@@ -1,5 +1,33 @@
 <%- include('partials/head', { title: 'Dashboard', extraStyles: `
-    .container { max-width: 1060px; }
+    #main-content { max-width: 1060px; }
+    /* Design D3: the Summary card + Needs attention at the top. */
+    .dash-summary { margin: 0 0 24px; }
+    .dash-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .dash-summary-card { padding: 16px 18px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); min-width: 0; }
+    .dash-summary-card .label { font-size: 12px; color: var(--text-muted); }
+    .dash-summary-card .value { font-size: 26px; font-weight: 400; margin-top: 4px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .dash-summary-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .dash-summary-card .sub a { color: var(--teal); }
+    .dash-bar { height: 6px; border-radius: 3px; background: var(--surface-2); margin-top: 10px; overflow: hidden; }
+    .dash-bar > span { display: block; height: 100%; background: var(--teal); border-radius: 3px; }
+    .dash-bar > span.amt-bad { background: var(--red); }
+    .dash-attention { margin-top: 12px; padding: 14px 18px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); }
+    .dash-attention h2 { font-size: 13px; font-weight: 500; margin: 0 0 8px; }
+    .dash-attention ul { list-style: none; margin: 0; padding: 0; }
+    .dash-attention li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 14px; border-top: 1px solid var(--border); }
+    .dash-attention li:first-child { border-top: 0; }
+    .dash-attention li a { color: var(--text); text-decoration: none; }
+    .dash-attention li a:hover { text-decoration: underline; }
+    .dash-attention li .amount { color: var(--text-muted); white-space: nowrap; }
+    .dash-attention .all-clear { color: var(--text-muted); font-size: 13px; }
+    .dash-attention .all-clear .tick { color: var(--green); margin-right: 6px; }
+    .dash-attention .note { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
+    .dash-summary-error { color: var(--text-muted); font-size: 13px; margin-top: 8px; }
+    .skel { display: block; border-radius: 6px; background: var(--surface-2); animation: skelPulse 1.4s ease-in-out infinite; }
+    .skel.line { height: 12px; margin-top: 8px; }
+    .skel.big { height: 26px; width: 60%; margin-top: 8px; }
+    @keyframes skelPulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
     .top-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                  gap: 16px; margin-bottom: 36px; }
     .accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -13,9 +41,7 @@
     .acct-card .acct-mask { color: var(--text-muted); font-weight: 300; }
     .acct-card .acct-balance { font-size: 22px; font-weight: 300; margin-top: 10px;
                                font-variant-numeric: tabular-nums; }
-    .acct-card .acct-balance.positive { color: var(--green); }
-    .acct-card .acct-balance.negative { color: var(--red); }
-    .acct-card .acct-balance.neutral { color: var(--warm-glow); }
+    .acct-card .acct-owed { font-size: 12px; color: var(--text-muted); }
     .acct-card .acct-type { font-size: 10px; color: var(--text-muted); margin-top: 4px;
                             text-transform: uppercase; letter-spacing: 0.5px; font-weight: 400; }
     .bar-container { width: 100%; height: 6px; background: rgba(255,255,255,0.06);
@@ -31,6 +57,7 @@
                      letter-spacing: 1.5px; margin-bottom: 16px; }
     .chart-card canvas { width: 100% !important; display: block; }
     .chart-wrap { position: relative; width: 100%; height: 240px; }
+    .chart-empty { text-align: center; padding: 32px; color: var(--text-muted); font-size: 13px; }
     @media (max-width: 640px) {
       .charts-grid { grid-template-columns: 1fr; }
       .two-col { grid-template-columns: 1fr; }
@@ -44,7 +71,7 @@
     .pyramid-switcher button {
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
       color: var(--text-muted); font-size: 10px; padding: 8px 12px; cursor: pointer;
-      text-transform: uppercase; letter-spacing: 0.8px; font-weight: 500;
+      letter-spacing: 0.3px; font-weight: 500;
       transition: all 0.2s; white-space: nowrap; text-align: left;
     }
     .pyramid-switcher button:hover { border-color: var(--border-hover); color: var(--text); }
@@ -67,8 +94,21 @@
     }
     @media (max-width: 640px) {
       .pyramid-wrapper { flex-direction: column; align-items: center; }
-      .pyramid-switcher { flex-direction: row; flex-wrap: wrap; justify-content: center; padding-top: 0; }
+      /* Design D4 (decision 15): one scrollable row, never wrapped. */
+      .pyramid-switcher { flex-direction: row; flex-wrap: nowrap; justify-content: flex-start; padding-top: 0;
+        max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+      .pyramid-switcher::-webkit-scrollbar { display: none; }
+      .pyramid-switcher > * { flex: 0 0 auto; }
     }
+    /* The pyramid collapses like the dashboard tables (design D4). */
+    .wellness-section.collapsible > h3 { cursor: pointer; user-select: none;
+      display: inline-flex; align-items: center; gap: 8px; }
+    .wellness-section.collapsible > h3::after { content: '\\25be'; font-size: 13px; letter-spacing: 0;
+      color: var(--text-muted); transition: transform 0.2s ease; }
+    .wellness-section.collapsed { margin-bottom: 24px; }
+    .wellness-section.collapsed > h3 { margin-bottom: 0; }
+    .wellness-section.collapsed > h3::after { transform: rotate(-90deg); }
+    .wellness-section.collapsed > *:not(h3) { display: none !important; }
 
 
     /* ── Financial Pyramid — Separated Layers with Neon Hologram ── */
@@ -313,9 +353,26 @@
   <h1>Dashboard</h1>
   <p class="subtitle">Personal finance overview</p>
 
+  <!-- Design D3: "am I OK this month?" — GET /api/dashboard/summary. Skeletons
+       until it answers; a failed load says so in one line. -->
+  <section class="dash-summary" id="dash-summary" aria-label="This month at a glance">
+    <div class="dash-summary-grid" id="dash-summary-cards" aria-busy="true">
+      <div class="dash-summary-card"><span class="skel line" style="width:40%;"></span><span class="skel big"></span><span class="skel line" style="width:70%;"></span></div>
+      <div class="dash-summary-card"><span class="skel line" style="width:40%;"></span><span class="skel big"></span><span class="skel line" style="width:70%;"></span></div>
+      <div class="dash-summary-card"><span class="skel line" style="width:40%;"></span><span class="skel big"></span><span class="skel line" style="width:70%;"></span></div>
+    </div>
+    <div class="dash-attention" id="dash-attention" aria-busy="true">
+      <h2>Needs attention</h2>
+      <div id="dash-attention-body"><span class="skel line" style="width:55%;"></span><span class="skel line" style="width:40%;"></span></div>
+    </div>
+    <div class="dash-summary-error" id="dash-summary-error" role="status" hidden></div>
+  </section>
+
   <!-- Sync-degradation strip: surfaces /api/data-health issues[] up front so a
        disconnected link / stale sync / decryption_failed is visible without
        digging into Settings → Sync Health. Hidden when everything's healthy. -->
+  <!-- Roadmap T3.3 K4: January to April only (taxSeason) — a link to last year's tax package. -->
+  <a id="tax-season-link" href="<%= basePath %>/tax" style="display:none;margin:0 0 16px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;color:var(--teal);font-size:13px;text-decoration:none;">Tax season: your tax package is ready to review &rarr;</a>
   <div id="sync-health-strip" role="status" style="display:none;margin:0 0 16px;border:1px solid var(--yellow,#d9b25f);border-left-width:4px;border-radius:8px;padding:10px 14px;background:color-mix(in srgb, var(--yellow,#d9b25f) 8%, transparent);font-size:13px;">
     <div style="display:flex;align-items:flex-start;gap:10px;">
       <span aria-hidden="true" style="font-size:15px;line-height:1.2;">&#9888;</span>
@@ -328,43 +385,44 @@
     </div>
   </div>
 
-  <!-- Financial Pyramid — Separated Layers -->
-  <div class="wellness-section">
-    <h3 id="pyramid-title">Financial Wellness</h3>
-    <div class="pyramid-wrapper">
-    <div class="pyramid-switcher" id="pyramid-switcher">
-      <button class="active" data-mode="wellness" title="Overall financial health">Wellness</button>
-      <button data-mode="debt_payoff" title="Card and loan debt payoff progress">Debt</button>
-      <button data-mode="goal_progress" title="Individual goal progress">Goals</button>
-      <button data-mode="spending_categories" title="Spending category balance">Spending</button>
-      <button data-mode="net_worth" title="Net worth breakdown">Net Worth</button>
-      <div class="pyramid-debt-baseline" id="debt-baseline-ctrl" style="display:none;">
-        <span>Baseline $</span>
-        <input aria-label="Starting debt" type="number" id="debt-baseline-input" placeholder="0" min="0" step="100">
-        <button id="debt-baseline-save">Set</button>
-      </div>
+  <!-- CSV Import Reminder Banner -->
+  <div id="csv-reminder-banner" style="display:none;padding:14px 18px;background:var(--yellow-bg);border:1px solid rgba(240,195,109,0.2);border-radius:var(--radius);margin-bottom:20px;font-size:13px;color:var(--yellow);font-weight:400;">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div id="csv-reminder-text"></div>
+      <a href="<%= basePath %>/accounts" style="color:var(--warm);font-weight:500;text-decoration:none;white-space:nowrap;margin-left:12px;">Import CSV &rarr;</a>
     </div>
-    <div class="pyramid-stage">
-      <div class="pyramid-orbs" id="pyramid-orbs"></div>
-      <div class="pyramid-scene">
-        <div class="pyramid-holo">
-          <div class="pyramid-3d" id="pyramid-3d">
-            <!-- Layers generated by buildPyramidGeometry() -->
-            <div class="pyramid-base" id="pyramid-base"></div>
-          </div>
+  </div>
+
+  <!-- Budget Velocity Alerts -->
+  <div id="budget-alerts-section" style="display:none;margin-bottom:20px;">
+    <div id="budget-alerts-list"></div>
+  </div>
+
+  <!-- S3: What's new since last visit -->
+  <div class="section" id="whats-new-widget" style="margin-bottom:28px;display:none;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;">
+        <h2 style="margin:0;">Since you last looked</h2>
+        <span id="whats-new-since" style="font-size:11px;color:var(--text-muted);"></span>
+      </summary>
+      <div id="whats-new-body" style="margin-top:12px;display:flex;flex-direction:column;gap:10px;font-size:13px;"></div>
+    </details>
+  </div>
+
+  <!-- Review Uncategorized (engagement loop — turn AI cost into rules) -->
+  <div class="section" id="review-queue-section" style="display:none;margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;display:inline;">Review Uncategorized</h2>
+        <span id="review-queue-count" style="font-size:11px;color:var(--text-muted);"></span>
+      </summary>
+      <div id="review-queue-body" style="margin-top:12px;font-size:13px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">
+          These would otherwise be sent to Claude on the next AI categorize run. Pick a category — check "Remember" to create a rule and skip future AI cost for the same merchant.
         </div>
+        <div id="review-queue-list"></div>
       </div>
-      <div class="pyramid-glow" id="pyramid-glow"></div>
-      <div class="pyramid-tiers" id="pyramid-tiers">
-        <div class="tier-label t-0" id="tier-0">Accounts</div>
-        <div class="tier-label t-1" id="tier-1">Budgets</div>
-        <div class="tier-label t-2" id="tier-2">Subs</div>
-        <div class="tier-label t-3" id="tier-3">Goals</div>
-      </div>
-    </div>
-    </div><!-- .pyramid-wrapper -->
-    <div class="wellness-score" id="wellness-score">--</div>
-    <div class="wellness-status" id="wellness-status">Calculating...</div>
+    </details>
   </div>
 
   <!-- Charts -->
@@ -380,20 +438,20 @@
   </div>
 
   <div class="actions">
-    <button class="primary" id="sync-btn">Sync Transactions</button>
-    <button id="balance-btn">Refresh Balances</button>
-    <button id="detect-btn">Run Detection</button>
+    <button class="primary" id="sync-btn">Sync transactions</button>
+    <button id="balance-btn">Refresh balances</button>
+    <button id="detect-btn">Run detection</button>
   </div>
 
   <div id="status-msg" class="status-msg"></div>
 
   <!-- Summary cards -->
   <div class="top-cards" id="summary-cards">
-    <div class="card"><div class="label">Net Balance</div><div class="value warm" id="net-balance">--</div></div>
-    <div class="card"><div class="label">Monthly Spend</div><div class="value warm" id="avg-monthly">--</div><div class="sub" id="avg-monthly-sub"></div></div>
-    <div class="card"><div class="label">Subscriptions /mo</div><div class="value teal" id="subs-monthly">--</div></div>
+    <div class="card"><div class="label">Net Balance</div><div class="value" id="net-balance">--</div></div>
+    <div class="card"><div class="label">Monthly Spend</div><div class="value" id="avg-monthly">--</div><div class="sub" id="avg-monthly-sub"></div></div>
+    <div class="card"><div class="label">Subscriptions /mo</div><div class="value" id="subs-monthly">--</div></div>
     <div class="card"><div class="label">Active Subs</div><div class="value teal" id="active-subs">--</div></div>
-    <div class="card"><div class="label">Avg Daily Spend</div><div class="value warm" id="avg-daily">--</div></div>
+    <div class="card"><div class="label">Avg Daily Spend</div><div class="value" id="avg-daily">--</div></div>
     <div class="card"><div class="label">Linked Accounts</div><div class="value teal" id="acct-count">--</div></div>
   </div>
 
@@ -405,17 +463,69 @@
     </div>
   </div>
 
-  <!-- Ask Perfin — NL finance Q&A (Claude tool-use over the shared helpers,
-       so cited numbers match the dashboard). Widget key: ask. -->
-  <div class="section" id="ask-section" style="margin-bottom:28px;">
-    <h2>Ask Perfin</h2>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <input id="ask-input" type="text" maxlength="500" placeholder="e.g. How much did I spend on dining last month?"
-             style="flex:1;min-width:220px;" aria-label="Ask a question about your finances">
-      <button class="btn primary" id="ask-btn" type="button">Ask</button>
+  <!-- Cash Flow Forecast (collapsible) -->
+  <div class="section" id="cashflow-section" style="display:none;margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;"><h2 style="margin:0;display:inline;">Cash Flow Projection</h2></summary>
+      <div style="margin-top:12px;">
+        <div id="cashflow-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
+        <div id="cashflow-list"></div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Bill Calendar Quick View -->
+  <div class="section" id="calendar-widget" style="margin-bottom:28px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+      <h2 style="margin:0;">Upcoming Bills</h2>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <button class="btn-sm" id="quick-add-bill-btn" style="font-size:12px;padding:6px 12px;border:1px solid var(--teal);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;font-family:inherit;min-height:36px;">+ Add bill</button>
+        <a href="<%= basePath %>/calendar" style="color:var(--teal);font-size:12px;text-decoration:none;">Full Calendar &rarr;</a>
+      </div>
     </div>
-    <div id="ask-answer" style="display:none;margin-top:12px;padding:14px;background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:8px;font-size:13px;line-height:1.6;white-space:pre-wrap;"></div>
-    <div id="ask-meta" style="margin-top:6px;font-size:10px;color:var(--text-muted);"></div>
+    <div id="calendar-widget-body" style="margin-top:12px;font-size:13px;color:var(--text-muted);">Loading...</div>
+  </div>
+
+  <!-- Quick Add Bill modal — opens from the Upcoming Bills widget. POSTs
+       directly to /api/manual-bills then refreshes the widget. Mobile-
+       optimized: large tap targets, autofocus on first field, full-width
+       inputs. -->
+  <div id="quick-add-bill-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);">
+    <div style="max-width:420px;margin:60px auto;padding:24px;background:var(--surface-solid);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h3 style="margin:0 0 6px;">Add Bill</h3>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">For utilities, rent, or anything not auto-detected from transactions.</div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <input aria-label="Bill name" id="qab-name" placeholder="Bill name (e.g. Electricity)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;" autocomplete="off">
+        <input aria-label="Amount" id="qab-amount" type="number" step="0.01" min="0" inputmode="decimal" placeholder="Amount ($)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <div style="display:flex;gap:8px;">
+          <input aria-label="Due day of month" id="qab-day" type="number" min="1" max="31" inputmode="numeric" placeholder="Due day (1-31)" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+          <select aria-label="How often" id="qab-cadence" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="yearly">Yearly</option>
+          </select>
+        </div>
+        <select aria-label="Category" id="qab-category" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+          <option value="utility">Utility</option>
+          <option value="bill">Bill</option>
+          <option value="subscription">Subscription</option>
+          <option value="insurance">Insurance</option>
+          <option value="housing">Housing</option>
+        </select>
+        <div id="qab-status" style="font-size:12px;min-height:18px;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
+          <button class="btn-sm" id="qab-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;min-height:40px;">Cancel</button>
+          <button class="btn-sm" id="qab-save" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Save bill</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 30-day forecast -->
+  <div class="section" id="forecast-section" style="display:none;">
+    <h2>Next 30 Days Forecast</h2>
+    <div id="forecast-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
+    <div id="forecast-list"></div>
   </div>
 
   <!-- Two-column: Monthly trend + Categories -->
@@ -465,60 +575,6 @@
       </table>
       </div>
     </div>
-  </div>
-
-  <!-- 30-day forecast -->
-  <div class="section" id="forecast-section" style="display:none;">
-    <h2>Next 30 Days Forecast</h2>
-    <div id="forecast-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
-    <div id="forecast-list"></div>
-  </div>
-
-  <!-- CSV Import Reminder Banner -->
-  <div id="csv-reminder-banner" style="display:none;padding:14px 18px;background:var(--yellow-bg);border:1px solid rgba(240,195,109,0.2);border-radius:var(--radius);margin-bottom:20px;font-size:13px;color:var(--yellow);font-weight:400;">
-    <div style="display:flex;align-items:center;justify-content:space-between;">
-      <div id="csv-reminder-text"></div>
-      <a href="<%= basePath %>/accounts" style="color:var(--warm);font-weight:500;text-decoration:none;white-space:nowrap;margin-left:12px;">Import CSV &rarr;</a>
-    </div>
-  </div>
-
-  <!-- Budget Velocity Alerts -->
-  <div id="budget-alerts-section" style="display:none;margin-bottom:20px;">
-    <div id="budget-alerts-list"></div>
-  </div>
-
-  <!-- AI Memory — surfaces the structured running summary so the user can
-       see what the AI is currently tracking (post-S5 visibility). Auto-hides
-       when no summary exists. -->
-  <div class="section" id="ai-memory-section" style="display:none;margin-bottom:28px;">
-    <details>
-      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
-        <h2 style="margin:0;display:inline;">AI Memory</h2>
-        <span id="ai-memory-counts" style="font-size:11px;color:var(--text-muted);"></span>
-      </summary>
-      <div style="margin-top:12px;font-size:12px;">
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">
-          Long-term context the AI uses on every analysis. Updated automatically when you generate insights.
-        </div>
-        <div id="ai-memory-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;"></div>
-      </div>
-    </details>
-  </div>
-
-  <!-- Review Uncategorized (engagement loop — turn AI cost into rules) -->
-  <div class="section" id="review-queue-section" style="display:none;margin-bottom:28px;">
-    <details open>
-      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
-        <h2 style="margin:0;display:inline;">Review Uncategorized</h2>
-        <span id="review-queue-count" style="font-size:11px;color:var(--text-muted);"></span>
-      </summary>
-      <div id="review-queue-body" style="margin-top:12px;font-size:13px;">
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">
-          These would otherwise be sent to Claude on the next AI categorize run. Pick a category — check "Remember" to create a rule and skip future AI cost for the same merchant.
-        </div>
-        <div id="review-queue-list"></div>
-      </div>
-    </details>
   </div>
 
   <!-- Settle-up: combined shared-card + housing even-up net (who-owes-who) -->
@@ -613,107 +669,11 @@
     </details>
   </div>
 
-  <!-- S3: What's new since last visit -->
-  <div class="section" id="whats-new-widget" style="margin-bottom:28px;display:none;">
-    <details open>
-      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;">
-        <h2 style="margin:0;">Since you last looked</h2>
-        <span id="whats-new-since" style="font-size:11px;color:var(--text-muted);"></span>
-      </summary>
-      <div id="whats-new-body" style="margin-top:12px;display:flex;flex-direction:column;gap:10px;font-size:13px;"></div>
-    </details>
-  </div>
-
-  <!-- Credit Score widget — manual-entry trend tracker -->
-  <div class="section" id="credit-score-widget" style="margin-bottom:28px;">
-    <details open>
-      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
-        <h2 style="margin:0;">Credit Score</h2>
-        <span id="credit-score-current" style="font-size:16px;font-weight:600;color:var(--green);"></span>
-      </summary>
-      <div id="credit-score-body" style="margin-top:12px;">
-        <div id="credit-score-trend" style="margin-bottom:12px;font-size:13px;color:var(--text-secondary);"></div>
-        <div id="credit-score-history" style="font-size:12px;color:var(--text-muted);margin-bottom:12px;"></div>
-        <!-- Quick log form -->
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <input aria-label="Credit score" id="cs-score-input" type="number" min="300" max="850" inputmode="numeric" placeholder="Score (300-850)"
-                 style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
-          <select aria-label="Score type" id="cs-type-input" style="padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
-            <option value="vantagescore">VantageScore</option>
-            <option value="fico">FICO</option>
-            <option value="other">Other</option>
-          </select>
-          <input aria-label="Score source" id="cs-source-input" placeholder="Source (e.g. Chase)" style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
-          <button class="btn" id="cs-log-btn" style="min-height:40px;cursor:pointer;font-family:inherit;">Log Score</button>
-          <span id="cs-status" style="font-size:11px;color:var(--text-muted);"></span>
-        </div>
-      </div>
-    </details>
-  </div>
-
-  <!-- Bill Calendar Quick View -->
-  <div class="section" id="calendar-widget" style="margin-bottom:28px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-      <h2 style="margin:0;">Upcoming Bills</h2>
-      <div style="display:flex;align-items:center;gap:12px;">
-        <button class="btn-sm" id="quick-add-bill-btn" style="font-size:12px;padding:6px 12px;border:1px solid var(--teal);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;font-family:inherit;min-height:36px;">+ Add Bill</button>
-        <a href="<%= basePath %>/calendar" style="color:var(--teal);font-size:12px;text-decoration:none;">Full Calendar &rarr;</a>
-      </div>
-    </div>
-    <div id="calendar-widget-body" style="margin-top:12px;font-size:13px;color:var(--text-muted);">Loading...</div>
-  </div>
-
-  <!-- Quick Add Bill modal — opens from the Upcoming Bills widget. POSTs
-       directly to /api/manual-bills then refreshes the widget. Mobile-
-       optimized: large tap targets, autofocus on first field, full-width
-       inputs. -->
-  <div id="quick-add-bill-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);">
-    <div style="max-width:420px;margin:60px auto;padding:24px;background:var(--surface-solid);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
-      <h3 style="margin:0 0 6px;">Add Bill</h3>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">For utilities, rent, or anything not auto-detected from transactions.</div>
-      <div style="display:flex;flex-direction:column;gap:12px;">
-        <input aria-label="Bill name" id="qab-name" placeholder="Bill name (e.g. Electricity)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;" autocomplete="off">
-        <input aria-label="Amount" id="qab-amount" type="number" step="0.01" min="0" inputmode="decimal" placeholder="Amount ($)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
-        <div style="display:flex;gap:8px;">
-          <input aria-label="Due day of month" id="qab-day" type="number" min="1" max="31" inputmode="numeric" placeholder="Due day (1-31)" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
-          <select aria-label="How often" id="qab-cadence" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
-            <option value="monthly">Monthly</option>
-            <option value="quarterly">Quarterly</option>
-            <option value="yearly">Yearly</option>
-          </select>
-        </div>
-        <select aria-label="Category" id="qab-category" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
-          <option value="utility">Utility</option>
-          <option value="bill">Bill</option>
-          <option value="subscription">Subscription</option>
-          <option value="insurance">Insurance</option>
-          <option value="housing">Housing</option>
-        </select>
-        <div id="qab-status" style="font-size:12px;min-height:18px;"></div>
-        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
-          <button class="btn-sm" id="qab-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;min-height:40px;">Cancel</button>
-          <button class="btn-sm" id="qab-save" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Save Bill</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Savings Rate (collapsible) -->
   <div class="section" id="savings-rate-section" style="display:none;margin-bottom:28px;">
     <details open>
       <summary style="cursor:pointer;"><h2 style="margin:0;display:inline;">Savings Rate</h2></summary>
       <div id="savings-rate-content" style="margin-top:12px;"></div>
-    </details>
-  </div>
-
-  <!-- Cash Flow Forecast (collapsible) -->
-  <div class="section" id="cashflow-section" style="display:none;margin-bottom:28px;">
-    <details open>
-      <summary style="cursor:pointer;"><h2 style="margin:0;display:inline;">Cash Flow Projection</h2></summary>
-      <div style="margin-top:12px;">
-        <div id="cashflow-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
-        <div id="cashflow-list"></div>
-      </div>
     </details>
   </div>
 
@@ -723,6 +683,60 @@
       <summary style="cursor:pointer;"><h2 style="margin:0;display:inline;">Year-over-Year Comparison</h2></summary>
       <div id="yoy-content" style="margin-top:12px;"></div>
     </details>
+  </div>
+
+  <!-- Financial Pyramid — Separated Layers. Below the charts since design D4;
+       collapsible like the tables (perfin_collapse_pyramid), and collapsed by
+       default on a phone (data-collapse-phone) until it's opened once. -->
+  <div class="wellness-section collapsible" data-collapse-key="pyramid" data-collapse-phone="1">
+    <h3 id="pyramid-title">Financial Wellness</h3>
+    <div class="pyramid-wrapper">
+    <div class="pyramid-switcher" id="pyramid-switcher">
+      <button class="active" data-mode="wellness" title="Overall financial health">Wellness</button>
+      <button data-mode="debt_payoff" title="Card and loan debt payoff progress">Debt</button>
+      <button data-mode="goal_progress" title="Individual goal progress">Goals</button>
+      <button data-mode="spending_categories" title="Spending category balance">Spending</button>
+      <button data-mode="net_worth" title="Net worth breakdown">Net worth</button>
+      <div class="pyramid-debt-baseline" id="debt-baseline-ctrl" style="display:none;">
+        <span>Baseline $</span>
+        <input aria-label="Starting debt" type="number" id="debt-baseline-input" placeholder="0" min="0" step="100">
+        <button id="debt-baseline-save">Set</button>
+      </div>
+    </div>
+    <div class="pyramid-stage">
+      <div class="pyramid-orbs" id="pyramid-orbs"></div>
+      <div class="pyramid-scene">
+        <div class="pyramid-holo">
+          <div class="pyramid-3d" id="pyramid-3d">
+            <!-- Layers generated by buildPyramidGeometry() -->
+            <div class="pyramid-base" id="pyramid-base"></div>
+          </div>
+        </div>
+      </div>
+      <div class="pyramid-glow" id="pyramid-glow"></div>
+      <div class="pyramid-tiers" id="pyramid-tiers">
+        <div class="tier-label t-0" id="tier-0">Accounts</div>
+        <div class="tier-label t-1" id="tier-1">Budgets</div>
+        <div class="tier-label t-2" id="tier-2">Subs</div>
+        <div class="tier-label t-3" id="tier-3">Goals</div>
+      </div>
+    </div>
+    </div><!-- .pyramid-wrapper -->
+    <div class="wellness-score" id="wellness-score">--</div>
+    <div class="wellness-status" id="wellness-status">Calculating...</div>
+  </div>
+
+  <!-- Ask Perfin — NL finance Q&A (Claude tool-use over the shared helpers,
+       so cited numbers match the dashboard). Widget key: ask. -->
+  <div class="section" id="ask-section" style="margin-bottom:28px;">
+    <h2>Ask Perfin</h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <input id="ask-input" type="text" maxlength="500" placeholder="e.g. How much did I spend on dining last month?"
+             style="flex:1;min-width:220px;" aria-label="Ask a question about your finances">
+      <button class="btn primary" id="ask-btn" type="button">Ask</button>
+    </div>
+    <div id="ask-answer" style="display:none;margin-top:12px;padding:14px;background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:8px;font-size:13px;line-height:1.6;white-space:pre-wrap;"></div>
+    <div id="ask-meta" style="margin-top:6px;font-size:10px;color:var(--text-muted);"></div>
   </div>
 
   <!-- AI Insights Widget (collapsible) -->
@@ -756,6 +770,51 @@
     </details>
   </div>
 
+  <!-- AI Memory — surfaces the structured running summary so the user can
+       see what the AI is currently tracking (post-S5 visibility). Auto-hides
+       when no summary exists. -->
+  <div class="section" id="ai-memory-section" style="display:none;margin-bottom:28px;">
+    <details>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;display:inline;">AI Memory</h2>
+        <span id="ai-memory-counts" style="font-size:11px;color:var(--text-muted);"></span>
+      </summary>
+      <div style="margin-top:12px;font-size:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">
+          Long-term context the AI uses on every analysis. Updated automatically when you generate insights.
+        </div>
+        <div id="ai-memory-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;"></div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Credit Score widget — manual-entry trend tracker -->
+  <div class="section" id="credit-score-widget" style="margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;">Credit Score</h2>
+        <span id="credit-score-current" style="font-size:16px;font-weight:600;color:var(--green);"></span>
+      </summary>
+      <div id="credit-score-body" style="margin-top:12px;">
+        <div id="credit-score-trend" style="margin-bottom:12px;font-size:13px;color:var(--text-secondary);"></div>
+        <div id="credit-score-history" style="font-size:12px;color:var(--text-muted);margin-bottom:12px;"></div>
+        <!-- Quick log form -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input aria-label="Credit score" id="cs-score-input" type="number" min="300" max="850" inputmode="numeric" placeholder="Score (300-850)"
+                 style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
+          <select aria-label="Score type" id="cs-type-input" style="padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
+            <option value="vantagescore">VantageScore</option>
+            <option value="fico">FICO</option>
+            <option value="other">Other</option>
+          </select>
+          <input aria-label="Score source" id="cs-source-input" placeholder="Source (e.g. Chase)" style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
+          <button class="btn" id="cs-log-btn" style="min-height:40px;cursor:pointer;font-family:inherit;">Log score</button>
+          <span id="cs-status" style="font-size:11px;color:var(--text-muted);"></span>
+        </div>
+      </div>
+    </details>
+  </div>
+
   <!-- Quick Links -->
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
     <a href="<%= basePath %>/calendar" class="btn" style="text-decoration:none;">Bill Calendar</a>
@@ -784,6 +843,10 @@
         <input aria-label="Institution name" id="dash-csv-custom" placeholder="Institution name" style="display:none;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <input aria-label="Account label (optional)" id="dash-csv-label" placeholder="Account label (e.g. Chase Checking)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <input aria-label="CSV file" id="dash-csv-file" type="file" accept=".csv,text/csv,.CSV" style="padding:8px;font-size:13px;color:var(--text-muted);">
+        <select aria-label="Positive amounts in this file are" id="dash-csv-sign" hidden style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-solid);color:var(--text);font-family:inherit;min-height:44px;">
+          <option value="charges">Positive amounts are charges (money out)</option>
+          <option value="deposits">Positive amounts are deposits (money in)</option>
+        </select>
         <div id="dash-csv-preview" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:240px;overflow:auto;"></div>
         <div id="dash-csv-status" style="font-size:12px;min-height:18px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
@@ -961,8 +1024,12 @@
           const displayBal = isDebt ? -bal : bal;
           netBalance += displayBal;
 
-          const balClass = !hasBalances ? 'neutral' : displayBal > 0 ? 'positive' : displayBal < 0 ? 'negative' : 'neutral';
-          const balDisplay = hasBalances ? (displayBal < 0 ? '-' + fmt(Math.abs(displayBal)) : fmt(displayBal)) : '\u2014';
+          // Design D2: a balance is the default colour and a debt reads
+          // "-$X owed" without red; red only for an overdrawn cash account.
+          const balClass = hasBalances && !isDebt && displayBal < 0 ? 'amt-bad' : '';
+          const balDisplay = hasBalances
+            ? fmt(displayBal) + (isDebt && displayBal < 0 ? ' <span class="acct-owed">owed</span>' : '')
+            : '\u2014';
 
           let creditExtra = '';
           if (isCredit && hasBalances) {
@@ -1017,9 +1084,9 @@
             '<div class="acct-balance ' + balClass + '">' + balDisplay + '</div>' +
             '<div class="acct-type">' + esc(a.subtype || a.type || '') + '</div>' +
             creditExtra +
-            ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" data-edit-balance="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update Balance</button>' : '') +
-            (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct || 100) + '%</div>' : '') +
-            '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit Split' : 'Mark Shared') + '</button>' +
+            ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" data-edit-balance="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update balance</button>' : '') +
+            (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct == null ? 100 : a.spending_split_pct) + '%</div>' : '') +
+            '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit split' : 'Mark shared') + '</button>' +
           '</div>';
         }
 
@@ -1058,11 +1125,10 @@
           html += investments.map(inv => {
             const bal = parseFloat(inv.balance);
             netBalance += bal;
-            const balClass = bal > 0 ? 'positive' : bal < 0 ? 'negative' : 'neutral';
             return '<div class="acct-card">' +
               '<div class="acct-inst">' + esc(inv.institution || 'Investment') + '</div>' +
               '<div class="acct-name">' + esc(inv.name) + '</div>' +
-              '<div class="acct-balance ' + balClass + '">' + fmt(bal) + '</div>' +
+              '<div class="acct-balance">' + fmt(bal) + '</div>' +
               '<div class="acct-type">' + esc(inv.account_type) + '</div>' +
             '</div>';
           }).join('');
@@ -1080,7 +1146,7 @@
           document.getElementById('net-balance').textContent = '\u2014';
         }
         if (hasBalances) {
-          document.getElementById('net-balance').className = 'value ' + (netBalance >= 0 ? 'green' : 'red');
+          document.getElementById('net-balance').className = 'value' + (netBalance < 0 ? ' amt-bad' : '');
         }
       } catch (e) {
         document.getElementById('accounts-grid').innerHTML = '<div class="empty-msg">Could not load accounts: ' + esc(e.message) + '</div>';
@@ -1088,17 +1154,76 @@
     }
 
 
+    // One /api/spending-summary request feeds both the tables and the charts
+    // (F91 — the charts used to sum raw transactions: transfers and reimbursed
+    // rows included, no shared-card split, so they contradicted the tables).
+    // The tables always fetch fresh (they re-run after a sync); the charts
+    // reuse the latest request.
+    var spendingSummaryPromise = null;
+    function getSpendingSummary(fresh) {
+      if (fresh || !spendingSummaryPromise) {
+        spendingSummaryPromise = apiFetch('/api/spending-summary?months=6').then(function(res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        });
+        spendingSummaryPromise.catch(function() { spendingSummaryPromise = null; });
+      }
+      return spendingSummaryPromise;
+    }
+
+    // The Spending-by-Category table. renderCategoryMonth('') shows the
+    // N-month aggregate from the latest spending summary; a month fetches it.
+    var latestCategoryData = null;
+    var categoryMonthSeq = 0;
+    function renderCategoryRows(rows) {
+      const catBody = document.getElementById('category-body');
+      if (!rows.length) {
+        catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
+        return;
+      }
+      const maxCat = parseFloat(rows[0].total);
+      catBody.innerHTML = rows.map((c, i) => {
+        const pct = maxCat > 0 ? Math.round((parseFloat(c.total) / maxCat) * 100) : 0;
+        const color = barColors[i % barColors.length];
+        return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
+          '<td class="amount" data-label="Total">' + fmt(c.total) + '</td>' +
+          '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
+      }).join('');
+    }
+    async function renderCategoryMonth(month) {
+      const seq = ++categoryMonthSeq; // a later pick or reload wins over a slow fetch
+      if (!month) { renderCategoryRows((latestCategoryData && latestCategoryData.by_category) || []); return; }
+      const catBody = document.getElementById('category-body');
+      catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Loading...</td></tr>';
+      try {
+        const r = await apiFetch('/api/spending-categories?month=' + encodeURIComponent(month));
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const dm = await r.json();
+        if (seq !== categoryMonthSeq) return;
+        renderCategoryRows((dm.categories || []).map(function(c) {
+          return { category: c.category, total: c.spent };
+        }));
+      } catch (e) {
+        if (seq === categoryMonthSeq) catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Could not load that month.</td></tr>';
+      }
+    }
+
+    // After a write that changes spending (a sync, a shared split, detection):
+    // reload the tables, then redraw both charts from the same fresh response.
+    function refreshSpending() {
+      loadSpendingSummary();
+      if (typeof Chart !== 'undefined') loadCharts();
+    }
+
     async function loadSpendingSummary() {
       try {
-        const res = await apiFetch('/api/spending-summary?months=6');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
+        const data = await getSpendingSummary(true);
 
         const monthBody = document.getElementById('monthly-body');
         if (data.monthly_trend.length) {
           monthBody.innerHTML = data.monthly_trend.map(m =>
             '<tr><td class="cell-primary">' + fmtMonth(m.month) + '</td>' +
-            '<td class="amount warm" data-label="Total">' + fmt(m.total_spend) + '</td>' +
+            '<td class="amount" data-label="Total">' + fmt(m.total_spend) + '</td>' +
             '<td data-label="Txns">' + m.txn_count + '</td>' +
             '<td class="amount" data-label="Avg">' + fmt(m.avg_transaction) + '</td></tr>'
           ).join('');
@@ -1110,61 +1235,47 @@
             document.getElementById('avg-monthly-sub').textContent = data.avg_months + '-month avg';
             animateCurrency(document.getElementById('avg-daily'), data.avg_daily_spend || 0);
           } else {
-            document.getElementById('avg-monthly-sub').textContent = 'no complete month yet';
+            // Design D2: say what's missing instead of a bare "--".
+            document.getElementById('avg-monthly').textContent = 'Not yet';
+            document.getElementById('avg-monthly-sub').textContent = 'after your first full month';
+            document.getElementById('avg-daily').textContent = 'Not yet';
           }
         } else {
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
         }
 
-        const catBody = document.getElementById('category-body');
-        function renderCategoryRows(rows) {
-          if (!rows.length) {
-            catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
-            return;
-          }
-          const maxCat = parseFloat(rows[0].total);
-          catBody.innerHTML = rows.map((c, i) => {
-            const pct = maxCat > 0 ? Math.round((parseFloat(c.total) / maxCat) * 100) : 0;
-            const color = barColors[i % barColors.length];
-            return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
-              '<td class="amount warm" data-label="Total">' + fmt(c.total) + '</td>' +
-              '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
-          }).join('');
-        }
-        renderCategoryRows(data.by_category);
         // Per-month category breakdown: default option = the N-month aggregate
         // already in this response; picking a month fetches
         // /api/spending-categories (same splits/reimbursed/share-adjusted
-        // helper the budgets use, so the numbers match everywhere).
+        // helper the budgets use, so the numbers match everywhere). The handler
+        // reads the LATEST response and the options are rebuilt on every load,
+        // so after a sync the aggregate and the month list are current (it used
+        // to keep the first response's aggregate and months forever).
+        latestCategoryData = data;
         const catSel = document.getElementById('cat-month-select');
-        if (catSel && !catSel.dataset.wired) {
-          catSel.dataset.wired = '1';
+        if (catSel) {
+          const keep = catSel.value;
+          Array.prototype.slice.call(catSel.options, 1).forEach(function(o) { catSel.removeChild(o); });
           (data.monthly_trend || []).forEach(function(m) {
             const opt = document.createElement('option');
             opt.value = m.month; opt.textContent = m.month;
             catSel.appendChild(opt);
           });
-          catSel.addEventListener('change', async function() {
-            if (!catSel.value) { renderCategoryRows(data.by_category); return; }
-            catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Loading...</td></tr>';
-            try {
-              const r = await apiFetch('/api/spending-categories?month=' + encodeURIComponent(catSel.value));
-              if (!r.ok) throw new Error('HTTP ' + r.status);
-              const dm = await r.json();
-              renderCategoryRows((dm.categories || []).map(function(c) {
-                return { category: c.category, total: c.spent };
-              }));
-            } catch (e) {
-              catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Could not load that month.</td></tr>';
-            }
-          });
+          catSel.value = (data.monthly_trend || []).some(function(m) { return m.month === keep; }) ? keep : '';
+          if (!catSel.dataset.wired) {
+            catSel.dataset.wired = '1';
+            catSel.addEventListener('change', function() { renderCategoryMonth(catSel.value); });
+          }
+          renderCategoryMonth(catSel.value);
+        } else {
+          renderCategoryRows(data.by_category);
         }
 
         const merchBody = document.getElementById('merchant-body');
         if (data.top_merchants.length) {
           merchBody.innerHTML = data.top_merchants.map(m =>
             '<tr><td class="cell-primary">' + esc(m.merchant) + '</td>' +
-            '<td class="amount warm" data-label="Total">' + fmt(m.total_spent) + '</td>' +
+            '<td class="amount" data-label="Total">' + fmt(m.total_spent) + '</td>' +
             '<td data-label="Txns">' + m.txn_count + '</td></tr>'
           ).join('');
         } else {
@@ -1175,7 +1286,7 @@
         if (data.upcoming_subscriptions.length) {
           upBody.innerHTML = data.upcoming_subscriptions.map(s =>
             '<tr><td class="cell-primary">' + esc(s.display_name) + '</td>' +
-            '<td class="amount teal" data-label="Amount">' + fmt(s.amount) + '</td>' +
+            '<td class="amount" data-label="Amount">' + fmt(s.amount) + '</td>' +
             '<td data-label="Next">' + fmtDate(s.next_expected) + '</td></tr>'
           ).join('');
 
@@ -1190,6 +1301,11 @@
 
       } catch (e) {
         showMsg('Could not load spending data: ' + e.message, false);
+        // Replace the "Loading..." rows instead of leaving them forever (F108).
+        [['monthly-body', 4], ['category-body', 3], ['merchant-body', 3], ['upcoming-body', 3]].forEach(function(t) {
+          var body = document.getElementById(t[0]);
+          if (body) body.innerHTML = '<tr><td colspan="' + t[1] + '" class="empty-msg">Could not load spending data.</td></tr>';
+        });
       }
     }
 
@@ -1206,12 +1322,12 @@
           if (data.errors && data.errors.length) {
             showMsg('Sync issues: ' + data.errors.map(function (e) { return (e.institution || e.provider) + ': ' + e.error; }).join('; '), false);
           }
-          loadSpendingSummary();
+          refreshSpending();
         } else {
           showMsg('Sync error: ' + (data.error || 'HTTP ' + res.status), false);
         }
       } catch (e) { showMsg('Sync failed: ' + e.message, false); }
-      btnLoading(btn, false, 'Sync Transactions');
+      btnLoading(btn, false, 'Sync transactions');
     }
 
     async function syncBalances() {
@@ -1238,7 +1354,7 @@
           showMsg('Balance sync error: ' + (data.error || 'HTTP ' + res.status), false);
         }
       } catch (e) { showMsg('Balance sync failed: ' + e.message, false); }
-      btnLoading(btn, false, 'Refresh Balances');
+      btnLoading(btn, false, 'Refresh balances');
     }
 
     async function runDetection() {
@@ -1249,12 +1365,12 @@
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           showMsg('Detection complete: ' + (data.detected_count || 0) + ' subscriptions found.', true);
-          loadSpendingSummary();
+          refreshSpending();
         } else {
           showMsg('Detection error: ' + (data.error || 'HTTP ' + res.status), false);
         }
       } catch (e) { showMsg('Detection failed: ' + e.message, false); }
-      btnLoading(btn, false, 'Run Detection');
+      btnLoading(btn, false, 'Run detection');
     }
 
     // WUI-6: every write below checks the response and reports the outcome —
@@ -1284,7 +1400,7 @@
         if (!res.ok) { var e1 = await res.json().catch(function() { return {}; }); showMsg('Could not update the split: ' + (e1.error || 'HTTP ' + res.status), false); return; }
         showMsg(num < 100 ? 'Shared at ' + num + '% yours' : 'Marked as fully yours', true);
         loadAccounts();
-        loadSpendingSummary();
+        refreshSpending();
       } catch (e) { showMsg('Could not update the split: ' + e.message, false); }
     }
 
@@ -1353,7 +1469,7 @@
         if (data.charge_count === 0) return;
         document.getElementById('forecast-section').style.display = 'block';
         document.getElementById('forecast-summary').innerHTML =
-          '<strong>' + data.charge_count + ' charges</strong> totaling <strong style="color:var(--warm);">$' + data.total_expected.toFixed(2) +
+          '<strong>' + data.charge_count + ' charges</strong> totaling <strong>' + fmt(data.total_expected) +
           '</strong> expected in the next ' + data.forecast_days + ' days';
         var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">' +
           '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Service</th>' +
@@ -1362,7 +1478,7 @@
           '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">In</th></tr></thead><tbody>';
         data.charges.forEach(function(c) {
           html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + esc(c.name) + '</td>' +
-            '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">$' + c.amount.toFixed(2) + '</td>' +
+            '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(c.amount) + '</td>' +
             '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + c.date + '</td>' +
             '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);">' + c.days_away + 'd</td></tr>';
         });
@@ -1393,7 +1509,88 @@
       editManualBalance(parseInt(this.dataset.editBalance));
     });
 
+    // Design D3: the Summary card + Needs attention (GET /api/dashboard/summary).
+    // Pure renderers (tested in a vm); every figure arrives from the server's
+    // shared helpers and is only formatted here.
+    function summaryCard(label, valueHtml, subHtml, extra) {
+      return '<div class="dash-summary-card"><div class="label">' + esc(label) + '</div>' +
+        '<div class="value">' + valueHtml + '</div>' + (extra || '') +
+        (subHtml ? '<div class="sub">' + subHtml + '</div>' : '') + '</div>';
+    }
+    function moneySpan(n) {
+      return '<span' + (Number(n) < 0 ? ' class="amt-bad"' : '') + '>' + fmt(n) + '</span>';
+    }
+    function renderSummaryCards(s) {
+      var html = '';
+      var nw = s.net_worth || {};
+      if (!nw.ok) html += summaryCard('Net worth', '\u2014', esc(nw.error || ''));
+      else if (nw.value == null) html += summaryCard('Net worth', 'Not yet', 'Appears after the next balance sync');
+      else {
+        var sub = 'As of ' + esc(fmtDate(nw.as_of));
+        if (nw.change != null) {
+          sub = '<span' + (nw.change > 0 ? ' class="amt-in"' : '') + '>' + (nw.change > 0 ? '+' : '') + fmt(nw.change) + '</span> since ' + esc(fmtDate(nw.change_since));
+        }
+        html += summaryCard('Net worth', moneySpan(nw.value), sub);
+      }
+      var sp = s.spending || {};
+      if (!sp.ok) html += summaryCard('Spent vs budget', '\u2014', esc(sp.error || ''));
+      else if (!sp.budget_count) html += summaryCard('Spent vs budget', 'No budgets', '<a href="' + esc(withBase('/budgets')) + '">Set a budget</a>');
+      else {
+        var pct = sp.percent == null ? 0 : sp.percent;
+        var over = sp.spent > sp.budget;
+        var bar = '<div class="dash-bar" role="img" aria-label="' + pct + '% of this month\'s budget used"><span' + (over ? ' class="amt-bad"' : '') + ' style="width:' + Math.min(100, Math.max(0, pct)) + '%;"></span></div>';
+        var spSub = pct + '% of ' + sp.budget_count + ' budget' + (sp.budget_count === 1 ? '' : 's') +
+          (sp.over_count ? ' \u00b7 <span class="amt-bad">' + sp.over_count + ' over</span>' : '');
+        html += summaryCard('Spent vs budget', fmt(sp.spent) + ' <span style="font-size:15px;color:var(--text-muted);">of ' + fmt(sp.budget) + '</span>', spSub, bar);
+      }
+      var c = s.cash || {};
+      if (!c.ok) html += summaryCard('Lowest cash, next ' + (c.days || 30) + ' days', '\u2014', esc(c.error || ''));
+      else if (c.lowest_balance == null) html += summaryCard('Lowest cash, next ' + c.days + ' days', '\u2014', 'No checking or savings balance yet');
+      else html += summaryCard('Lowest cash, next ' + c.days + ' days', moneySpan(c.lowest_balance), 'On ' + esc(fmtDate(c.lowest_date)));
+      return html;
+    }
+    function renderAttention(att) {
+      att = att || {};
+      var items = att.items || [];
+      var errors = att.errors || [];
+      var html = '';
+      if (items.length) {
+        html += '<ul>' + items.map(function (it) {
+          var href = typeof it.href === 'string' && it.href.charAt(0) === '/' && it.href.charAt(1) !== '/' ? withBase(it.href) : null;
+          var label = href ? '<a href="' + esc(href) + '">' + esc(it.text) + '</a>' : esc(it.text);
+          return '<li>' + label + (it.amount != null ? '<span class="amount">' + fmt(it.amount) + '</span>' : '') + '</li>';
+        }).join('') + '</ul>';
+      } else if (!errors.length) {
+        html += '<div class="all-clear"><span class="tick" aria-hidden="true">\u2713</span>Nothing needs attention</div>';
+      }
+      if (errors.length) html += errors.map(function (e) { return '<div class="note">' + esc(e.error) + '</div>'; }).join('');
+      return html;
+    }
+    async function loadDashboardSummary() {
+      var cards = document.getElementById('dash-summary-cards');
+      var att = document.getElementById('dash-attention');
+      var body = document.getElementById('dash-attention-body');
+      var errEl = document.getElementById('dash-summary-error');
+      if (!cards || !att || !body || !errEl) return;
+      try {
+        var res = await apiFetch('/api/dashboard/summary');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var s = await res.json();
+        cards.innerHTML = renderSummaryCards(s);
+        body.innerHTML = renderAttention(s.attention);
+      } catch (e) {
+        cards.hidden = true;
+        att.hidden = true;
+        errEl.textContent = 'The summary couldn\'t be loaded \u2014 the rest of the dashboard is below.';
+        errEl.hidden = false;
+      } finally {
+        cards.removeAttribute('aria-busy');
+        att.removeAttribute('aria-busy');
+      }
+    }
+
     // Initialize
+    loadDashboardSummary();
     loadAccounts();
     loadSpendingSummary();
     loadForecast();
@@ -1418,15 +1615,23 @@
           }
           if (upcoming.length >= 6) break;
         }
-        if (upcoming.length === 0) { body.textContent = 'No upcoming bills this month.'; return; }
+        if (upcoming.length === 0) {
+          body.innerHTML = emptyState({ title: 'No upcoming bills this month',
+            text: 'Subscriptions Perfin detects and bills you add show up here.',
+            action: { label: '+ Add bill', click: 'quick-add-bill-btn' } });
+          return;
+        }
         body.innerHTML = upcoming.map(function(u) {
           var ev = u.event;
-          var cls = ev.is_income ? 'color:var(--green)' : 'color:var(--text-muted)';
+          // Design D2: income green, a bill the default colour.
+          var cls = ev.is_income ? ' class="amt-in"' : '';
           var prefix = ev.is_income ? '+' : '-';
-          var paid = ev.is_paid ? ' style="text-decoration:line-through;opacity:0.5;"' : '';
-          return '<div' + paid + ' style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
+          // F104: ONE style attribute — a second one is ignored, so paid rows lost
+          // their layout (the browser keeps the first).
+          var paid = ev.is_paid ? 'text-decoration:line-through;opacity:0.5;' : '';
+          return '<div style="' + paid + 'display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
             '<span>' + (ev.is_paid ? '\u2713 ' : '') + esc(ev.name) + ' <span style="color:var(--text-muted);font-size:11px;">(Day ' + u.day + ')</span></span>' +
-            '<span style="' + cls + ';">' + prefix + '$' + Math.abs(ev.amount).toFixed(2) + '</span></div>';
+            '<span' + cls + '>' + prefix + fmt(Math.abs(ev.amount)) + '</span></div>';
         }).join('');
       } catch (e) { body.textContent = 'Unable to load.'; }
     })();
@@ -1510,7 +1715,7 @@
           showStatus('Failed: ' + (e.message || e), false);
         } finally {
           saveBtn.disabled = false;
-          saveBtn.textContent = 'Save Bill';
+          saveBtn.textContent = 'Save bill';
         }
       });
     })();
@@ -1519,6 +1724,17 @@
     // issues at the top of the dashboard. Dismissible per-session (sessionStorage),
     // so it re-appears on the next visit if the issue persists (i.e. the operator
     // can't permanently silence a real degradation).
+    // Roadmap T3.3 K4: from January to April the dashboard links to last year's
+    // tax package (taxSeason — the same rule as the Tax page's default year).
+    (function wireTaxSeasonLink() {
+      var link = document.getElementById('tax-season-link');
+      var ts = window.taxSeason ? window.taxSeason(localTodayStr()) : null;
+      if (!link || !ts || !ts.season) return;
+      link.href = link.getAttribute('href') + '?year=' + ts.year;
+      link.textContent = 'Tax season: your ' + ts.year + ' tax package is ready to review \u2192';
+      link.style.display = 'block';
+    })();
+
     (function wireSyncHealthStrip() {
       var strip = document.getElementById('sync-health-strip');
       if (!strip) return;
@@ -1537,7 +1753,10 @@
           if (!warnings.length) return; // healthy (or info-only) → stay hidden
           try { if (sessionStorage.getItem('perfin_synchealth_dismissed') === '1') return; } catch (e) {}
           var esc = (window.esc) || function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
-          list.innerHTML = warnings.slice(0, 3).map(function (i) { return esc(i.message); }).join('<br>') +
+          list.innerHTML = warnings.slice(0, 3).map(function (i) {
+            // An issue with a `link` (Plaid re-auth → /accounts, G3) opens it.
+            return i.link ? '<a href="' + esc(window.withBase ? window.withBase(i.link) : i.link) + '" style="color:inherit;">' + esc(i.message) + '</a>' : esc(i.message);
+          }).join('<br>') +
             (warnings.length > 3 ? '<br>+' + (warnings.length - 3) + ' more' : '');
           strip.style.display = 'block';
         } catch (e) { /* health probe is best-effort — never block the dashboard */ }
@@ -1561,6 +1780,10 @@
       var csvFile = document.getElementById('dash-csv-file');
       var csvStatus = document.getElementById('dash-csv-status');
       var csvPreview = document.getElementById('dash-csv-preview');
+      // F26: the sign choice for a GENERIC file — hidden for known formats,
+      // pre-set to the server's guess on the first preview, sent with both calls.
+      var csvSign = document.getElementById('dash-csv-sign');
+      var csvSignChosen = false;
       // Two-step flow: 'preview' → dry-run classify, 'confirm' → real import.
       var csvStage = 'preview';
       function closeCsvModal() { if (csvModal) csvModal.style.display = 'none'; }
@@ -1575,12 +1798,21 @@
         if (csvCustom) { csvCustom.value = ''; csvCustom.style.display = 'none'; }
         if (csvInstitution) csvInstitution.value = '';
         if (csvStatus) { csvStatus.textContent = ''; csvStatus.style.color = ''; }
+        csvSignChosen = false;
+        if (csvSign) csvSign.hidden = true;
         clearPreview();
       }
       // Any change to the inputs invalidates a shown preview (the dedup counts
       // were computed for the prior file/label) — drop back to the preview step.
       [csvFile, csvLabel, csvCustom, csvInstitution].forEach(function (el) {
         if (el) el.addEventListener('change', clearPreview);
+      });
+      if (csvFile) csvFile.addEventListener('change', function () {
+        csvSignChosen = false;
+        if (csvSign) csvSign.hidden = true;
+      });
+      if (csvSign) csvSign.addEventListener('change', function () {
+        csvSignChosen = true; clearPreview(); doPreview();
       });
       function csvEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
       // WD-7: "Auto-detect" (the default) sends no institution / label, so
@@ -1597,6 +1829,7 @@
         fd.append('file', csvFile.files[0]);
         if (institution) fd.append('institution', institution);
         if (label) fd.append('account_label', label);
+        if (csvSignChosen && csvSign) fd.append('positive_means', csvSign.value);
         return fd;
       }
       function renderPreview(d) {
@@ -1649,6 +1882,13 @@
           var res = await apiFetch('/api/import-csv/preview', { method: 'POST', body: csvFormData() });
           var data = await res.json().catch(function() { return {}; });
           if (res.ok) {
+            if (csvSign) csvSign.hidden = data.format_detected !== 'generic';
+            if (csvSign && data.format_detected === 'generic' && !csvSignChosen) {
+              csvSignChosen = true;
+              csvSign.value = data.sign_guess || 'charges';
+              // The first preview read positives as charges; re-run it with the guess.
+              if (csvSign.value !== data.positive_means) return await doPreview();
+            }
             csvStatus.textContent = '';
             renderPreview(data);
             csvStage = 'confirm';
@@ -1752,9 +1992,14 @@
       if (!body) return;
       try {
         var res = await apiFetch('/api/insights');
-        if (!res.ok) { body.textContent = 'No insights yet \u2014 generate from Settings.'; return; }
+        var noInsights = function() {
+          body.innerHTML = emptyState({ title: 'No insights yet',
+            text: 'Perfin reviews your spending, subscriptions and goals with AI once you run it.',
+            action: { label: 'Generate in Settings', href: '/settings#ai-insights' } });
+        };
+        if (!res.ok) { noInsights(); return; }
         var data = await res.json();
-        if (!data.length) { body.textContent = 'No insights yet \u2014 generate from Settings.'; return; }
+        if (!data.length) { noInsights(); return; }
         var latest = data[0];
         var text = esc(latest.insight_text || '');
         text = text
@@ -1908,7 +2153,7 @@
               '<div style="margin-top:6px;display:flex;flex-direction:column;gap:2px;">' +
               data.scores.map(function(s) {
                 return '<div style="display:flex;justify-content:space-between;gap:12px;">' +
-                  '<span>' + new Date(s.checked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '</span>' +
+                  '<span>' + parseCalDate(s.checked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '</span>' +
                   '<span style="font-weight:500;color:' + scoreColor(s.score) + ';">' + s.score + '</span>' +
                   '<span style="color:var(--text-muted);">' + esc(s.source || s.score_type) + '</span>' +
                 '</div>';
@@ -1978,7 +2223,7 @@
         var cov = data.cost_basis_coverage || null;
         var partial = cov && cov.holdings_total > 0 && cov.holdings_with_basis < cov.holdings_total;
         var basisValue = partial ? cov.value_with_basis : data.total_value;
-        retEl.textContent = '$' + sign + data.total_return.toFixed(2) + pctTxt +
+        retEl.textContent = sign + fmt(data.total_return) + pctTxt +
           '  ·  $' + basisValue.toFixed(2) + ' / $' + data.total_cost_basis.toFixed(2) + ' cost' +
           (partial ? '  ·  cost known for ' + cov.holdings_with_basis + ' of ' + cov.holdings_total + ' holdings' : '');
         var allocEl = document.getElementById('invperf-allocation');
@@ -2575,6 +2820,7 @@
       btns.forEach(function(b) {
         b.classList.toggle('active', b.dataset.mode === dataSource);
       });
+      scrollActiveTab(document.getElementById('pyramid-switcher'));
 
       // Show/hide debt baseline control
       var baselineCtrl = document.getElementById('debt-baseline-ctrl');
@@ -2805,9 +3051,9 @@
         var avg = data.averages;
         var rateColor = avg.savings_rate >= 20 ? 'var(--green)' : avg.savings_rate >= 10 ? 'var(--yellow)' : avg.savings_rate > 0 ? 'var(--warm)' : 'var(--red)';
         var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:12px;">';
-        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Income</div><div class="value green" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.income) + '</div></div>';
-        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Spending</div><div class="value warm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.spending) + '</div></div>';
-        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Saved</div><div class="value" style="color:' + (avg.saved >= 0 ? 'var(--green)' : 'var(--red)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.saved) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Income</div><div class="value amt-in" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.income) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Spending</div><div class="value" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.spending) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Saved</div><div class="value ' + (avg.saved < 0 ? 'amt-bad' : 'amt-in') + '" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.saved) + '</div></div>';
         html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Savings Rate</div><div class="value" style="color:' + rateColor + ';">' + avg.savings_rate + '%</div></div>';
         html += '</div>';
         html += '<div style="font-size:12px;color:var(--text-muted);font-weight:300;margin-bottom:12px;">' + esc(data.recommendation) + '</div>';
@@ -2817,20 +3063,78 @@
         html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Spending</th>';
         html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Saved</th>';
         html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Rate</th></tr></thead><tbody>';
-        data.months.forEach(function(m) {
+        // Design D4 (decision 7): the latest month (months arrive newest first),
+        // the rest behind "Show all".
+        data.months.forEach(function(m, i) {
           var rc = m.savings_rate >= 20 ? 'var(--green)' : m.savings_rate >= 10 ? 'var(--yellow)' : m.savings_rate > 0 ? 'var(--warm)' : 'var(--red)';
-          html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmtMonth(m.month) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--green);">' + fmt(m.income) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">' + fmt(m.spending) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + (m.saved >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + fmt(m.saved) + '</td>';
+          html += '<tr' + extraRowAttrs('savings', i, 1) + '><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmtMonth(m.month) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);" class="amt-in">' + fmt(m.income) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(m.spending) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);" class="' + (m.saved < 0 ? 'amt-bad' : 'amt-in') + '">' + fmt(m.saved) + '</td>';
           html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + rc + ';">' + m.savings_rate + '%</td></tr>';
         });
         html += '</tbody></table></div>';
+        html += showAllButton('savings', data.months.length, 1, 'months');
         document.getElementById('savings-rate-content').innerHTML = html;
       } catch (e) { /* non-critical */ }
     }
 
     // --- Cash Flow Projection ---
+    // Design D2: red only for a balance projected below $0.
+    function badIf(n) { return parseFloat(n) < 0 ? ' class="amt-bad"' : ''; }
+    // Design D4 (decision 7): a $0.00 income / bills cell reads "—".
+    function cashCell(n, inClass) {
+      var x = parseFloat(n) || 0;
+      if (Math.round(x * 100) === 0) return '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);" aria-label="none">\u2014</td>';
+      return '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);"' + (inClass ? ' class="' + inClass + '"' : '') + '>' + fmt(x) + '</td>';
+    }
+    // Rows past the first `keep` are hidden behind a "Show all" button
+    // (one delegated handler — see the show-all click listener below).
+    function extraRowAttrs(group, i, keep) {
+      return i >= keep ? ' data-extra="' + group + '" hidden' : '';
+    }
+    function showAllButton(group, total, keep, noun) {
+      if (total <= keep) return '';
+      return '<button type="button" class="btn-sm show-all-btn" data-show-all="' + group + '" data-total="' + total + '" data-noun="' + noun + '" aria-expanded="false" style="margin-top:10px;">Show all ' + total + ' ' + noun + '</button>';
+    }
+    function cashFlowSummaryHtml(data) {
+      var lead = data.lowest_balance_date
+        ? '<div style="font-size:14px;color:var(--text);margin-bottom:4px;">Lowest projected: <strong' + badIf(data.lowest_balance) + '>' + fmt(data.lowest_balance) + '</strong> on ' + esc(fmtDate(data.lowest_balance_date)) + '</div>'
+        : '';
+      return lead +
+        'Starting balance: <strong' + badIf(data.starting_balance) + '>' + fmt(data.starting_balance) + '</strong>' +
+        ' &bull; Projected end: <strong' + badIf(data.ending_balance) + '>' + fmt(data.ending_balance) + '</strong>' +
+        ' &bull; Daily discretionary: <strong>' + fmt(data.avg_daily_spend) + '</strong>' +
+        ((data.recurring_income || []).length > 0 ? ' &bull; Income sources: ' + data.recurring_income.map(function(i) { return esc(i.source); }).join(', ') : '');
+    }
+    var CASHFLOW_WEEKS_SHOWN = 4;
+    function cashFlowTableHtml(weeks) {
+      weeks = weeks || [];
+      var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
+      html += '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Week</th>';
+      html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Income</th>';
+      html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Bills</th>';
+      html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Spending</th>';
+      html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Balance</th></tr></thead><tbody>';
+      weeks.forEach(function(w, i) {
+        html += '<tr' + extraRowAttrs('cashflow', i, CASHFLOW_WEEKS_SHOWN) + '><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">Wk ' + esc(w.week) + (w.start_date ? ' (' + esc(fmtDate(w.start_date)) + ')' : '') + '</td>';
+        html += cashCell(w.income, 'amt-in');
+        html += cashCell(w.bills, '');
+        html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(w.discretionary) + '</td>';
+        html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);"' + badIf(w.end_balance) + '>' + fmt(w.end_balance) + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+      return html + showAllButton('cashflow', weeks.length, CASHFLOW_WEEKS_SHOWN, 'weeks');
+    }
+    // "Show all" / "Show fewer" for the summarised tables.
+    function toggleShowAll(btn, root) {
+      var group = btn.getAttribute('data-show-all');
+      var open = btn.getAttribute('aria-expanded') !== 'true';
+      (root || document).querySelectorAll('tr[data-extra="' + group + '"]').forEach(function(tr) { tr.hidden = !open; });
+      btn.setAttribute('aria-expanded', String(open));
+      btn.textContent = open ? 'Show fewer' : 'Show all ' + btn.getAttribute('data-total') + ' ' + btn.getAttribute('data-noun');
+    }
+
     async function loadCashFlow() {
       try {
         var res = await apiFetch('/api/cash-flow?days=90');
@@ -2839,27 +3143,8 @@
         if (!data.by_week || data.by_week.length === 0) return;
         var section = document.getElementById('cashflow-section');
         section.style.display = 'block';
-        var surplusColor = data.surplus_shortfall >= 0 ? 'var(--green)' : 'var(--red)';
-        document.getElementById('cashflow-summary').innerHTML =
-          'Starting balance: <strong style="color:var(--teal);">' + fmt(data.starting_balance) + '</strong>' +
-          ' &bull; Projected end: <strong style="color:' + surplusColor + ';">' + fmt(data.ending_balance) + '</strong>' +
-          ' &bull; Daily discretionary: <strong style="color:var(--warm);">' + fmt(data.avg_daily_spend) + '</strong>' +
-          (data.recurring_income.length > 0 ? ' &bull; Income sources: ' + data.recurring_income.map(function(i) { return esc(i.source); }).join(', ') : '');
-        var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
-        html += '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Week</th>';
-        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Income</th>';
-        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Bills</th>';
-        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Spending</th>';
-        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Balance</th></tr></thead><tbody>';
-        data.by_week.forEach(function(w) {
-          var balColor = w.end_balance >= 0 ? 'var(--green)' : 'var(--red)';
-          html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">Wk ' + w.week + (w.start_date ? ' (' + fmtDate(w.start_date) + ')' : '') + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--green);">' + fmt(w.income) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--red);">' + fmt(w.bills) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">' + fmt(w.discretionary) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + balColor + ';">' + fmt(w.end_balance) + '</td></tr>';
-        });
-        html += '</tbody></table></div>';
+        document.getElementById('cashflow-summary').innerHTML = cashFlowSummaryHtml(data);
+        var html = cashFlowTableHtml(data.by_week);
         document.getElementById('cashflow-list').innerHTML = html;
       } catch (e) { /* non-critical */ }
     }
@@ -2883,8 +3168,8 @@
           (comp.change_percent !== null ? Math.abs(comp.change_percent) + '%' : 'N/A') +
           ' (' + (comp.change_amount > 0 ? '+' : '') + fmt(comp.change_amount) + ')</strong></div>';
         html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">';
-        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.current_year + '</div><div class="value warm">' + fmt(comp.current_total) + '</div></div>';
-        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.previous_year + '</div><div class="value teal">' + fmt(comp.previous_total) + '</div></div>';
+        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.current_year + '</div><div class="value">' + fmt(comp.current_total) + '</div></div>';
+        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.previous_year + '</div><div class="value">' + fmt(comp.previous_total) + '</div></div>';
         html += '</div>';
         if (comp.category_changes.length > 0) {
           html += '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
@@ -2971,13 +3256,13 @@
           var removeBtn = a.source === 'teller'
             ? ''
             : '<button type="button" class="inv-remove" data-id="' + a.id + '" data-name="' + esc(a.name) + '" ' +
-              'title="Remove this investment account" ' +
+              'title="Remove this investment account" aria-label="Remove ' + esc(a.name) + '" ' +
               'style="position:absolute;top:6px;right:6px;border:none;background:transparent;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px;">&times;</button>';
           return '<div class="acct-card" style="padding:10px;position:relative;">' +
             removeBtn +
             '<div class="acct-inst" style="font-size:10px;">' + esc(a.institution || a.source) + holdingsBadge + '</div>' +
             '<div class="acct-name" style="font-size:13px;">' + esc(a.name) + '</div>' +
-            '<div class="acct-balance positive" style="font-size:18px;">' + fmt(a.balance) + '</div>' +
+            '<div class="acct-balance" style="font-size:18px;">' + fmt(a.balance) + '</div>' +
             '<div class="acct-type" style="font-size:10px;">' + esc(a.account_type || '') + '</div>' +
             '<div id="' + sparkId + '" style="height:20px;"></div>' +
             '<a href="' + histHref + '" style="display:block;margin-top:6px;font-size:10px;color:var(--teal);text-decoration:none;">View history &rarr;</a>' +
@@ -3047,35 +3332,49 @@
         renderReviewQueue(data.transactions);
       } catch (e) { /* non-critical */ }
     }
+    // Design pass D1: a row without a suggestion starts on "Choose a category"
+    // with Apply disabled, and "Remember" is ticked only when there IS a
+    // suggestion — the old first-option default + always-ticked Remember made
+    // one Apply file a pharmacy under Food & Drink for good. The date is a
+    // calendar day (fmtDate), not the raw ISO timestamp.
     function renderReviewQueue(txns) {
       var listEl = document.getElementById('review-queue-list');
-      var optHtml = REVIEW_CATEGORIES.map(function(c) {
-        return '<option value="' + esc(c) + '">' + esc(c) + '</option>';
-      }).join('');
       listEl.innerHTML = txns.map(function(t) {
         var rid = 'rev-' + t.transaction_id.replace(/[^a-zA-Z0-9]/g, '_');
-        var defaultCat = t.suggested_category || REVIEW_CATEGORIES[0];
+        var suggested = t.suggested_category ? String(t.suggested_category) : '';
+        var cats = REVIEW_CATEGORIES.slice();
+        if (suggested && cats.indexOf(suggested) === -1) cats.unshift(suggested);
+        var optHtml = (suggested ? '' : '<option value="" selected disabled>Choose a category</option>') +
+          cats.map(function(c) {
+            return '<option value="' + esc(c) + '"' + (c === suggested ? ' selected' : '') + '>' + esc(c) + '</option>';
+          }).join('');
         var hint = t.hint ? ' <span style="font-size:10px;color:var(--text-muted);">[' + esc(t.hint) + ']</span>' : '';
         return '<div id="' + rid + '" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
           '<div style="flex:1;min-width:0;">' +
             '<div style="font-weight:500;color:var(--text);">' + esc(t.merchant || '(no merchant)') + hint + '</div>' +
-            '<div style="font-size:11px;color:var(--text-muted);">' + esc(t.date) + ' &middot; ' + fmt(t.amount) + '</div>' +
+            '<div style="font-size:11px;color:var(--text-muted);">' + esc(fmtDate(t.date)) + ' &middot; ' + fmt(t.amount) + '</div>' +
           '</div>' +
           '<select aria-label="Category for ' + esc(t.merchant || 'this transaction') + '" data-cat-select="' + esc(t.transaction_id) + '" style="padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">' +
-            optHtml.replace('value="' + esc(defaultCat) + '"', 'value="' + esc(defaultCat) + '" selected') +
+            optHtml +
           '</select>' +
           '<label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);cursor:pointer;">' +
-            '<input type="checkbox" data-cat-rule="' + esc(t.transaction_id) + '" checked> Remember' +
+            '<input type="checkbox" data-cat-rule="' + esc(t.transaction_id) + '"' + (suggested ? ' checked' : '') + '> Remember' +
           '</label>' +
-          '<button data-cat-apply="' + esc(t.transaction_id) + '" style="padding:4px 10px;font-size:11px;border:1px solid var(--green);border-radius:4px;background:transparent;color:var(--green);cursor:pointer;font-family:inherit;">Apply</button>' +
+          '<button data-cat-apply="' + esc(t.transaction_id) + '"' + (suggested ? '' : ' disabled') + ' class="btn-sm primary">Apply</button>' +
         '</div>';
       }).join('');
     }
+    // Picking a category enables that row's Apply.
+    onDelegate('review-queue-list', 'change', '[data-cat-select]', function() {
+      var txnId = this.getAttribute('data-cat-select');
+      var btn = document.querySelector('[data-cat-apply="' + txnId.replace(/"/g, '\\"') + '"]');
+      if (btn) btn.disabled = !this.value;
+    });
     onDelegate('review-queue-list', 'click', '[data-cat-apply]', async function() {
       var txnId = this.getAttribute('data-cat-apply');
       var sel = document.querySelector('[data-cat-select="' + txnId.replace(/"/g, '\\"') + '"]');
       var ruleCb = document.querySelector('[data-cat-rule="' + txnId.replace(/"/g, '\\"') + '"]');
-      if (!sel) return;
+      if (!sel || !sel.value) return;
       var category = sel.value;
       var createRule = ruleCb ? ruleCb.checked : false;
       this.disabled = true;
@@ -3092,7 +3391,14 @@
             match_type: 'exact',
           }),
         });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        // F99: a failed Apply used to just re-enable the button with no message.
+        if (!(await writeOk(res, 'Could not apply the category'))) {
+          this.disabled = false;
+          this.textContent = 'Apply';
+          return;
+        }
+        var result = await res.json().catch(function() { return {}; });
+        if (createRule && result.rule_error) showMsg('Category applied, but not remembered: ' + result.rule_error, false);
         // Remove the row and re-fetch the queue if it's now empty.
         var rid = 'rev-' + txnId.replace(/[^a-zA-Z0-9]/g, '_');
         var row = document.getElementById(rid);
@@ -3100,6 +3406,7 @@
         var remaining = document.querySelectorAll('#review-queue-list > div').length;
         if (remaining === 0) loadReviewQueue();
       } catch (e) {
+        showMsg('Could not apply the category: ' + e.message, false);
         this.disabled = false;
         this.textContent = 'Apply';
       }
@@ -3431,11 +3738,37 @@
       input.addEventListener('keydown', function(e) { if (e.key === 'Enter') ask(); });
     })();
 
+    // Design D4 (decision 15): on a phone the mode tabs are one scrollable row;
+    // bring the active tab into view by scrolling the row itself (never the page).
+    function scrollActiveTab(row) {
+      if (!row || row.scrollWidth <= row.clientWidth) return;
+      var act = row.querySelector('button.active');
+      if (!act) return;
+      var left = act.offsetLeft - row.offsetLeft;
+      row.scrollLeft = Math.max(0, Math.min(left - (row.clientWidth - act.offsetWidth) / 2, row.scrollWidth - row.clientWidth));
+    }
+
+    // The summarised tables' "Show all" buttons (design D4) — one delegated handler.
+    document.addEventListener('click', function(e) {
+      var btn = e.target && e.target.closest ? e.target.closest('.show-all-btn[data-show-all]') : null;
+      if (btn) toggleShowAll(btn, document);
+    });
+
     // Collapsible dashboard sections — persisted per-section in localStorage.
+    // A section marked data-collapse-phone (the pyramid, design D4) starts
+    // collapsed at ≤640px until it's been opened — opening one stores '0' so it
+    // stays open; any other section stores nothing while open.
+    function collapsedFromStore(stored, phoneDefault, isPhone) {
+      if (stored === '1') return true;
+      if (stored === '0') return false;
+      return !!(phoneDefault && isPhone);
+    }
     (function initCollapsibles() {
-      document.querySelectorAll('.section.collapsible').forEach(function(sec) {
+      var isPhone = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+      document.querySelectorAll('.section.collapsible, .wellness-section.collapsible').forEach(function(sec) {
         var key = 'perfin_collapse_' + (sec.getAttribute('data-collapse-key') || '');
-        var h2 = sec.querySelector('h2');
+        var phoneDefault = sec.hasAttribute('data-collapse-phone');
+        var h2 = sec.querySelector(':scope > h2, :scope > h3');
         if (!h2) return;
         h2.setAttribute('tabindex', '0');
         h2.setAttribute('role', 'button');
@@ -3443,13 +3776,18 @@
           sec.classList.toggle('collapsed', collapsed);
           h2.setAttribute('aria-expanded', String(!collapsed));
         }
-        var saved = false;
-        try { saved = localStorage.getItem(key) === '1'; } catch (_) {}
-        apply(saved);
+        var stored = null;
+        try { stored = localStorage.getItem(key); } catch (_) {}
+        apply(collapsedFromStore(stored, phoneDefault, isPhone));
         function toggle() {
           var c = !sec.classList.contains('collapsed');
           apply(c);
-          try { c ? localStorage.setItem(key, '1') : localStorage.removeItem(key); } catch (_) {}
+          if (!c) scrollActiveTab(sec.querySelector('.pyramid-switcher'));
+          try {
+            if (c) localStorage.setItem(key, '1');
+            else if (phoneDefault) localStorage.setItem(key, '0');
+            else localStorage.removeItem(key);
+          } catch (_) {}
         }
         h2.addEventListener('click', function(e) {
           if (e.target.closest('select, button, input, a')) return;
@@ -3467,30 +3805,8 @@
         var res = await apiFetch('/api/settings');
         if (!res.ok) return;
         var s = await res.json();
-        var w = s.dashboard_widgets || {};
-        // Map widget keys to section IDs
-        var map = {
-          pyramid: '.wellness-section',
-          accounts: '#accounts-section',
-          charts: '.charts-grid',
-          ask: '#ask-section',
-          forecast: '#forecast-section',
-          savingsRate: '#savings-rate-section',
-          cashFlow: '#cashflow-section',
-          yoy: '#yoy-section',
-          investments: '#investments-section',
-          reviewQueue: '#review-queue-section',
-          aiMemory: '#ai-memory-section',
-          settlement: '#settlement-section',
-          housing: '#housing-widget-section',
-        };
-        Object.entries(map).forEach(function(e) {
-          var key = e[0], selector = e[1];
-          if (w[key] === false) {
-            var el = document.querySelector(selector);
-            if (el) el.style.display = 'none';
-          }
-        });
+        // One key list shared with Settings (perfin-shared.js, F96).
+        applyDashboardWidgets(s.dashboard_widgets || {});
       } catch (e) { /* non-critical */ }
     }
     applyWidgetVisibility();
@@ -3525,26 +3841,25 @@
       Chart.defaults.color = textColor;
       Chart.defaults.borderColor = gridColor;
       try {
-        const txRes = await apiFetch('/api/transactions?months=6');
-        const txData = await txRes.json();
-        const monthlyMap = {};
-        (txData.transactions || []).forEach(t => {
-          if (t.amount > 0) {
-            const m = t.date.slice(0, 7);
-            monthlyMap[m] = (monthlyMap[m] || 0) + parseFloat(t.amount);
-          }
-        });
-        const months = Object.keys(monthlyMap).sort();
-        const amounts = months.map(m => monthlyMap[m]);
+        const data = await getSpendingSummary();
+        // monthly_trend is newest-first; the chart reads oldest → newest.
+        const trend = (data.monthly_trend || []).slice().reverse();
+        const months = trend.map(m => m.month);
+        const amounts = trend.map(m => parseFloat(m.total_spend) || 0);
         const trendCtx = document.getElementById('trend-chart');
-        if (trendCtx && months.length === 0) {
-          trendCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No spending data yet</div>';
+        if (trendCtx) {
+          // A redraw (after a sync) replaces the previous chart on the same
+          // canvas; the canvas is kept, so the empty state is a sibling note.
+          replaceChart('trend', null);
+          setChartEmpty(trendCtx, trendChartNote(months.length));
         }
-        if (trendCtx && months.length > 0) {
-          new Chart(trendCtx, {
+        if (trendCtx && !trendChartNote(months.length)) {
+          replaceChart('trend', new Chart(trendCtx, {
             type: 'line',
             data: {
-              labels: months.map(m => { const d = new Date(m + '-01'); return d.toLocaleString('default', { month: 'short', year: '2-digit' }); }),
+              // A local-midnight date for the month (new Date('YYYY-MM-01') is
+              // UTC midnight, which labels the PREVIOUS month west of UTC — F91).
+              labels: months.map(m => { const p = m.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleString('default', { month: 'short', year: '2-digit' }); }),
               datasets: [{
                 label: 'Spending',
                 data: amounts,
@@ -3562,23 +3877,17 @@
                 x: { grid: { display: false } }
               }
             }
-          });
+          }));
         }
-        const catMap = {};
-        (txData.transactions || []).forEach(t => {
-          if (t.amount > 0) {
-            const cat = (t.personal_finance_category && t.personal_finance_category.primary) || t.category || 'Other';
-            catMap[cat] = (catMap[cat] || 0) + parseFloat(t.amount);
-          }
-        });
-        const cats = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 8);
+        const cats = (data.by_category || []).slice(0, 8).map(c => [c.category, parseFloat(c.total) || 0]);
         const pieColors = ['#d4a574', '#5a8f8f', '#c8856c', '#6fcf97', '#7fb5e6', '#f0c36d', '#eb6b6b', '#b08ed6'];
         const catCtx = document.getElementById('category-chart');
-        if (catCtx && cats.length === 0) {
-          catCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No category data yet</div>';
+        if (catCtx) {
+          replaceChart('category', null);
+          setChartEmpty(catCtx, cats.length ? '' : 'No category data yet');
         }
         if (catCtx && cats.length > 0) {
-          new Chart(catCtx, {
+          replaceChart('category', new Chart(catCtx, {
             type: 'doughnut',
             data: {
               labels: cats.map(c => c[0]),
@@ -3591,9 +3900,41 @@
                 tooltip: { callbacks: { label: ctx => ctx.label + ': $' + parseFloat(ctx.raw).toLocaleString() } }
               }
             }
-          });
+          }));
         }
       } catch (e) { console.warn('Charts load error:', e); }
+    }
+
+    // Design D4 (decision 7): a trend line needs a few points — with one or two
+    // months it's a lone dot, so a sentence stands in until there are three.
+    // An empty string means "draw the chart".
+    function trendChartNote(n) {
+      var min = 3;
+      if (!n) return 'No spending data yet';
+      if (n < min) return 'Spending trends appear after ' + min + ' months of history \u2014 ' + n + ' so far';
+      return '';
+    }
+
+    // The two dashboard charts, kept so a redraw destroys the old one first
+    // (Chart.js refuses a second chart on a canvas that still has one).
+    var dashboardCharts;
+    function replaceChart(key, chart) {
+      dashboardCharts = dashboardCharts || {};
+      const old = dashboardCharts[key];
+      if (old && old !== chart && typeof old.destroy === 'function') old.destroy();
+      dashboardCharts[key] = chart;
+    }
+    function setChartEmpty(canvas, text) {
+      const wrap = canvas.parentElement;
+      if (!wrap || typeof wrap.querySelector !== 'function') return;
+      let note = wrap.querySelector('.chart-empty');
+      if (text && !note) {
+        note = document.createElement('div');
+        note.className = 'chart-empty';
+        wrap.appendChild(note);
+      }
+      if (note) { note.textContent = text; note.hidden = !text; }
+      canvas.style.display = text ? 'none' : ''; // .chart-card canvas sets display:block, which beats [hidden]
     }
   </script>
 </body>

@@ -8,13 +8,16 @@ const multer = require("multer");
 const { parse } = require("csv-parse/sync");
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { categorizeSubscription, findCancelUrl } = require("../data/reference-data");
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, POSITIVE_MEANS, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
-const { INCOME_PREDICATE, NOT_TRANSFER, currentMonth, todayStr } = require("../services/financial-queries");
+const { NOT_TRANSFER, currentMonth, todayStr, getLiveIncomeStreams } = require("../services/financial-queries");
+// Linked tasks (roadmap T2.4 X2b): marking a bill paid / unpaid kicks a
+// fire-and-forget refresh; a still-charging alert creates its task.
+const linkedTasks = require("../services/linked-tasks");
 const {
   nextOccurrence, seriesOccurrences, addDaysStr,
-  manualBillOccurrences, buildIncomeStreams, isIncomeStreamLive, incomeEventsBetween,
+  manualBillOccurrences, incomeEventsBetween, daysInMonth,
 } = require("../services/cadence");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -83,7 +86,7 @@ router.post("/api/subscriptions", async (req, res) => {
   if (isNaN(parsedCadence) || parsedCadence < 1) return res.status(400).json({ error: "cadence_days must be a positive integer" });
   try {
     const merchantKey = `manual_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayStr(); // APP_TIMEZONE date, not UTC (cycle-7 F57)
     const nextExpected = nextOccurrence(today, parsedCadence); // DC-9 calendar-month stepping
 
     const result = await pool.query(
@@ -128,11 +131,14 @@ router.patch("/api/subscriptions/:id/dismiss", async (req, res) => {
   }
 });
 
-// PATCH /api/subscriptions/:id/undismiss
+// PATCH /api/subscriptions/:id/undismiss — also re-activates the row (unless
+// it was cancelled): detection keeps a dismissed row inactive, so restoring
+// only is_dismissed left it in neither the active nor the dismissed list
+// until the next detection run (cycle-7 F56).
 router.patch("/api/subscriptions/:id/undismiss", async (req, res) => {
   try {
     const result = await pool.query(
-      `UPDATE detected_subscriptions SET is_dismissed = false, updated_at = now()
+      `UPDATE detected_subscriptions SET is_dismissed = false, is_active = (cancelled_at IS NULL), updated_at = now()
        WHERE id = $1 RETURNING *`,
       [req.params.id]
     );
@@ -222,7 +228,91 @@ async function runSubscriptionDetection() {
       );
     }
   }
-  return { detected_count: detected.length, subscriptions: detected };
+  // F53 / G5: alert on a cancelled subscription that keeps charging and on a
+  // price rise. Fail-soft — detection already succeeded.
+  let watchdog = null;
+  try { watchdog = await runSubscriptionWatchdog(); }
+  catch (err) { console.error("Subscription watchdog error:", err.message); }
+  return { detected_count: detected.length, subscriptions: detected, watchdog };
+}
+
+// Subscription watchdog (cycle-7 F53 / G5), run after every detection (POST
+// /api/detect — daily-sync's detect step — and the pre-insights chain).
+//  - Still charging: a cancelled subscription with a settled charge from the
+//    same merchant key (the detector's own key expression) within ±25% of its
+//    amount, dated more than STILL_CHARGING_GRACE_DAYS after the cancellation.
+//    One alert per charge: the latest matching charge is remembered.
+//  - Price rise: an active subscription whose detected amount rose over the
+//    previous one by ≥ PRICE_RISE_PCT or ≥ PRICE_RISE_ABS, charged recently
+//    (an old change on a row detection no longer refreshes isn't news). One
+//    alert per new price.
+// Both are logged + pushed through sendToAll; a still-charging charge also
+// goes to the critical-alert email when that toggle is on.
+const STILL_CHARGING_GRACE_DAYS = 7;
+const PRICE_RISE_PCT = 0.05;
+const PRICE_RISE_ABS = 1;
+const SUB_MERCHANT_KEY_SQL =
+  "TRIM(COALESCE(t.user_merchant_name, t.merchant_name, LOWER(REGEXP_REPLACE(t.name, '[^a-zA-Z0-9 ]', '', 'g'))))";
+
+async function runSubscriptionWatchdog(db = pool) {
+  const { sendToAll } = require("./notifications");
+  const { sendCriticalAlertEmail } = require("./persistent");
+  const money = (n) => "$" + Number(n).toFixed(2);
+  const out = { still_charging: 0, price_rises: 0 };
+
+  const charging = await db.query(`
+    SELECT ds.id, ds.display_name, ds.amount, ds.cancelled_at,
+           c.transaction_id, c.amount AS charged, c.date::text AS charged_on
+    FROM detected_subscriptions ds
+    JOIN LATERAL (
+      SELECT t.transaction_id, t.amount, t.date
+      FROM transactions t
+      WHERE t.amount > 0 AND t.pending = false
+        AND ${SUB_MERCHANT_KEY_SQL} = ds.merchant_key
+        AND t.date > ds.cancelled_at::date + $1::int
+        AND t.amount BETWEEN ds.amount * 0.75 AND ds.amount * 1.25
+      ORDER BY t.date DESC, t.transaction_id DESC
+      LIMIT 1
+    ) c ON true
+    WHERE ds.cancelled_at IS NOT NULL
+      AND c.transaction_id IS DISTINCT FROM ds.still_charging_txn`, [STILL_CHARGING_GRACE_DAYS]);
+  for (const r of charging.rows) {
+    const title = `${r.display_name} charged ${money(r.charged)} after you cancelled it`;
+    const body = `A ${money(r.charged)} charge on ${r.charged_on} matches ${r.display_name}, which you marked cancelled. ` +
+      "Check the merchant — the cancellation may not have gone through.";
+    const sent = await sendToAll({ title, body, tag: "sub-still-charging-" + r.id, data: { url: "/subscriptions" } });
+    if (!sent.logged) continue; // not recorded → retry on the next run
+    await db.query(
+      "UPDATE detected_subscriptions SET still_charging_txn = $2, still_charging_at = $3, still_charging_amount = $4, updated_at = now() WHERE id = $1",
+      [r.id, r.transaction_id, r.charged_on, r.charged]);
+    out.still_charging++;
+    // Linked task (roadmap T2.4 X2b): one per (subscription, charge), only once
+    // the alert is marked; a failure never un-marks it.
+    try { await linkedTasks.ensureStillChargingTask(db, r); }
+    catch (e) { console.error("still-charging linked task failed:", e.message); }
+    await sendCriticalAlertEmail(title, body);
+  }
+
+  const rises = await db.query(`
+    SELECT id, display_name, amount, prior_amount
+    FROM detected_subscriptions
+    WHERE is_active AND NOT is_dismissed AND cancelled_at IS NULL
+      AND amount_changed AND prior_amount > 0 AND amount > prior_amount
+      AND (amount - prior_amount >= $1 OR (amount - prior_amount) / prior_amount >= $2)
+      AND last_charged >= CURRENT_DATE - 45
+      AND price_alerted_amount IS DISTINCT FROM amount`, [PRICE_RISE_ABS, PRICE_RISE_PCT]);
+  for (const r of rises.rows) {
+    const sent = await sendToAll({
+      title: `${r.display_name} went up from ${money(r.prior_amount)} to ${money(r.amount)}`,
+      body: `${r.display_name}'s latest charge is ${money(r.amount)} (was ${money(r.prior_amount)}).`,
+      tag: "sub-price-" + r.id,
+      data: { url: "/subscriptions" },
+    });
+    if (!sent.logged) continue;
+    await db.query("UPDATE detected_subscriptions SET price_alerted_amount = amount WHERE id = $1", [r.id]);
+    out.price_rises++;
+  }
+  return out;
 }
 
 // POST /api/detect — HTTP wrapper around runSubscriptionDetection().
@@ -235,13 +325,35 @@ router.post("/api/detect", async (_req, res) => {
   }
 });
 
+// The ids among `ids` that the user deleted (deleted_transactions). The CSV
+// preview, the import and the CLI skip them (roadmap T2.5 U1) — a re-imported
+// file used to bring a deleted row back.
+async function deletedIdSet(db, ids) {
+  if (!ids.length) return new Set();
+  const r = await db.query(
+    "SELECT transaction_id FROM deleted_transactions WHERE transaction_id = ANY($1::text[])",
+    [ids]
+  );
+  return new Set(r.rows.map(x => x.transaction_id));
+}
+
 // parseCsvUpload — shared parse + format-detect + label-derivation for the CSV
 // import + preview endpoints. Keeping it in ONE place guarantees the preview's
 // dedup-ID classification matches what the real import will actually do (same
 // format, same account label → same csvTransactionId occurrence sequence).
 // Returns { error } on a bad file, else { formatName, fmt, institution,
-// accountLabel, records, headers }.
+// accountLabel, records, headers, positiveMeans, signGuess, parseOpts }.
+//
+// Sign (cycle-7 F26): for the GENERIC format only, `body.positive_means`
+// ('charges' | 'deposits') says what a positive amount means; it defaults to
+// 'charges' (the old behaviour, so re-importing an earlier file keeps its IDs).
+// signGuess is guessGenericSign's read of the rows — the preview returns it and
+// the UI pre-selects it. Known formats have a fixed sign: both are null there.
 function parseCsvUpload(buffer, body = {}) {
+  const pm = body.positive_means;
+  if (pm != null && pm !== "" && !POSITIVE_MEANS.includes(pm)) {
+    return { error: "positive_means must be 'charges' or 'deposits'" };
+  }
   const content = buffer.toString("utf-8");
   // relax_column_count: Chase checking exports end every data row with a
   // trailing comma (one more field than the header), which threw
@@ -260,7 +372,10 @@ function parseCsvUpload(buffer, body = {}) {
   if (fmt.headerless && fmt.columns) {
     records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
   }
-  return { formatName, fmt, institution, accountLabel, records, headers };
+  const generic = formatName === "generic";
+  const positiveMeans = generic ? (pm || "charges") : null;
+  const signGuess = generic ? guessGenericSign(records) : null;
+  return { formatName, fmt, institution, accountLabel, records, headers, positiveMeans, signGuess, parseOpts: { positiveMeans } };
 }
 
 // POST /api/import-csv/preview — dry-run a CSV import: detect the format and
@@ -275,14 +390,14 @@ router.post("/api/import-csv/preview", upload.single("file"), async (req, res) =
   try {
     const parsed = parseCsvUpload(req.file.buffer, req.body);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
-    const { formatName, fmt, institution, accountLabel, records, headers } = parsed;
+    const { formatName, fmt, institution, accountLabel, records, headers, positiveMeans, signGuess, parseOpts } = parsed;
 
     const nextTxnId = makeCsvTxnIdGenerator();
     const rows = [];
     let skipped = 0;
     for (const row of records) {
       let p;
-      try { p = fmt.parse(row, fmt.headerless ? fmt.columns : headers); }
+      try { p = fmt.parse(row, fmt.headerless ? fmt.columns : headers, parseOpts); }
       catch { skipped++; continue; }
       const date = parseDate(p.date);
       if (!date || isNaN(p.amount) || p.amount === 0) { skipped++; continue; }
@@ -291,21 +406,28 @@ router.post("/api/import-csv/preview", upload.single("file"), async (req, res) =
     }
 
     let existing = new Set();
+    let deleted = new Set();
     if (rows.length) {
+      const ids = rows.map(x => x.txnId);
       const r = await pool.query(
         "SELECT transaction_id FROM transactions WHERE transaction_id = ANY($1)",
-        [rows.map(x => x.txnId)]
+        [ids]
       );
       existing = new Set(r.rows.map(x => x.transaction_id));
+      deleted = await deletedIdSet(pool, ids);
     }
 
-    let newCount = 0, dupCount = 0;
+    // A row you deleted isn't imported again (roadmap T2.5 U1) —
+    // POST /api/deleted-transactions/:id/restore brings it back.
+    let newCount = 0, dupCount = 0, deletedCount = 0;
     const sample = [];
     for (const row of rows) {
-      const isDup = existing.has(row.txnId);
-      if (isDup) dupCount++; else newCount++;
+      const status = existing.has(row.txnId) ? "duplicate" : deleted.has(row.txnId) ? "deleted" : "new";
+      if (status === "duplicate") dupCount++;
+      else if (status === "deleted") deletedCount++;
+      else newCount++;
       if (sample.length < 12) {
-        sample.push({ date: row.date, amount: row.amount, merchant: row.merchant, category: row.category, status: isDup ? "duplicate" : "new" });
+        sample.push({ date: row.date, amount: row.amount, merchant: row.merchant, category: row.category, status });
       }
     }
 
@@ -318,6 +440,9 @@ router.post("/api/import-csv/preview", upload.single("file"), async (req, res) =
       rows_skipped: skipped,
       rows_new: newCount,
       rows_duplicate: dupCount,
+      rows_deleted: deletedCount,
+      positive_means: positiveMeans,
+      sign_guess: signGuess,
       sample,
     });
   } catch (err) {
@@ -333,7 +458,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
   try {
     const up = parseCsvUpload(req.file.buffer, req.body);
     if (up.error) return res.status(400).json({ error: up.error });
-    const { formatName, fmt, institution, accountLabel, records, headers } = up;
+    const { formatName, fmt, institution, accountLabel, records, headers, positiveMeans, parseOpts } = up;
 
     const client = await pool.connect();
     try {
@@ -362,28 +487,37 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
       let imported = 0;
       let skipped = 0;
       let duplicates = 0;
+      let deletedCount = 0;
       const insertedRows = []; // { date, amount } of genuinely new rows (DC-6)
       // One occurrence-tracking generator per import so two genuinely-distinct
       // rows sharing (label,date,amount,merchant) get distinct IDs instead of
       // the second silently deduping against the first (F1). Mirrors the CLI.
       const nextTxnId = makeCsvTxnIdGenerator();
 
+      // Parse every row first, so the deleted ones are known before inserting.
+      const parsedRows = [];
       for (let i = 0; i < records.length; i++) {
         const row = records[i];
         let parsed;
         try {
           // For headerless formats, row is keyed by fmt.columns after the re-parse above.
-          parsed = fmt.parse(row, fmt.headerless ? fmt.columns : headers);
+          parsed = fmt.parse(row, fmt.headerless ? fmt.columns : headers, parseOpts);
         } catch { skipped++; continue; }
 
         const date = parseDate(parsed.date);
         if (!date || isNaN(parsed.amount) || parsed.amount === 0) { skipped++; continue; }
 
-        const txnId = nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name);
+        parsedRows.push({ parsed, date, txnId: nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name) });
+      }
+      const deleted = await deletedIdSet(client, parsedRows.map(r => r.txnId));
 
+      for (const { parsed, date, txnId } of parsedRows) {
+        if (deleted.has(txnId)) { deletedCount++; continue; }
+        // NOT EXISTS too, for a delete that lands while the import runs (T2.5 U1).
         const result = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, false)
+           SELECT $1::text, $2::text, $3::numeric, $4::date, $5::text, $6::text, $7::text[], false
+           WHERE NOT EXISTS (SELECT 1 FROM deleted_transactions dt WHERE dt.transaction_id = $2::text)
            ON CONFLICT (transaction_id) DO NOTHING`,
           [
             virtualAccountId, txnId, parsed.amount, date,
@@ -408,47 +542,85 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
          VALUES ($1, $2, $3, $4, $5)`,
         // csv_imports.rows_skipped keeps its historical "not imported" meaning
         // (unparseable + already-present), same as scripts/import-csv-cli.js.
-        [req.file.originalname, institution, accountLabel, imported, skipped + duplicates]
+        [req.file.originalname, institution, accountLabel, imported, skipped + duplicates + deletedCount]
       );
 
-      // Auto-update manual account balance if institution matches
+      // Auto-update manual account balance if institution matches. Runs under
+      // a SAVEPOINT (cycle-7 F25): a failure here used to be swallowed by a
+      // bare catch INSIDE the open transaction, so the COMMIT below silently
+      // rolled the whole import back while the route reported rows_imported.
+      await client.query("SAVEPOINT csv_balance");
       try {
-        // Match the user's manual account by EXACT institution name or EXACT
-        // account label (L2). The previous `name LIKE '%institution%'` substring
-        // could match the wrong manual account (e.g. a short institution token
-        // matching an unrelated account name) and silently overwrite ITS
-        // current_balance from this CSV's net — both matches are now exact.
+        // Match the user's manual account by EXACT account label, else EXACT
+        // institution name (L2). F25: an exact label match wins over an
+        // institution match, and when the best level still matches more than
+        // one account the balance is left alone — it used to be `LIMIT 1`
+        // with no ORDER BY, so an arbitrary account could be rolled forward.
+        const { APP_TIMEZONE } = require("../services/financial-queries");
         const manualAcct = await client.query(
           `SELECT id, type, current_balance,
-                  to_char(balance_updated_at, 'YYYY-MM-DD') AS balance_as_of
+                  (LOWER(name) = LOWER($2)) AS label_match,
+                  to_char(balance_updated_at AT TIME ZONE $3, 'YYYY-MM-DD') AS balance_as_of
            FROM linked_accounts
            WHERE is_manual = true
              AND (LOWER(institution_name_manual) = LOWER($1) OR LOWER(name) = LOWER($2))
-           LIMIT 1`,
-          [institution, accountLabel]
+           ORDER BY (LOWER(name) = LOWER($2)) DESC, id`,
+          [institution, accountLabel, APP_TIMEZONE]
         );
-        const acct = manualAcct.rows[0];
+        const best = manualAcct.rows.filter(r => !!r.label_match === !!(manualAcct.rows[0] && manualAcct.rows[0].label_match));
+        const acct = best.length === 1 ? best[0] : null;
+        if (best.length > 1) {
+          console.warn(`CSV import: ${best.length} manual accounts match "${accountLabel}" / "${institution}" — balance not rolled forward.`);
+        }
         // DC-6: ROLL the known balance forward by only the rows this import
         // genuinely added that post-date it. This used to OVERWRITE the balance
         // with the net of every CSV row ever imported (a partial statement
         // history is not a balance — a user-entered $4,200 checking balance
         // became e.g. -$1,300). An account with no known balance is left alone.
+        // The as-of date is the APP_TIMEZONE date of balance_updated_at (F25:
+        // it was the UTC date, so an evening entry west of UTC read as the
+        // next day and that day's rows were dropped).
         if (acct && acct.current_balance !== null && acct.balance_as_of) {
-          const net = insertedRows
-            .filter(r => r.date > acct.balance_as_of)
-            .reduce((sum, r) => sum + parseFloat(r.amount), 0);
+          const included = insertedRows.filter(r => r.date > acct.balance_as_of);
+          const net = included.reduce((sum, r) => sum + parseFloat(r.amount), 0);
           if (Math.abs(net) >= 0.005) {
-            // Import sign: positive = money out. Credit balances are amount
-            // owed (spend raises it); depository balances fall with spend.
-            const delta = acct.type === "credit" ? net : -net;
+            // Import sign: positive = money out. Credit and loan balances are
+            // amounts owed (spend raises them, a payment lowers them — F25: a
+            // loan was treated like a depository account); depository balances
+            // fall with spend.
+            const owed = acct.type === "credit" || acct.type === "loan";
+            const delta = owed ? net : -net;
             const balance = Math.round((parseFloat(acct.current_balance) + delta) * 100) / 100;
+            // The balance is now known as of the newest row it includes — not
+            // "now" (F25: stamping now() hid rows dated between that row and
+            // today from the next import's roll-forward).
+            const asOf = included.reduce((m, r) => (r.date > m ? r.date : m), acct.balance_as_of);
             await client.query(
-              `UPDATE linked_accounts SET current_balance = $1, balance_updated_at = now() WHERE id = $2`,
-              [balance, acct.id]
+              `UPDATE linked_accounts SET current_balance = $1,
+                      balance_updated_at = ($2::date + time '12:00') AT TIME ZONE $3
+               WHERE id = $4`,
+              [balance, asOf, APP_TIMEZONE, acct.id]
             );
           }
         }
-      } catch (e) { /* non-critical */ }
+        await client.query("RELEASE SAVEPOINT csv_balance");
+      } catch (e) {
+        await client.query("ROLLBACK TO SAVEPOINT csv_balance");
+        console.error("CSV import: manual balance roll-forward failed (import kept):", e.message);
+      }
+
+      // F55: merchant rename rules cover the new rows, in the import's own
+      // transaction under a savepoint — a rule failure keeps the import.
+      if (imported > 0) {
+        try {
+          await client.query("SAVEPOINT csv_rename");
+          await require("./merchant-rename").applyRenameRules(client);
+          await client.query("RELEASE SAVEPOINT csv_rename");
+        } catch (e) {
+          await client.query("ROLLBACK TO SAVEPOINT csv_rename");
+          console.error("CSV import: rename rules failed (import kept):", e.message);
+        }
+      }
 
       await client.query("COMMIT");
 
@@ -457,7 +629,9 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         rows_imported: imported,
         rows_skipped: skipped,
         rows_duplicate: duplicates,
+        rows_deleted: deletedCount,
         account_label: accountLabel,
+        positive_means: positiveMeans,
       });
     } catch (err) {
       await client.query("ROLLBACK");
@@ -485,7 +659,8 @@ router.get("/api/csv-imports", async (_req, res) => {
 
 // GET /api/shared-settlement — month-by-month "who owes who" for shared
 // credit cards. Splits each transaction by personal_for: NULL rows use the
-// account's spending_split_pct (default 50/50 on a shared card); 'self' rows
+// account's spending_split_pct (NULL = 100, the SPLIT_AMOUNT default; 0 is a
+// real share — the card is all the partner's, F31); 'self' rows
 // are 100% the user; 'partner' rows are 100% the other cardholder. Reimbursed
 // rows are excluded entirely (they net out to neither party).
 // Query: month=YYYY-MM (default = current month), account_id (optional —
@@ -519,7 +694,7 @@ router.get("/api/shared-settlement", async (req, res) => {
         la.id AS account_id,
         la.account_id AS account_key,
         la.name AS account_name,
-        COALESCE(la.spending_split_pct, 50) AS split_pct,
+        COALESCE(la.spending_split_pct, 100) AS split_pct,
         COUNT(t.transaction_id)::int AS txn_count,
         ROUND(COALESCE(SUM(t.amount), 0)::numeric, 2) AS total_charges,
         ROUND(COALESCE(-SUM(t.amount) FILTER (WHERE t.amount < 0), 0)::numeric, 2) AS refunds_total,
@@ -546,14 +721,17 @@ router.get("/api/shared-settlement", async (req, res) => {
       const shared = parseFloat(r.shared_total) || 0;
       const yours = parseFloat(r.your_personal_total) || 0;
       const theirs = parseFloat(r.partner_personal_total) || 0;
-      const yourSplitPct = (parseInt(r.split_pct) || 50) / 100;
+      // 0% is a valid split — `parseInt(x) || 50` turned it into 50% (F31).
+      const pct = Number(r.split_pct);
+      const splitPct = Number.isFinite(pct) ? pct : 100;
+      const yourSplitPct = splitPct / 100;
       const yourShare = shared * yourSplitPct + yours;
       const theirShare = shared * (1 - yourSplitPct) + theirs;
       return {
         account_id: r.account_id,
         account_key: r.account_key,
         account_name: r.account_name,
-        split_pct: parseInt(r.split_pct),
+        split_pct: splitPct,
         txn_count: r.txn_count,
         total_charges: parseFloat(r.total_charges) || 0,
         refunds_total: parseFloat(r.refunds_total) || 0,
@@ -685,42 +863,84 @@ router.post("/api/cleanup", async (_req, res) => {
   }
 });
 
+// The projected charges of active detected subscriptions from `today` through
+// `endStr` (design D3 — shared by GET /api/forecast and the dashboard summary's
+// bills-due item, so the two can't disagree). Month-scale cadences step by
+// CALENDAR MONTH from the last real charge (DC-9); a cadence_days <= 0 / NaN
+// can't be projected and is skipped (F8). Rows: { name, amount, date, days_away,
+// category, bill_source: 'subscription', bill_id }, date order.
+async function forecastCharges(db, today, endStr) {
+  const result = await db.query(
+    `SELECT id, display_name, amount, cadence_days, next_expected, last_charged, category
+     FROM detected_subscriptions
+     WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+       AND next_expected IS NOT NULL
+     ORDER BY next_expected ASC`
+  );
+  const out = [];
+  for (const sub of result.rows) {
+    const amount = parseFloat(sub.amount);
+    const cadence = parseInt(sub.cadence_days);
+    if (!(cadence > 0)) continue;
+    for (const date of seriesOccurrences(sub.last_charged, sub.next_expected, cadence, today, endStr)) {
+      out.push({
+        name: sub.display_name,
+        amount,
+        date,
+        days_away: Math.round((Date.parse(date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000),
+        category: sub.category,
+        bill_source: "subscription",
+        bill_id: sub.id,
+      });
+    }
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
+}
+
+// Bills due from `today` through today + `days` (design D3, the dashboard
+// summary's "bills due" item): the forecast's subscription charges plus every
+// manual-bill occurrence by the calendar's own rule (manualBillOccurrences,
+// DC-15), less any occurrence already marked paid in bill_payments (the
+// calendar's paid-state key). Rows as forecastCharges', date order.
+async function getBillsDue(db, { today = todayStr(), days = 7 } = {}) {
+  const endStr = addDaysStr(today, days);
+  const [subs, manual, payments] = await Promise.all([
+    forecastCharges(db, today, endStr),
+    db.query("SELECT * FROM manual_bills WHERE is_active = true"),
+    db.query("SELECT bill_source, bill_id, paid_date FROM bill_payments WHERE paid_date >= $1 AND paid_date <= $2", [today, endStr]),
+  ]);
+  const bills = subs.slice();
+  for (const bill of manual.rows) {
+    for (const date of manualBillOccurrences(bill, today, endStr)) {
+      bills.push({
+        name: bill.name,
+        amount: parseFloat(bill.amount),
+        date,
+        days_away: Math.round((Date.parse(date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000),
+        category: bill.category,
+        bill_source: "manual",
+        bill_id: bill.id,
+      });
+    }
+  }
+  const paid = new Set(payments.rows.map((p) => paidKey(p.bill_source, p.bill_id, p.paid_date)));
+  return bills
+    .filter((b) => !paid.has(paidKey(b.bill_source, b.bill_id, b.date)))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 // GET /api/forecast — predict recurring charges for the next 30 days
 router.get("/api/forecast", async (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days) || 30, 7), 90);
   try {
-    const result = await pool.query(
-      `SELECT display_name, amount, cadence_days, next_expected, last_charged, category
-       FROM detected_subscriptions
-       WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
-         AND next_expected IS NOT NULL
-       ORDER BY next_expected ASC`
-    );
-
     const today = todayStr();
     const endStr = addDaysStr(today, days);
-    const forecast = [];
+    const forecast = (await forecastCharges(pool, today, endStr)).map(
+      ({ name, amount, date, days_away, category }) => ({ name, amount, date, days_away, category })
+    );
     let totalExpected = 0;
-
-    for (const sub of result.rows) {
-      const amount = parseFloat(sub.amount);
-      const cadence = parseInt(sub.cadence_days);
-      // cadence_days <= 0 / NaN can't be projected (F8) — occurrencesBetween
-      // also returns [] for it, so no loop can hang.
-      if (!(cadence > 0)) continue;
-      // Month-scale cadences step by CALENDAR MONTH from next_expected (DC-9);
-      // a fixed 30-day step drifted ~5 days/yr and could double a month.
-      for (const date of seriesOccurrences(sub.last_charged, sub.next_expected, cadence, today, endStr)) {
-        forecast.push({
-          name: sub.display_name,
-          amount,
-          date,
-          days_away: Math.round((Date.parse(date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000),
-          category: sub.category,
-        });
-        totalExpected += amount;
-      }
-    }
+    for (const f of forecast) totalExpected += f.amount;
 
     // Sort by date
     forecast.sort((a, b) => a.date.localeCompare(b.date));
@@ -752,10 +972,22 @@ router.get("/api/forecast", async (req, res) => {
   }
 });
 
+// year/month query params for the calendar views (cycle-7 F57): defaults are
+// the APP_TIMEZONE month (they were the server's UTC month), and an impossible
+// month (13) or year is a 400 — it used to build "2026-13-01" and 500.
+function calendarMonthParams(query) {
+  const [cy, cmo] = currentMonth().split("-").map(Number);
+  const year = query.year == null || query.year === "" ? cy : Number(query.year);
+  const month = query.month == null || query.month === "" ? cmo : Number(query.month);
+  if (!Number.isInteger(year) || year < 1900 || year > 2999 || !Number.isInteger(month) || month < 1 || month > 12) return null;
+  return { year, month };
+}
+
 // GET /api/bill-calendar — Monthly calendar of expected charges
 router.get("/api/bill-calendar", async (req, res) => {
-  const year = parseInt(req.query.year) || new Date().getFullYear();
-  const month = parseInt(req.query.month) || new Date().getMonth() + 1;
+  const ym = calendarMonthParams(req.query);
+  if (!ym) return res.status(400).json({ error: "year must be 1900-2999 and month 1-12" });
+  const { year, month } = ym;
   try {
     const daysInMonth = new Date(year, month, 0).getDate();
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
@@ -874,19 +1106,9 @@ router.get("/api/bill-calendar", async (req, res) => {
     // biweekly / semimonthly (two fixed days) / monthly — then projected into
     // this month. The old GROUP BY (source, exact amount) + AVG(day) placed ONE
     // event per month, so biweekly/semimonthly pay read ~50% low.
-    const incomeResult = await pool.query(`
-      SELECT COALESCE(user_merchant_name, merchant_name, name) AS source,
-             date, ABS(amount) AS amount
-      FROM transactions
-      WHERE amount < 0 AND pending = false
-        AND date >= CURRENT_DATE - INTERVAL '4 months'
-        AND ${INCOME_PREDICATE}
-      ORDER BY date
-    `);
-
-    const today = todayStr();
-    for (const stream of buildIncomeStreams(incomeResult.rows)) {
-      if (!isIncomeStreamLive(stream, today)) continue;
+    // The query + clustering live in getLiveIncomeStreams, shared with the
+    // cash-flow forecast (F34).
+    for (const stream of await getLiveIncomeStreams(pool)) {
       for (const date of incomeEventsBetween(stream, startDate, endDate)) {
         const day = parseInt(date.slice(8, 10), 10);
         calendar[day].push({
@@ -992,10 +1214,11 @@ router.patch("/api/recurring-transfers/:id/dismiss", async (req, res) => {
 });
 
 // PATCH /api/recurring-transfers/:id/undismiss — restore a dismissed transfer
+// (and re-activate it — detection kept it inactive while dismissed; F56).
 router.patch("/api/recurring-transfers/:id/undismiss", async (req, res) => {
   try {
     const result = await pool.query(
-      "UPDATE recurring_transfers SET is_dismissed = false, updated_at = now() WHERE id = $1 RETURNING *",
+      "UPDATE recurring_transfers SET is_dismissed = false, is_active = true, updated_at = now() WHERE id = $1 RETURNING *",
       [req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
@@ -1046,8 +1269,9 @@ router.post("/api/manual-bills", async (req, res) => {
   if (!name || amount == null || !due_day) {
     return res.status(400).json({ error: "name, amount, and due_day are required" });
   }
-  const parsedDay = parseInt(due_day);
-  if (parsedDay < 1 || parsedDay > 31) return res.status(400).json({ error: "due_day must be 1-31" });
+  // A non-numeric due_day used to pass (NaN < 1 is false) and 500 on insert (F57).
+  const parsedDay = Number(due_day);
+  if (!Number.isInteger(parsedDay) || parsedDay < 1 || parsedDay > 31) return res.status(400).json({ error: "due_day must be 1-31" });
   const parsedAmount = parseFloat(amount);
   if (isNaN(parsedAmount) || parsedAmount <= 0) return res.status(400).json({ error: "amount must be positive" });
   const validCadences = ["monthly", "quarterly", "yearly"];
@@ -1146,6 +1370,7 @@ router.post("/api/bill-payments", async (req, res) => {
        RETURNING *`,
       [bill_source, parseInt(bill_id), paid_date, paidAmount, notes || null]
     );
+    linkedTasks.kick("bill-payment");
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -1156,6 +1381,7 @@ router.post("/api/bill-payments", async (req, res) => {
 router.delete("/api/bill-payments/:id", async (req, res) => {
   try {
     await pool.query("DELETE FROM bill_payments WHERE id = $1", [req.params.id]);
+    linkedTasks.kick("bill-payment-undo");
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -1164,8 +1390,9 @@ router.delete("/api/bill-payments/:id", async (req, res) => {
 
 // GET /api/bill-payments — list payments for a month
 router.get("/api/bill-payments", async (req, res) => {
-  const year = parseInt(req.query.year) || new Date().getFullYear();
-  const month = parseInt(req.query.month) || new Date().getMonth() + 1;
+  const ym = calendarMonthParams(req.query);
+  if (!ym) return res.status(400).json({ error: "year must be 1900-2999 and month 1-12" });
+  const { year, month } = ym;
   const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
   const daysInMonth = new Date(year, month, 0).getDate();
   const endDate = `${year}-${String(month).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
@@ -1184,14 +1411,33 @@ router.get("/api/bill-payments", async (req, res) => {
 // ---------------------------------------------------------------------------
 // Bill-calendar iCalendar feed (subscribed from iOS/Google Calendar). Pure
 // read: projects the next `days` of expected charges — detected subscriptions
-// stepping next_expected by cadence_days, plus active manual bills (monthly =
-// every occurrence in the window; quarterly/yearly = next occurrence only,
-// since their anchor month is ambiguous). All-day VEVENTs with stable UIDs so
-// re-fetches update in place. Served via the shell's token-gated public
-// /calendar.ics route (calendar apps can't send headers or cookies).
+// by calendar-month cadence (seriesOccurrences), active manual bills via the
+// in-app calendar's own placement rule (manualBillOccurrences — every
+// occurrence in the window), and unpaid Rent & Utilities obligations. All-day
+// VEVENTs with stable UIDs so re-fetches update in place. Served via the
+// shell's token-gated public /calendar.ics route (calendar apps can't send
+// headers or cookies).
 // ---------------------------------------------------------------------------
 function icsEscape(t) {
   return String(t).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+}
+// RFC 5545 §3.1 line folding (cycle-7 F59): a content line longer than 75
+// OCTETS is split, each continuation starting with one space. Splits on UTF-8
+// character boundaries so a multi-byte merchant name is never cut mid-character.
+function icsFold(line) {
+  if (Buffer.byteLength(line, "utf8") <= 75) return line;
+  const parts = [];
+  let cur = "", curBytes = 0, limit = 75;
+  for (const ch of line) {
+    const b = Buffer.byteLength(ch, "utf8");
+    if (curBytes + b > limit) {
+      parts.push(cur);
+      cur = ""; curBytes = 0; limit = 74; // the leading space takes one octet
+    }
+    cur += ch; curBytes += b;
+  }
+  parts.push(cur);
+  return parts.join("\r\n ");
 }
 function icsDate(d) {
   return d.toISOString().slice(0, 10).replace(/-/g, "");
@@ -1255,7 +1501,10 @@ async function buildBillCalendarIcs(days) {
     for (const o of housing.rows) {
       const [y, m] = String(o.period).split("-").map(Number);
       if (!y || !m) continue;
-      const dueDay = Math.min(28, Math.max(1, parseInt(o.due_day) || 1));
+      // Clamped to the period's REAL length (cycle-7 F45): the 28-day cap
+      // placed a rent due on the 30th on the 28th and flagged it OVERDUE on
+      // the 29th–30th, before it was due.
+      const dueDay = Math.min(daysInMonth(y, m - 1), Math.max(1, parseInt(o.due_day) || 1));
       const d = new Date(Date.UTC(y, m - 1, dueDay));
       if (d <= end) {
         // An unpaid obligation whose due date has passed stays visible on TODAY,
@@ -1286,7 +1535,7 @@ async function buildBillCalendarIcs(days) {
       "UID:" + ev.uid,
       "DTSTAMP:" + stamp,
       "DTSTART;VALUE=DATE:" + icsDate(ev.date),
-      "SUMMARY:" + icsEscape(ev.summary),
+      icsFold("SUMMARY:" + icsEscape(ev.summary)),
       "TRANSP:TRANSPARENT",
       "END:VEVENT"
     );
@@ -1313,5 +1562,9 @@ function paidKey(billSource, billId, paidDate) {
 
 module.exports = router;
 module.exports.runSubscriptionDetection = runSubscriptionDetection;
+module.exports.runSubscriptionWatchdog = runSubscriptionWatchdog;
 module.exports.buildBillCalendarIcs = buildBillCalendarIcs;
+module.exports.icsFold = icsFold; // test seam (cycle-7 F59)
 module.exports.paidKey = paidKey;
+module.exports.forecastCharges = forecastCharges;
+module.exports.getBillsDue = getBillsDue;

@@ -32,10 +32,23 @@ function dayDiff(a, b) {
 // Pure. `today` is 'YYYY-MM-DD'. Returns null when nothing should surface, else
 // { balance, payee, n, status: 'upcoming'|'due_today'|'overdue'|'unscheduled',
 //   days_until_due (negative when overdue, null when no due day), due_date }.
-function computeHousingDue(cfg, balance, n, today) {
+// `oldest` ({ period: 'YYYY-MM', due_day }) is the oldest UNPAID obligation:
+// when it belongs to an earlier month the balance is overdue since THAT due
+// date (F110 — from the 1st until this month's lead window, last month's
+// unpaid rent used to go silent, since only this month's due date was seen).
+function computeHousingDue(cfg, balance, n, today, oldest) {
   if (!cfg || !cfg.enabled || !cfg.payee_name || !(balance > 0)) return null;
   const base = { balance, payee: cfg.payee_name, n };
   const dueDay = parseInt(cfg.rent_due_day, 10);
+  const [ty, tm] = today.split("-").map(Number);
+  const thisPeriod = `${ty}-${String(tm).padStart(2, "0")}`;
+  if (oldest && typeof oldest.period === "string" && /^\d{4}-\d{2}$/.test(oldest.period) && oldest.period < thisPeriod) {
+    const [oy, om] = oldest.period.split("-").map(Number);
+    const rowDay = parseInt(oldest.due_day, 10);
+    const od = rowDay >= 1 && rowDay <= 31 ? rowDay : (dueDay >= 1 && dueDay <= 31 ? dueDay : 1);
+    const oDue = `${oldest.period}-${String(Math.min(od, daysInMonth(oy, om))).padStart(2, "0")}`;
+    return { ...base, status: "overdue", days_until_due: dayDiff(today, oDue), due_date: oDue };
+  }
   if (!(dueDay >= 1 && dueDay <= 31)) {
     return { ...base, status: "unscheduled", days_until_due: null, due_date: null };
   }
@@ -73,11 +86,19 @@ async function housingDue(perfinPool, today = todayStr()) {
     if (!cfg.enabled || !cfg.payee_name) return null;
     // Scoped to the configured payee, matching Perfin's own payment-due
     // reminder and Rent-page balance.
+    // The oldest unpaid row's period + due day ride along (F110).
     const bal = await perfinPool.query(
-      "SELECT COALESCE(SUM(amount),0) AS balance, COUNT(*) AS n FROM payee_obligations WHERE status='unpaid' AND payee = $1",
+      `SELECT COALESCE(SUM(amount),0) AS balance, COUNT(*) AS n,
+              (SELECT o.period FROM payee_obligations o WHERE o.status='unpaid' AND o.payee = $1
+                ORDER BY o.period, o.due_day NULLS LAST LIMIT 1) AS oldest_period,
+              (SELECT o.due_day FROM payee_obligations o WHERE o.status='unpaid' AND o.payee = $1
+                ORDER BY o.period, o.due_day NULLS LAST LIMIT 1) AS oldest_due_day
+         FROM payee_obligations WHERE status='unpaid' AND payee = $1`,
       [cfg.payee_name]
     );
-    return computeHousingDue(cfg, parseFloat(bal.rows[0].balance), parseInt(bal.rows[0].n, 10), today);
+    const row = bal.rows[0];
+    const oldest = row.oldest_period ? { period: row.oldest_period, due_day: row.oldest_due_day } : null;
+    return computeHousingDue(cfg, parseFloat(row.balance), parseInt(row.n, 10), today, oldest);
   } catch { return null; }
 }
 

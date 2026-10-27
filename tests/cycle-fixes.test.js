@@ -545,7 +545,8 @@ describe("Plaid: balance sync surfaces a genuine liabilities failure", () => {
     // account (Discover) — brokerage/depository-only items stay quiet.
     assert.match(inv, /const hasCreditAccount = \(balRes\.data\.accounts \|\| \[\]\)\.some\(a => a\.type === "credit"\)/);
     assert.match(inv, /lib\.skipped === "not_supported" && hasCreditAccount/);
-    assert.match(inv, /re-link this card to enable Plaid Liabilities/);
+    // Cycle-7 F18: a second link of the same bank is refused, so the hint says unlink + link.
+    assert.match(inv, /unlink it and link the bank again to enable them/);
   });
 });
 
@@ -802,7 +803,11 @@ describe("Mobile UX: number formatting", () => {
   const sharedJs = fs.readFileSync(path.join(__dirname, "../teller/public/perfin-shared.js"), "utf8");
   const sharedCss = fs.readFileSync(path.join(__dirname, "../teller/public/perfin-shared.css"), "utf8");
   it("fmt() uses thousands separators (toLocaleString), not bare toFixed", () => {
-    assert.match(sharedJs, /function fmt\(n\) \{ return '\$' \+ parseFloat\(n \|\| 0\)\.toLocaleString\('en-US'/);
+    // Design pass D1 put the sign before the "$" (-$12.34); the separators stay
+    // (behaviour pinned in tests/design-d1.test.js).
+    const body = sharedJs.slice(sharedJs.indexOf("function fmt(n) {"), sharedJs.indexOf("// Calendar dates (DATE columns)"));
+    assert.match(body, /\.toLocaleString\('en-US', \{ minimumFractionDigits: 2, maximumFractionDigits: 2 \}\)/);
+    assert.doesNotMatch(body, /toFixed/);
   });
   it("stat-card .value font is responsive (clamp + overflow-wrap)", () => {
     assert.match(sharedCss, /\.card \.value \{ font-size: clamp\([^)]*\);[\s\S]*overflow-wrap: anywhere/);
@@ -953,9 +958,15 @@ describe("BS-5/6/7/8 — sync-helper correctness (source-pinned)", () => {
     assert.match(enroll, /plaidThrew \? \[\{ provider: "plaid", result: \{ errors:/);
   });
   it("BS-7: monthly income projection clamps the pay-day to the month length", () => {
-    // cash-flow moved to routes/spending-analytics.js in the route-file split
-    const analytics = fs.readFileSync(path.join(__dirname, "../teller/routes/spending-analytics.js"), "utf8");
-    assert.match(analytics, /const payDay = Math\.min\(inc\.typical_day, daysInMonth\)/);
+    // The cash-flow forecast lives in services/cash-flow.js (roadmap T2.2 L1;
+    // before that routes/spending-analytics.js); since cycle-7 F34 it projects
+    // the shared cadence.js income streams, whose monthly stepping clamps the
+    // day (Jan 31 → Feb 28/29).
+    const forecast = fs.readFileSync(path.join(__dirname, "../teller/services/cash-flow.js"), "utf8");
+    assert.match(forecast, /incomeEventsBetween\(stream, today, end\)/);
+    const { incomeEventsBetween } = require("../teller/services/cadence");
+    const s = { cadence: "monthly", anchor: "2026-01-31" };
+    assert.deepEqual(incomeEventsBetween(s, "2026-02-01", "2026-03-31"), ["2026-02-28", "2026-03-31"]);
   });
   it("BS-8: holdings sync skips items lacking the Investments product", () => {
     assert.match(inv, /PRODUCTS_NOT_SUPPORTED" \|\| code === "PRODUCT_NOT_READY"\) continue/);

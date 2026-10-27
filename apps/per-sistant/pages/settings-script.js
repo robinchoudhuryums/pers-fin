@@ -55,9 +55,11 @@ async function load() {
     loadVaultStatus();
   }
   if ('Notification' in window && Notification.permission === 'granted') {
-    document.getElementById('notif-btn').textContent = 'Notifications Enabled';
+    document.getElementById('notif-btn').textContent = 'Notifications enabled';
     document.getElementById('notif-btn').disabled = true;
   }
+
+  loadAiUsage();
 
   // Apply theme
   applyTheme(s.theme || 'dark');
@@ -106,11 +108,60 @@ async function saveAIModels() {
   setTimeout(()=>{ el.className = 'status-msg'; }, 3000);
 }
 
+// Roadmap T2.3 C4: this month's AI spend, the cap and its source, the
+// per-feature breakdown, and Perfin's spend beside it (its own cap).
+var AI_FEATURE_LABELS = {email_draft:'Email Drafting', task_breakdown:'Task Breakdown', quick_add:'Smart Quick Add', review_summary:'Weekly Review Summary', email_tone:'Email Tone', daily_briefing:'Daily Briefing', note_tagging:'Note Tagging', smart_suggestions:'Smart Suggestions', natural_language_query:'Ask', rag_query:'Knowledge Q&A', rag_diagram:'Knowledge diagrams', rag_capture:'Knowledge capture', job_fit:'Job Fit', job_legitimacy:'Job Radar legitimacy check'};
+function aiMoney(c) { return '$' + (Number(c) / 100 || 0).toFixed(2); }
+async function loadAiUsage() {
+  var line = document.getElementById('ai-usage-line');
+  if (!line) return;
+  var r = await tryFetch('/api/ai/usage');
+  if (!r || !r.ok) { line.textContent = "Couldn't load this month's AI spend."; return; }
+  var u = await r.json();
+  line.textContent = 'This month: ' + aiMoney(u.spent_cents) + ' of ' + aiMoney(u.budget_cents) +
+    (u.spent_cents >= u.budget_cents ? ' — budget reached, so AI features are paused until next month or a higher cap.' : '.');
+  var inp = document.getElementById('ai-budget-input');
+  if (inp && document.activeElement !== inp) inp.value = (u.budget_cents / 100).toFixed(2);
+  var src = document.getElementById('ai-budget-source');
+  if (src) src.textContent = u.budget_source === 'settings' ? 'Set here. "Use default" goes back to the server setting.'
+    : u.budget_source === 'env' ? 'From PERSISTENT_AI_BUDGET_CENTS on the server.' : 'The default ($1.00).';
+  var bd = document.getElementById('ai-usage-breakdown');
+  if (bd) bd.innerHTML = (u.by_feature || []).length ? u.by_feature.map(function(f) {
+    return '<div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--line);"><span>' +
+      esc(AI_FEATURE_LABELS[f.entry_type] || f.entry_type) + '</span><span style="color:var(--muted);">' +
+      f.calls + (f.calls === 1 ? ' call' : ' calls') + ' · ' + aiMoney(f.cents) + '</span></div>';
+  }).join('') : '<div style="color:var(--muted);">No AI calls yet this month.</div>';
+  var pf = document.getElementById('perfin-ai-spend');
+  if (pf) {
+    if (u.perfin) {
+      pf.textContent = 'Perfin (its own cap, set in Perfin → Settings): ' + aiMoney(u.perfin.spent_cents) + ' of ' + aiMoney(u.perfin.budget_cents) + ' this month.';
+      pf.hidden = false;
+    } else pf.hidden = true;
+  }
+}
+async function saveAiBudget(useDefault) {
+  var body;
+  if (useDefault === true) body = { ai_monthly_budget_cents: null };
+  else {
+    var dollars = parseFloat(document.getElementById('ai-budget-input').value);
+    var cents = Math.round(dollars * 100);
+    if (!isFinite(dollars) || cents < 1 || cents > 10000) { showUndo('Enter a cap between $0.01 and $100.', '', '', 'info'); return; }
+    body = { ai_monthly_budget_cents: cents };
+  }
+  var btns = [document.getElementById('save-ai-budget-btn'), document.getElementById('reset-ai-budget-btn')].filter(Boolean);
+  await withPending(btns, 'ai-budget', async function() {
+    var ok = await writeOk(await tryFetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}), 'Could not save the AI budget');
+    if (!ok) return;
+    showUndo(useDefault === true ? 'AI budget reset to the default.' : 'AI budget saved.', '', '', 'info');
+    await loadAiUsage();
+  });
+}
+
 async function enableNotifications() {
   if (!('Notification' in window)) return alert('Browser does not support notifications');
   var perm = await Notification.requestPermission();
   if (perm === 'granted') {
-    document.getElementById('notif-btn').textContent = 'Notifications Enabled';
+    document.getElementById('notif-btn').textContent = 'Notifications enabled';
     document.getElementById('notif-btn').disabled = true;
     new Notification('Per-sistant', { body: 'Notifications enabled! You will be notified about reminders and overdue tasks.' });
   }
@@ -132,7 +183,7 @@ async function loadTrash() {
 }
 
 async function restoreItem(type, id) {
-  await fetch('/api/trash/'+type+'/'+id+'/restore', {method:'POST'});
+  if (!(await writeOk(await tryFetch('/api/trash/'+type+'/'+id+'/restore', {method:'POST'}), 'Could not restore the item'))) return;
   loadTrash();
   var el = document.getElementById('status');
   el.className = 'status-msg success'; el.textContent = 'Item restored.';
@@ -141,13 +192,13 @@ async function restoreItem(type, id) {
 
 async function permanentDelete(type, id) {
   if (!confirm('Permanently delete this item? This cannot be undone.')) return;
-  await fetch('/api/trash/'+type+'/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/trash/'+type+'/'+id, {method:'DELETE'}), 'Could not delete the item'))) return;
   loadTrash();
 }
 
 async function emptyTrash() {
   if (!confirm('Permanently delete all items in trash? This cannot be undone.')) return;
-  await fetch('/api/trash/empty', {method:'POST'});
+  if (!(await writeOk(await tryFetch('/api/trash/empty', {method:'POST'}), 'Could not empty the trash'))) return;
   loadTrash();
   var el = document.getElementById('status');
   el.className = 'status-msg success'; el.textContent = 'Trash emptied.';
@@ -234,11 +285,11 @@ async function saveAutomation() {
 }
 async function deleteAutomation() {
   var id = document.getElementById('auto-id').value;
-  await fetch('/api/automations/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/automations/'+id, {method:'DELETE'}), 'Could not delete the automation'))) return;
   closeAutoModal(); loadAutomations();
 }
 async function toggleAutomation(id, enabled) {
-  await fetch('/api/automations/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+  await writeOk(await tryFetch('/api/automations/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}), 'Could not change the automation');
   loadAutomations();
 }
 function updateActionFields() {}
@@ -252,7 +303,7 @@ async function loadWebhooks() {
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;">'
     +'<div style="flex:1;"><div>'+esc(w.name)+'</div>'
     +'<div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:0.04em;">'+esc(w.url.substring(0,50))+(w.url.length>50?'...':'')+'</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.08em;">Events: '+esc((w.events||[]).join(', '))+(w.last_status?' &middot; Last: '+esc(w.last_status):'')+'</div></div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.08em;">Events: '+esc((w.events||[]).join(', '))+(w.last_status!=null?' &middot; Last: '+esc(String(w.last_status)):'')+'</div></div>'
     +'<div style="display:flex;gap:6px;align-items:center;">'
     +'<button class="btn" data-action="test-wh" data-id="'+w.id+'" style="color:var(--accent);border-color:var(--accent);">Test</button>'
     +'<button class="btn" data-action="toggle-wh" data-id="'+w.id+'" data-enabled="'+w.enabled+'"'+(w.enabled?' style="color:var(--good);border-color:var(--good);"':'')+'>'+(w.enabled?'On':'Off')+'</button>'
@@ -286,17 +337,20 @@ async function saveWebhook() {
   var data={name:document.getElementById('wh-name').value,url:document.getElementById('wh-url').value,events:events};
   if(!data.name||!data.url)return alert('Name and URL required');
   var id=document.getElementById('wh-id').value;
-  if(id) await fetch('/api/webhooks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  else await fetch('/api/webhooks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  var res = id
+    ? await tryFetch('/api/webhooks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    : await tryFetch('/api/webhooks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  // F113: a refused URL (private address, bad events) keeps the dialog open.
+  if (!(await writeOk(res, 'Could not save the webhook'))) return;
   closeWebhookModal();loadWebhooks();
 }
 async function deleteWebhook() {
   var id=document.getElementById('wh-id').value;
-  await fetch('/api/webhooks/'+id,{method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/webhooks/'+id,{method:'DELETE'}), 'Could not delete the webhook'))) return;
   closeWebhookModal();loadWebhooks();
 }
 async function toggleWebhook(id,enabled) {
-  await fetch('/api/webhooks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+  await writeOk(await tryFetch('/api/webhooks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}), 'Could not change the webhook');
   loadWebhooks();
 }
 async function testWebhook(id) {
@@ -407,6 +461,8 @@ bindEvents([
   ['save-slack-btn','click',saveSlack],
   ['save-keepalive-btn','click',saveKeepAlive],
   ['save-vault-btn','click',saveVault],
+  ['save-ai-budget-btn','click',function(){ saveAiBudget(false); }],
+  ['reset-ai-budget-btn','click',function(){ saveAiBudget(true); }],
   ['vault-enabled','change',saveVault],
   ['logout-btn','click',logout],
   ['auto-action','change',updateActionFields],

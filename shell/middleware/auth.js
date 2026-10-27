@@ -9,7 +9,11 @@
 // so an active user never gets logged out mid-session, while an idle user
 // is re-prompted after the configured window. Rotating SHELL_SECRET
 // invalidates every active session; rotating SHELL_PIN does not (since PIN
-// isn't in the cookie).
+// isn't in the cookie). The cookie also carries the session EPOCH
+// (user_settings.shell_session_epoch, read with the idle window): "Sign out
+// everywhere" (POST /logout?everywhere=1) bumps it, so every cookie issued
+// before is refused — server-side revocation without rotating the secret
+// (cycle-7 F12). A cookie from before the epoch existed counts as epoch 0.
 //
 // Why constant-time compare even for a 4-digit PIN: a fast string compare
 // can leak the matching prefix length under a timing attack. The PIN is a
@@ -42,6 +46,7 @@ let _onLockout = null;
 // to DEFAULT_IDLE_MS — still a usable session, just non-tunable.
 let _pool = null;
 let _cachedIdleMs = DEFAULT_IDLE_MS;
+let _cachedEpoch = 0;
 let _cacheExpiresAt = 0;
 
 function init({ pool, onLockout } = {}) {
@@ -59,14 +64,18 @@ async function getIdleMs() {
   if (Date.now() < _cacheExpiresAt) return _cachedIdleMs;
   if (_pool) {
     try {
-      const r = await _pool.query("SELECT shell_idle_timeout_minutes FROM user_settings WHERE id = 1");
+      const r = await _pool.query("SELECT shell_idle_timeout_minutes, shell_session_epoch FROM user_settings WHERE id = 1");
       const min = r.rows.length ? Number(r.rows[0].shell_idle_timeout_minutes) : null;
+      const epoch = r.rows.length ? Number(r.rows[0].shell_session_epoch) : 0;
+      _cachedEpoch = Number.isInteger(epoch) && epoch >= 0 ? epoch : 0;
       if (Number.isFinite(min) && min >= 5 && min <= 10080) {
         _cachedIdleMs = min * 60 * 1000;
       } else {
         _cachedIdleMs = DEFAULT_IDLE_MS;
       }
     } catch {
+      // Fail open on a DB blip: keep the last known epoch (an active user
+      // stays signed in) and fall back to the default window.
       _cachedIdleMs = DEFAULT_IDLE_MS;
     }
   } else {
@@ -98,15 +107,22 @@ function verify(signed) {
   return value;
 }
 
+// Signed value: "<expires ms>:<epoch>" (a legacy "<expires ms>" is epoch 0).
 function isValidSession(signed) {
   const value = verify(signed);
   if (!value) return false;
-  const expires = parseInt(value, 10);
-  return Number.isFinite(expires) && expires > Date.now();
+  const [exp, ep] = value.split(":");
+  const expires = parseInt(exp, 10);
+  const epoch = ep === undefined ? 0 : parseInt(ep, 10);
+  return Number.isFinite(expires) && expires > Date.now() && epoch === _cachedEpoch;
 }
 
 function makeSession(idleMs) {
-  return sign(String(Date.now() + (idleMs || DEFAULT_IDLE_MS)));
+  return sign(`${Date.now() + (idleMs || DEFAULT_IDLE_MS)}:${_cachedEpoch}`);
+}
+
+function currentEpoch() {
+  return _cachedEpoch;
 }
 
 // Secure flag (PSC-4): NODE_ENV=production was never set in the deploy configs,
@@ -125,6 +141,14 @@ function setSessionCookie(res, idleMs) {
     maxAge: idleMs,
     path: "/",
   });
+}
+
+// Constant-time string equality over fixed-length SHA-256 digests: never
+// throws on a length (or UTF-8 byte-length) mismatch and leaks neither length.
+function safeEqual(provided, expected) {
+  const a = crypto.createHash("sha256").update(String(provided), "utf8").digest();
+  const b = crypto.createHash("sha256").update(String(expected), "utf8").digest();
+  return crypto.timingSafeEqual(a, b);
 }
 
 function isValidApiKey(req) {
@@ -149,8 +173,16 @@ function isValidApiKey(req) {
 // Per-sistant's Perfin webhook receiver verifies an HMAC over the raw body plus
 // a timestamp replay window (and 503s when no secret is configured). Perfin's
 // HTTP webhook path (e.g. the Settings "test" event) sends no shell cookie.
+// Perfin's bank webhook receivers (roadmap T2.1) verify the Plaid JWT /
+// Teller HMAC themselves and answer 503 while unconfigured. Exact method +
+// path only — nothing else under /perfin/api/webhooks passes.
+const SELF_AUTHENTICATING_POSTS = new Set([
+  "/per-sistant/api/perfin/webhook",
+  "/perfin/api/webhooks/plaid",
+  "/perfin/api/webhooks/teller",
+]);
 function isSelfAuthenticatingRoute(req) {
-  return req.method === "POST" && req.path === "/per-sistant/api/perfin/webhook";
+  return req.method === "POST" && SELF_AUTHENTICATING_POSTS.has(req.path);
 }
 
 async function requireAuth(req, res, next) {
@@ -159,6 +191,9 @@ async function requireAuth(req, res, next) {
   if (isValidApiKey(req)) return next();
   if (isSelfAuthenticatingRoute(req)) return next();
 
+  // Refresh the cached idle window + session epoch first (60 s cache), so a
+  // "sign out everywhere" from another process is honoured within a minute.
+  await getIdleMs();
   if (!isValidSession(req.cookies[COOKIE_NAME])) {
     // Browsers get a redirect, API clients get JSON. Sub-apps mounted past
     // this gate will inherit the same behavior automatically.
@@ -233,17 +268,12 @@ async function handleLogin(req, res) {
     return renderLogin(res, 429, `Too many failed attempts. PIN login is locked for ${mins} more minute${mins === 1 ? "" : "s"} — use biometric login or try later.`, returnTo);
   }
 
-  // Length-mismatch is itself information; pad before compare so we don't
-  // leak the expected length via the early-exit branch.
-  const expectedBuf = Buffer.from(expected || " ", "utf8");
-  const submittedBuf = Buffer.from(
-    submitted.padEnd(expectedBuf.length, " ").slice(0, expectedBuf.length),
-    "utf8"
-  );
-  const matches =
-    expected.length > 0 &&
-    submitted.length === expected.length &&
-    crypto.timingSafeEqual(submittedBuf, expectedBuf);
+  // Digest compare (safeEqual): the old padded-buffer compare checked the
+  // CHARACTER count but compared UTF-8 BYTES, so a multibyte PIN of the right
+  // length made timingSafeEqual throw inside this async handler — an
+  // unhandled rejection that killed the process and reset every in-memory
+  // brute-force counter (F1).
+  const matches = expected.length > 0 && safeEqual(submitted, expected);
 
   if (!matches) {
     recordPinFailure();
@@ -287,9 +317,49 @@ function safeReturnTo(target) {
   return target;
 }
 
-function handleLogout(_req, res) {
+// POST /logout clears this device's cookie. With ?everywhere=1 (from a signed-in
+// session only) it also bumps user_settings.shell_session_epoch, so every
+// other cookie stops working too (F12); a failed bump is a 500, not a silent
+// single-device logout.
+async function handleLogout(req, res) {
+  if (req.query && req.query.everywhere === "1") {
+    await getIdleMs();
+    if (!isValidSession(req.cookies && req.cookies[COOKIE_NAME])) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    try {
+      if (!_pool) throw new Error("no settings database");
+      const r = await _pool.query(
+        "UPDATE user_settings SET shell_session_epoch = shell_session_epoch + 1 WHERE id = 1 RETURNING shell_session_epoch");
+      if (!r.rows.length) throw new Error("no settings row");
+      _cachedEpoch = Number(r.rows[0].shell_session_epoch);
+    } catch (err) {
+      console.error("Sign out everywhere failed:", err.message);
+      return res.status(500).json({ error: "Could not sign out other sessions." });
+    }
+  }
   res.clearCookie(COOKIE_NAME, { path: "/" });
   res.redirect("/login");
+}
+
+// The onLockout handler the shell registers: one "PIN login locked" alert per
+// LOCKOUT_ALERT_WINDOW_HOURS (F7) — while the ceiling keeps re-tripping, the
+// first alert already told the operator. `getNotifications` returns Perfin's
+// notifications module ({ sendToAll, sentRecently }); sentRecently fails open,
+// so a DB error still alerts.
+const LOCKOUT_ALERT_WINDOW_HOURS = 6;
+function makeLockoutNotifier(getNotifications) {
+  return async ({ failures, lockedUntil }) => {
+    const { sendToAll, sentRecently } = getNotifications();
+    if (await sentRecently("pin-lockout", LOCKOUT_ALERT_WINDOW_HOURS)) return false;
+    await sendToAll({
+      title: "PIN login locked",
+      body: `${failures} failed PIN attempts within an hour. PIN login is locked until ${lockedUntil.toISOString().slice(11, 16)} UTC. If this wasn't you, rotate SHELL_PIN.`,
+      tag: "pin-lockout",
+      data: { url: "/" },
+    });
+    return true;
+  };
 }
 
 module.exports = {
@@ -305,11 +375,15 @@ module.exports = {
   init,
   invalidateIdleCache,
   isValidSession,
+  LOCKOUT_ALERT_WINDOW_HOURS,
+  makeLockoutNotifier,
   makeSession,
+  currentEpoch,
   setSessionCookie,
   getIdleMs,
   requireAuth,
   handleLogin,
   handleLogout,
+  safeEqual,
   safeReturnTo,
 };

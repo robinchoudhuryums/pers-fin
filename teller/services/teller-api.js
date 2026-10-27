@@ -39,50 +39,77 @@ const TELLER_ENV = (process.env.TELLER_ENV || "sandbox").toLowerCase();
 const TELLER_CERT_PATH = process.env.TELLER_CERT_PATH;
 const TELLER_KEY_PATH = process.env.TELLER_KEY_PATH;
 
+// Read the client certificate + key from the configured source. Throws when a
+// file source is missing (getTlsAgent surfaces that on the first Teller call).
+function loadCertMaterial({ quiet = false } = {}) {
+  const log = quiet ? () => {} : console.log;
+  // Option 1: base64-encoded cert/key in env vars (recommended for PaaS)
+  if (process.env.TELLER_CERT && process.env.TELLER_KEY) {
+    log("[mTLS] Loading certificate from TELLER_CERT/TELLER_KEY env vars (base64)");
+    return {
+      cert: Buffer.from(process.env.TELLER_CERT, "base64"),
+      key: Buffer.from(process.env.TELLER_KEY, "base64"),
+    };
+  }
+  // Option 2: file paths
+  const certPath = path.resolve(TELLER_CERT_PATH || "./certificate.pem");
+  const keyPath = path.resolve(TELLER_KEY_PATH || "./private_key.pem");
+  log(`[mTLS] Loading certificate from files: ${certPath}, ${keyPath}`);
+
+  if (!fs.existsSync(certPath)) {
+    if (!quiet) {
+      console.error(`[mTLS] ERROR: Certificate file not found: ${certPath}`);
+      console.error(`[mTLS] cwd: ${process.cwd()}`);
+    }
+    throw new Error(`Certificate file not found: ${certPath}`);
+  }
+  if (!fs.existsSync(keyPath)) {
+    if (!quiet) console.error(`[mTLS] ERROR: Private key file not found: ${keyPath}`);
+    throw new Error(`Private key file not found: ${keyPath}`);
+  }
+  return { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) };
+}
+
+const COMPROMISED_CERT_WARNING =
+  "[mTLS] *** SECURITY WARNING *** The loaded Teller certificate is the one " +
+  "that was committed to git history and must be considered compromised. " +
+  "Generate a new certificate in the Teller dashboard, update " +
+  "TELLER_CERT/TELLER_KEY (or the PEM files), and scrub the old one from " +
+  "git history. See CLAUDE.md → Deployment → Operator state.";
+
 // Load TLS client certificate for mTLS
 let tlsAgent = null;
 function getTlsAgent() {
   if (tlsAgent) return tlsAgent;
 
-  let cert, key;
-
-  // Option 1: base64-encoded cert/key in env vars (recommended for PaaS)
-  if (process.env.TELLER_CERT && process.env.TELLER_KEY) {
-    console.log("[mTLS] Loading certificate from TELLER_CERT/TELLER_KEY env vars (base64)");
-    cert = Buffer.from(process.env.TELLER_CERT, "base64");
-    key = Buffer.from(process.env.TELLER_KEY, "base64");
-  } else {
-    // Option 2: file paths
-    const certPath = path.resolve(TELLER_CERT_PATH || "./certificate.pem");
-    const keyPath = path.resolve(TELLER_KEY_PATH || "./private_key.pem");
-    console.log(`[mTLS] Loading certificate from files: ${certPath}, ${keyPath}`);
-
-    if (!fs.existsSync(certPath)) {
-      console.error(`[mTLS] ERROR: Certificate file not found: ${certPath}`);
-      console.error(`[mTLS] cwd: ${process.cwd()}`);
-      throw new Error(`Certificate file not found: ${certPath}`);
-    }
-    if (!fs.existsSync(keyPath)) {
-      console.error(`[mTLS] ERROR: Private key file not found: ${keyPath}`);
-      throw new Error(`Private key file not found: ${keyPath}`);
-    }
-
-    cert = fs.readFileSync(certPath);
-    key = fs.readFileSync(keyPath);
-  }
+  const { cert, key } = loadCertMaterial();
 
   console.log(`[mTLS] Certificate loaded (${cert.length} bytes), key loaded (${key.length} bytes)`);
   if (certFingerprintSha256(cert) === COMPROMISED_CERT_SHA256) {
-    console.error(
-      "[mTLS] *** SECURITY WARNING *** The loaded Teller certificate is the one " +
-      "that was committed to git history and must be considered compromised. " +
-      "Generate a new certificate in the Teller dashboard, update " +
-      "TELLER_CERT/TELLER_KEY (or the PEM files), and scrub the old one from " +
-      "git history. See CLAUDE.md → Deployment → Operator state."
-    );
+    console.error(COMPROMISED_CERT_WARNING);
   }
   tlsAgent = new https.Agent({ cert, key });
   return tlsAgent;
+}
+
+// Cycle-7 F14: the compromised-cert check used to be a log line printed only
+// when the first Teller request built the agent — invisible unless someone
+// read the boot logs at that moment. tellerCertStatus() answers the same
+// question without throwing or touching the network, so GET /api/data-health
+// can raise it as an issue and startup can log it at boot. Cached: the cert
+// only changes with a redeploy (a new env var or file means a new process).
+let certStatusCache = null;
+function tellerCertStatus() {
+  if (certStatusCache) return certStatusCache;
+  try {
+    const { cert } = loadCertMaterial({ quiet: true });
+    const fingerprint = certFingerprintSha256(cert);
+    certStatusCache = { configured: true, compromised: fingerprint === COMPROMISED_CERT_SHA256, fingerprint };
+  } catch {
+    // No cert configured (Plaid/CSV-only deployment) — nothing to warn about.
+    certStatusCache = { configured: false, compromised: false, fingerprint: null };
+  }
+  return certStatusCache;
 }
 
 function tellerRequestOnce(url, authHeader, method, bodyData) {
@@ -166,4 +193,7 @@ module.exports = {
   tellerRequest,
   certFingerprintSha256,
   COMPROMISED_CERT_SHA256,
+  COMPROMISED_CERT_WARNING,
+  tellerCertStatus,
+  _resetCertStatusCache() { certStatusCache = null; },
 };

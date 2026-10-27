@@ -11,13 +11,13 @@ ${navBar("/notes")}
   <p class="subtitle">Quick notes and reminders.</p>
 
   <div class="actions">
-    <button class="btn primary" id="new-note-btn">+ New Note</button>
+    <button class="btn primary" id="new-note-btn">+ New note</button>
     <button class="btn" id="note-select-toggle">Select</button>
   </div>
   <div id="note-bulk-bar" style="display:none;padding:10px 16px;margin-bottom:12px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius);align-items:center;gap:8px;font-size:13px;">
     <span id="note-bulk-count">0 selected</span>
-    <button class="btn danger" id="note-bulk-del-btn">Delete</button>
-    <button class="btn" id="note-select-all-btn" style="margin-left:auto;">Select All</button>
+    <button class="btn danger" data-e2e-skip id="note-bulk-del-btn">Delete</button>
+    <button class="btn" id="note-select-all-btn" style="margin-left:auto;">Select all</button>
   </div>
 
   <div class="notes-grid" id="notes-grid"></div>
@@ -39,7 +39,7 @@ ${navBar("/notes")}
     </div>
     <div style="position:relative;">
       <textarea id="n-content" style="min-height:200px" placeholder="Write your note... (supports **bold**, *italic*, - lists, > quotes, [links](url))"></textarea>
-      <button id="note-voice-btn" title="Voice input" style="position:absolute;top:10px;right:10px;padding:6px 10px;font-size:14px;border:1px solid var(--line);border-radius:2px;cursor:pointer;background:var(--paper-card);color:var(--accent);z-index:1;">&#127908;</button>
+      <button data-e2e-skip id="note-voice-btn" title="Voice input" style="position:absolute;top:10px;right:10px;padding:6px 10px;font-size:14px;border:1px solid var(--line);border-radius:2px;cursor:pointer;background:var(--paper-card);color:var(--accent);z-index:1;">&#127908;</button>
     </div>
     <div id="n-md-preview" style="display:none;min-height:100px;max-height:300px;overflow-y:auto;padding:12px 16px;background:var(--paper-card);border:1px solid var(--line);border-radius:var(--radius);font-size:13px;line-height:1.6;margin-bottom:12px;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -50,12 +50,20 @@ ${navBar("/notes")}
         <input type="datetime-local" id="n-reminder"></div>
     </div>
     <div style="margin-top:12px;">
+      <label for="n-sensitivity">Privacy</label>
+      <select id="n-sensitivity">
+        <option value="normal">Normal — used by Knowledge answers and the AI</option>
+        <option value="private">Private — never sent to the AI or Knowledge</option>
+        <option value="secret">Secret — private, and its text is hidden in lists</option>
+      </select>
+    </div>
+    <div style="margin-top:12px;">
       <label style="display:inline;cursor:pointer">
         <input type="checkbox" id="n-pinned" style="width:auto;margin-right:6px;"> Pin to top
       </label>
     </div>
     <div style="margin-top:12px;">
-      <label>Tags <button class="btn" id="suggest-tags-btn" style="float:right;">AI Suggest</button></label>
+      <label>Tags <button class="btn" id="suggest-tags-btn" style="float:right;">AI suggest</button></label>
       <div id="n-tags-list" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
       <div style="display:flex;gap:8px;">
         <input type="text" id="n-tag-input" placeholder="Add tag..." style="flex:1">
@@ -65,7 +73,7 @@ ${navBar("/notes")}
     <div class="modal-actions">
       <button class="btn" id="close-note-btn">Cancel</button>
       <button class="btn primary" id="save-note-btn">Save</button>
-      <button class="btn danger" id="n-delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="n-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -86,7 +94,7 @@ function updateNoteBulkCount() { document.getElementById('note-bulk-count').text
 function noteSelectAll() { document.querySelectorAll('.note-bulk-check').forEach(el => { el.checked = true; toggleNoteBulkItem(parseInt(el.dataset.id,10), true, {stopPropagation:function(){}}); }); }
 async function noteBulkAction(action) {
   if (!noteSelectedIds.size) return;
-  await fetch('/api/bulk/notes', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:Array.from(noteSelectedIds),action:action})});
+  if (!(await writeOk(await tryFetch('/api/bulk/notes', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:Array.from(noteSelectedIds),action:action})}), 'Bulk action failed'))) return;
   noteSelectedIds.clear(); updateNoteBulkCount(); load();
 }
 
@@ -106,29 +114,39 @@ function removeTag(i) { currentTags.splice(i, 1); renderTags(); }
 async function suggestTags() {
   var content = document.getElementById('n-content').value;
   var title = document.getElementById('n-title').value;
+  var sensitivity = document.getElementById('n-sensitivity').value;
   if (!content) return alert('Write some content first');
+  // F134: a private / secret note is never sent to the AI.
+  if (sensitivity !== 'normal') return alert('AI tagging is off for private and secret notes.');
   var btn = document.getElementById('suggest-tags-btn');
-  btn.textContent = 'Thinking...'; btn.disabled = true;
+  return withPending(btn, 'suggest-tags', async function() {
   try {
-    var r = await fetch('/api/ai/suggest-tags', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, content})}).then(r=>r.json());
+    var r = await fetch('/api/ai/suggest-tags', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, content, sensitivity})}).then(r=>r.json());
     if (r.error) { alert(r.error); return; }
     r.tags.forEach(t => { if (!currentTags.includes(t)) currentTags.push(t); });
     renderTags();
   } catch (err) { alert('Failed: '+err.message); }
-  finally { btn.textContent = 'AI Suggest'; btn.disabled = false; }
+  }, 'Thinking...');
 }
 
 async function load() {
   var notes = await fetch('/api/notes').then(r=>r.json());
-  if (!notes.length) { document.getElementById('notes-grid').innerHTML = '<div class="empty-msg" style="grid-column:1/-1">No notes yet. Create your first note!</div>'; return; }
+  if (!notes.length) { document.getElementById('notes-grid').innerHTML = '<div style="grid-column:1/-1">' + emptyState({ title: 'No notes yet', text: 'Notes can be pinned, tagged, written in Markdown and kept private.', action: { label: '+ New note', click: 'new-note-btn' } }) + '</div>'; return; }
   document.getElementById('notes-grid').innerHTML = notes.map(n => {
     var borderStyle = n.pinned ? 'border-left-color:'+(colorMap[n.color]||'var(--accent)') : (n.color!=='default'?'border-left:2px solid '+colorMap[n.color]:'');
+    // F134: a secret note's text stays hidden in the list until it's opened.
+    var secret = n.sensitivity === 'secret';
+    var privacyBadge = n.sensitivity && n.sensitivity !== 'normal'
+      ? '<div style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:6px;">'+(secret?'&#128274; Secret':'&#128274; Private')+'</div>' : '';
+    var preview = secret ? '<div class="note-preview" style="color:var(--muted);font-style:italic;">Hidden — open the note to view it.</div>'
+      : '<div class="note-preview'+(n.format==='markdown'?' md':'')+'">'+(n.format==='markdown'?renderMd(n.content):esc(n.content))+'</div>';
     var tagsHtml = n.tags && n.tags.length ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px;">'+n.tags.map(t=>'<span style="padding:2px 8px;border-radius:2px;font-family:var(--mono);font-size:9px;background:var(--paper-2);border:1px solid var(--line);color:var(--muted);letter-spacing:0.04em;">'+esc(t)+'</span>').join('')+'</div>' : '';
-    return '<div class="note-card'+(n.pinned?' pinned':'')+'" style="position:relative;'+borderStyle+'" role="button" tabindex="0" aria-label="'+escAttr('Open note: '+(n.title||String(n.content||'').slice(0,40)))+'" data-action="open-note" data-id="'+n.id+'">'+
+    return '<div class="note-card'+(n.pinned?' pinned':'')+'" style="position:relative;'+borderStyle+'" role="button" tabindex="0" aria-label="'+escAttr('Open note: '+(n.title||(secret?'Secret note':String(n.content||'').slice(0,40))))+'" data-action="open-note" data-id="'+n.id+'">'+
       '<input type="checkbox" class="note-bulk-check" data-id="'+n.id+'" style="display:'+(noteSelectMode?'block':'none')+';position:absolute;top:10px;right:10px;accent-color:var(--accent);cursor:pointer;z-index:2;">'+
       (n.pinned?'<div style="font-family:var(--mono);font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:6px;">&#128204; Pinned</div>':'')+
+      privacyBadge+
       (n.title?'<div class="note-title">'+esc(n.title)+(n.format==='markdown'?'<span class="md-badge">MD</span>':'')+'</div>':(!n.title && n.format==='markdown'?'<div style="margin-bottom:4px;"><span class="md-badge">MD</span></div>':''))+
-      '<div class="note-preview'+(n.format==='markdown'?' md':'')+'">'+(n.format==='markdown'?renderMd(n.content):esc(n.content))+'</div>'+
+      preview+
       tagsHtml+
       '<div class="note-date">'+new Date(n.updated_at).toLocaleDateString()+
       (n.reminder_at?' &bull; Reminder: '+new Date(n.reminder_at).toLocaleString():'')+
@@ -164,6 +182,7 @@ function openNote() {
   document.getElementById('n-color').value = 'default';
   document.getElementById('n-reminder').value = '';
   document.getElementById('n-pinned').checked = false;
+  document.getElementById('n-sensitivity').value = 'normal';
   document.getElementById('n-markdown').checked = false;
   document.getElementById('n-preview-btn').style.display = 'none';
   document.getElementById('n-md-preview').style.display = 'none';
@@ -183,6 +202,7 @@ async function openEditNote(id) {
   document.getElementById('n-color').value = n.color||'default';
   document.getElementById('n-reminder').value = toLocalDatetimeInput(n.reminder_at);
   document.getElementById('n-pinned').checked = n.pinned;
+  document.getElementById('n-sensitivity').value = n.sensitivity || 'normal';
   document.getElementById('n-markdown').checked = n.format === 'markdown';
   document.getElementById('n-preview-btn').style.display = n.format === 'markdown' ? 'inline-flex' : 'none';
   document.getElementById('n-preview-btn').textContent = 'Preview';
@@ -203,6 +223,7 @@ async function saveNote() {
     reminder_at: document.getElementById('n-reminder').value ? new Date(document.getElementById('n-reminder').value).toISOString() : null,
     tags: currentTags.length ? currentTags : null,
     format: document.getElementById('n-markdown').checked ? 'markdown' : 'plain',
+    sensitivity: document.getElementById('n-sensitivity').value,
   };
   if (!data.content) return alert('Content is required');
   var id = document.getElementById('n-id').value;

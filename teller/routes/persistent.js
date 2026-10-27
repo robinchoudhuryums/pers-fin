@@ -64,9 +64,28 @@ async function getPersistentConfig() {
 // back to the signed HTTP webhook below.
 let _embeddedPersistentPool = null;
 function setEmbeddedPersistentPool(p) { _embeddedPersistentPool = p; }
+function getEmbeddedPersistentPool() { return _embeddedPersistentPool; }
+
+// The absolute Perfin dashboard URL for links in emails, or null when the
+// public address isn't known — PUBLIC_URL, else Render's RENDER_EXTERNAL_URL
+// (services/hosting.js); under the shell (the embedded pool is wired) Perfin
+// lives at /perfin (cycle-7 F72).
+function perfinDashboardUrl() {
+  const base = require("../services/hosting").publicUrl();
+  if (!base) return null;
+  return base + (_embeddedPersistentPool ? "/perfin" : "") + "/dashboard";
+}
 
 // The email-bearing events all carry { subject, html_body, plain_text }.
 const EMAIL_EVENTS = new Set(["insights_generated", "weekly_summary", "daily_summary", "critical_alert"]);
+
+// Per-sistant's single-recipient rule (config.EMAIL_REGEX — it rejects a list or
+// a display form), read from its own config so the two can't disagree; the
+// same pattern if that module isn't present (a standalone Perfin never gets here).
+function recipientRegex() {
+  try { return require("../../apps/per-sistant/config").EMAIL_REGEX; }
+  catch { return /^[^\s@,;<>"'()]+@[^\s@,;<>"'()]+\.[^\s@,;<>"'()]+$/; }
+}
 
 // In-process delivery — mirrors what apps/per-sistant/routes/perfin.js does on
 // receipt of the HTTP webhook (recipient resolution + emails-table insert), but
@@ -77,8 +96,15 @@ async function deliverDigestInProcess(event, data) {
     const setR = await pp.query(
       "SELECT perfin_webhook_recipient FROM user_settings WHERE id = 1"
     ).catch(() => ({ rows: [] }));
-    const recipient = (setR.rows[0] && setR.rows[0].perfin_webhook_recipient)
-      || process.env.SMTP_FROM || process.env.SMTP_USER || null;
+    // The first VALID address in the chain (seams audit #3): it stopped at the
+    // first SET value, so a display-form SMTP_FROM ("Perfin <me@x.com>", fine as
+    // a From) turned every digest into a draft even with a valid SMTP_USER. The
+    // check is Per-sistant's own EMAIL_REGEX — the sender re-checks with it, so a
+    // looser test here reported "me@x.com>" sent and the cron then failed it.
+    const chain = [setR.rows[0] && setR.rows[0].perfin_webhook_recipient, process.env.SMTP_FROM, process.env.SMTP_USER]
+      .map((v) => (v == null ? "" : String(v).trim())).filter(Boolean);
+    const emailRe = recipientRegex();
+    const recipient = chain.find((v) => emailRe.test(v)) || chain[0] || null;
     const fallbackSubject = event === "weekly_summary"
       ? "Perfin: Your Weekly Financial Digest"
       : event === "daily_summary"
@@ -93,14 +119,18 @@ async function deliverDigestInProcess(event, data) {
     const subject = (data && data.subject) || fallbackSubject;
     const body = (data && data.plain_text) || "(no body)";
     const html = (data && data.html_body) || null;
-    if (!recipient) {
-      // No destination configured — save as a draft so the content isn't lost,
-      // matching the receiver's behavior.
+    // No destination, or one that isn't an email address: save a draft so the
+    // content isn't lost (the receiver does the same) — but report it as NOT
+    // sent (cycle-7 F79). It used to return sent: true, so the digest
+    // watermarks advanced and nothing ever reached an inbox.
+    const validRecipient = recipient && emailRe.test(recipient);
+    if (!validRecipient) {
       await pp.query(
         "INSERT INTO emails (recipient_email, subject, body, body_html, status) VALUES ($1, $2, $3, $4, 'draft')",
-        ["unset@localhost", subject, body, html]
+        [recipient ? String(recipient).slice(0, 200) : "unset@localhost", subject, body, html]
       );
-      return { sent: true, delivery: "in_process", stored: "draft", reason: "no_recipient_configured" };
+      return { sent: false, delivery: "in_process", stored: "draft",
+        reason: recipient ? "invalid_recipient" : "no_recipient_configured" };
     }
     await pp.query(
       "INSERT INTO emails (recipient_name, recipient_email, subject, body, body_html, status, scheduled_at) VALUES ($1, $2, $3, $4, $5, 'scheduled', now())",
@@ -171,7 +201,7 @@ async function sendPerSistantWebhook(event, data) {
     console.error(
       `sendPerSistantWebhook[${event}]: webhook secret decryption failed — ` +
       "TOKEN_ENCRYPTION_PASSPHRASE no longer matches the stored ciphertext. " +
-      "Re-save the Per-sistant webhook secret under Settings → Per-sistant integration."
+      "Re-save it with PATCH /api/settings { persistent_webhook_secret } (there is no Settings section for it)."
     );
     return { sent: false, reason: "decryption_failed" };
   }
@@ -184,8 +214,8 @@ async function sendPerSistantWebhook(event, data) {
   if (!config.secret) {
     console.error(
       `sendPerSistantWebhook[${event}]: refusing to send unsigned — ` +
-      "persistent_webhook_secret not configured. Set it via Settings → " +
-      "Per-sistant integration so the receiver can verify the HMAC."
+      "persistent_webhook_secret not configured. Set it with PATCH /api/settings " +
+      "{ persistent_webhook_secret } so the receiver can verify the HMAC."
     );
     return { sent: false, reason: "missing_secret" };
   }
@@ -198,8 +228,10 @@ async function sendPerSistantWebhook(event, data) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
+    // redirect:"manual" — a configured URL must not bounce the signed POST
+    // (or the probes below) to another host (F82); a 3xx reads as not-ok.
     const r = await fetch(`${config.url}/api/perfin/webhook`, {
-      method: "POST", headers, body, signal: controller.signal,
+      method: "POST", headers, body, signal: controller.signal, redirect: "manual",
     });
     clearTimeout(timeout);
     if (!r.ok) {
@@ -294,7 +326,7 @@ router.get("/api/persistent/status", async (req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const r = await fetch(`${config.url}/api/health`, { signal: controller.signal });
+    const r = await fetch(`${config.url}/api/health`, { signal: controller.signal, redirect: "manual" });
     clearTimeout(timeout);
     if (!r.ok) return res.json({ connected: false, url: config.url, status: r.status });
     const data = await r.json();
@@ -346,8 +378,8 @@ router.get("/api/persistent/productivity-context", async (req, res) => {
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     const [statsR, reviewR] = await Promise.all([
-      fetch(`${config.url}/api/stats`, { signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(`${config.url}/api/review`, { signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${config.url}/api/stats`, { signal: controller.signal, redirect: "manual" }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${config.url}/api/review`, { signal: controller.signal, redirect: "manual" }).then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     clearTimeout(timeout);
     const context = { connected: true };
@@ -451,3 +483,5 @@ module.exports = router;
 module.exports.sendCriticalAlertEmail = sendCriticalAlertEmail;
 module.exports.sendPerSistantWebhook = sendPerSistantWebhook;
 module.exports.setEmbeddedPersistentPool = setEmbeddedPersistentPool;
+module.exports.getEmbeddedPersistentPool = getEmbeddedPersistentPool;
+module.exports.perfinDashboardUrl = perfinDashboardUrl;

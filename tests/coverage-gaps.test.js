@@ -56,8 +56,10 @@ describe("Categorize budget cap enforcement", () => {
       "categorize.js should check monthly budget cap");
     assert.ok(src.includes("429"),
       "categorize.js should return 429 when budget exhausted");
-    assert.ok(src.includes("estimateCostGranular"),
-      "categorize.js should use granular cost estimation");
+    // The granular spend reader is the shared monthAiSpendCents() (AIN-10);
+    // categorize.js's own estimateCostGranular import was dead (cycle-7 F58).
+    assert.ok(src.includes("monthAiSpendCents"),
+      "categorize.js should read spend through the shared granular reader");
   });
 });
 

@@ -12,19 +12,19 @@ ${navBar("/todos")}
   <p class="subtitle">Short, medium, and long-term task management.</p>
 
   <div class="actions">
-    <button class="btn primary" id="add-task-btn">+ New Task</button>
-    <button class="btn" id="quick-add-btn">Quick Add</button>
-    <button class="btn" id="template-btn">From Template</button>
+    <button class="btn primary" id="add-task-btn">+ New task</button>
+    <button class="btn" id="quick-add-btn">Quick add</button>
+    <button class="btn" id="template-btn">From template</button>
     <button class="btn" id="select-toggle">Select</button>
   </div>
   <div id="bulk-bar" class="section" style="display:none;padding:10px 14px;margin-bottom:14px;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;">
     <span id="bulk-count" class="mono-label">0 selected</span>
     <button class="btn" id="bulk-complete-btn">Complete</button>
-    <button class="btn danger" id="bulk-delete-btn">Delete</button>
+    <button class="btn danger" data-e2e-skip id="bulk-delete-btn">Delete</button>
     <select id="bulk-priority">
       <option value="">Set Priority...</option><option value="urgent">Urgent</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
     </select>
-    <button class="btn" id="select-all-btn" style="margin-left:auto;">Select All</button>
+    <button class="btn" id="select-all-btn" style="margin-left:auto;">Select all</button>
   </div>
 
   <div class="filter-bar" style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;align-items:center;">
@@ -64,6 +64,7 @@ ${navBar("/todos")}
       <button id="modal-close-x" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;font-family:inherit;" aria-label="Close">&times;</button>
     </div>
     <input type="hidden" id="edit-id">
+    <div id="f-linked" class="linked-note" hidden></div>
     <label>Title</label>
     <input type="text" id="f-title" placeholder="What needs to be done?">
     <label>Description</label>
@@ -107,7 +108,7 @@ ${navBar("/todos")}
       </div>
     </div>
     <div id="subtasks-section" style="display:none;margin-top:14px;">
-      <label>Subtasks <button class="btn" id="ai-breakdown-btn" style="float:right;">AI Breakdown</button></label>
+      <label>Subtasks <button class="btn" id="ai-breakdown-btn" style="float:right;">AI breakdown</button></label>
       <div id="subtask-list-edit"></div>
       <div style="display:flex;gap:8px;margin-top:8px;">
         <input type="text" id="new-subtask" placeholder="Add subtask…" style="flex:1">
@@ -140,8 +141,8 @@ ${navBar("/todos")}
     <div class="modal-actions">
       <button class="btn" id="cancel-modal-btn">Cancel</button>
       <button class="btn primary" id="save-todo-btn">Save</button>
-      <button class="btn" id="save-template-btn" style="display:none;">Save as Template</button>
-      <button class="btn danger" id="delete-btn" style="display:none">Delete</button>
+      <button class="btn" id="save-template-btn" style="display:none;">Save as template</button>
+      <button class="btn danger" data-e2e-skip id="delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -167,7 +168,7 @@ ${navBar("/todos")}
     <label>What needs to be done?</label>
     <div style="display:flex;gap:8px;">
       <input type="text" id="qt-input" placeholder="Type or speak a task…" style="flex:1">
-      <button class="btn" id="qt-voice-btn" title="Voice input">&#127908;</button>
+      <button class="btn" data-e2e-skip id="qt-voice-btn" title="Voice input">&#127908;</button>
     </div>
     <div id="qt-preview" style="display:none;margin-top:14px;" class="section">
       <h2>Preview</h2>

@@ -193,6 +193,9 @@ body {
 }
 .tile h2 { margin: 0 0 6px; font-weight: 400; font-size: 18px; }
 .tile p { margin: 0; font-size: 13px; color: #8a8e99; font-weight: 300; line-height: 1.5; }
+/* Design D7: what needs a look in the app, read when the page is served. */
+.tile p.tile-status { margin-top: 12px; padding-top: 12px; border-top: 1px solid #232634;
+  color: #eaeaea; font-weight: 400; }
 
 /* Standalone-PWA notch handling (viewport-fit=cover on login + landing):
    pad the body by the safe-area insets so content clears the iPhone status

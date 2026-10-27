@@ -18,7 +18,14 @@
      page background, but anything that floats OVER content needs full
      opacity or the content bleeds through and the text is unreadable. */
   --surface-solid: #151a26;
-  --radius: 12px;
+  /* Design D6 (decision 9): the values both apps share, from design/tokens.json —
+     tests/design-tokens.test.js fails when one drifts from the spec. The status
+     colours are --green / --yellow / --red / --blue above (and in the light theme). */
+  --fs-xs: 12px; --fs-sm: 13px; --fs-base: 14px; --fs-md: 16px; --fs-lg: 20px; --fs-xl: 28px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --radius-card: 12px; --radius-control: 8px; --radius-pill: 999px;
+  --btn-h-sm: 32px; --btn-h: 40px; --btn-h-touch: 44px;
+  --radius: var(--radius-card);
   /* IF-4: tokens the views use that were never defined (no fallback, so the
      Settle Up cards lost their background/border and the feedback textarea
      was invisible). Aliases of the base palette. */
@@ -29,6 +36,10 @@
   /* IF-5: text on a solid --teal button. Black reads on the dark-theme teal
      (~5.8:1); the darker light-theme teal needs white (black was ~3.1:1). */
   --on-teal: #000;
+  /* Design D2: text on a solid --warm (gold) primary button — dark ink on both
+     themes (~9:1 on the dark-theme gold, ~5:1 on the darker light-theme gold;
+     white on the light gold was ~3.7:1). */
+  --on-warm: #1a1206;
 }
 [data-theme="light"] {
   --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
@@ -44,6 +55,7 @@
   --blue: #4a8abf; --blue-bg: rgba(74,138,191,0.1);
   --surface-solid: #fdfbf6;
   --on-teal: #fff;
+  --on-warm: #1a1206;
 }
 /* Skip-to-content link for keyboard users */
 .skip-link {
@@ -98,9 +110,16 @@ body::after {
 }
 
 /* Container & links */
-.container { max-width: 960px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+.container { max-width: 1060px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+/* Design pass D1: the container (and so the top nav inside it) is the same width on every
+   page; a page narrows its CONTENT through #main-content. A per-page .container width used
+   to squeeze the nav — on Budgets (720px) it wrapped into three rows on a desktop. */
+#main-content { display: block; max-width: 960px; margin: 0 auto; }
 a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
 a:hover { color: var(--text); }
+
+/* A dashboard widget switched off in Settings (F96, applyDashboardWidgets). */
+.widget-off { display: none !important; }
 
 /* Nav */
 .topnav { display: flex; align-items: center; justify-content: space-between;
@@ -112,16 +131,28 @@ a:hover { color: var(--text); }
 .topnav .logo .logo-icon {
   display: inline-block; width: 20px; height: 20px; flex-shrink: 0;
   background: var(--logo-glow, #c8a86c);
-  -webkit-mask: url(/logo.svg) center / contain no-repeat;
-  mask: url(/logo.svg) center / contain no-repeat;
+  /* Relative to this stylesheet (F93): a root-relative /logo.svg 404'd under
+     the shell's /perfin mount, and an unloadable mask hides the icon. */
+  -webkit-mask: url(logo.svg) center / contain no-repeat;
+  mask: url(logo.svg) center / contain no-repeat;
   mask-mode: alpha; -webkit-mask-mode: alpha;
   filter: drop-shadow(0 0 4px rgba(200,168,108,0.4));
 }
 .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
                      letter-spacing: 0.5px; }
+/* F94: between the mobile drawer (≤640px) and a full desktop width, eight
+   links + the logo, badge, cross-app icon and bell don't fit on one row and
+   the page scrolled sideways. Wrap instead: the links take their own full-width
+   row under the bar, with a tighter gap. */
+.topnav { flex-wrap: wrap; row-gap: 10px; }
+@media (min-width: 641px) and (max-width: 960px) {
+  .topnav .nav-links { order: 10; flex-basis: 100%; flex-wrap: wrap; gap: 8px 18px; }
+}
 .topnav .nav-links a { color: var(--text-muted); }
 .topnav .nav-links a:hover { color: var(--text); }
 .topnav .nav-links a.active { color: var(--warm); }
+/* Design D7: the in-season Tax link lives in the phone drawer only. */
+@media (min-width: 641px) { .topnav .nav-links .nav-tax-link { display: none; } }
 .topnav .nav-sync-badge { font-size: 11px; color: var(--text-muted); opacity: 0.75;
   padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; }
 .topnav .nav-sync-badge:empty { display: none; }
@@ -186,9 +217,9 @@ a:hover { color: var(--text); }
 @keyframes panelSlideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
 /* Ensure interactive controls hit the 44x44 CSS-px touch target on mobile */
-button, .btn, .btn-sm, select, input[type="checkbox"].toggle, .toggle, a.btn, input[type="submit"] { min-height: 40px; }
+button, .btn, .btn-sm, select, input[type="checkbox"].toggle, .toggle, a.btn, input[type="submit"] { min-height: var(--btn-h); }
 @media (max-width: 640px) {
-  button, .btn, select, input[type="submit"] { min-height: 44px; }
+  button, .btn, select, input[type="submit"] { min-height: var(--btn-h-touch); }
 }
 
 /* Headings */
@@ -225,11 +256,13 @@ h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8
   padding: 9px 18px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
   border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
   background: transparent; color: var(--text-muted); transition: all 0.2s;
-  text-transform: uppercase; font-family: inherit;
+  font-family: inherit;
 }
 .actions button:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
-.actions button.primary { border-color: var(--warm); color: var(--warm); }
-.actions button.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
+/* Design D2 (decision 10): buttons are sentence case; a primary button is
+   FILLED gold, the others outlined. */
+.actions button.primary { border-color: var(--warm); background: var(--warm); color: var(--on-warm); }
+.actions button.primary:hover:not(:disabled) { color: var(--on-warm); filter: brightness(1.08); }
 .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 .actions select { appearance: none; padding-right: 30px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23d4a574' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
@@ -260,6 +293,11 @@ select option { background: var(--surface-solid); color: var(--text); }
 .toast.success { background-image: linear-gradient(var(--green-bg), var(--green-bg)); border: 1px solid rgba(111,207,151,0.45); color: var(--green); }
 .toast.error   { background-image: linear-gradient(var(--red-bg), var(--red-bg));   border: 1px solid rgba(235,107,107,0.45); color: var(--red); }
 .toast-leaving { animation: toastOut 0.2s ease both; }
+/* A toast with an action (Undo — roadmap T2.5 U2): text, then the button. */
+.toast-action { margin-left: 12px; padding: 4px 12px;
+                border-radius: 6px; border: 1px solid currentColor;
+                background: transparent; color: inherit; font: inherit;
+                font-weight: 600; cursor: pointer; }
 @keyframes toastIn  { from { transform: translateY(var(--tdir)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 @keyframes toastOut { to { transform: translateY(var(--tdir)); opacity: 0; } }
 
@@ -297,6 +335,13 @@ tr:hover { background: var(--surface); }
 .amount { font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
 .amount.warm { color: var(--warm-glow); }
 .amount.teal { color: var(--teal); }
+/* Design D2 (decision 11) — money colours. A charge, a balance and a debt are
+   the default text colour; money coming in is green; red is kept for
+   something wrong (overdue, over budget, a balance projected below $0, an
+   overdrawn account, a debt that rose). Gold is brand only. Use these two
+   classes rather than inline colours. */
+.amt-in { color: var(--green); }
+.amt-bad { color: var(--red); }
 
 /* Loading spinner for buttons */
 .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
@@ -308,18 +353,21 @@ tr:hover { background: var(--surface); }
 
 /* Buttons */
 .btn { padding: 8px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
-  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; background: transparent;
-  color: var(--text-muted); transition: all 0.2s; text-transform: uppercase; font-family: inherit; }
+  border: 1px solid var(--border); border-radius: var(--radius-control); cursor: pointer; background: transparent;
+  color: var(--text-muted); transition: all 0.2s; font-family: inherit; }
 .btn:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
-.btn.primary { border-color: var(--warm); color: var(--warm); }
-.btn.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
+.btn.primary { border-color: var(--warm); background: var(--warm); color: var(--on-warm); }
+.btn.primary:hover:not(:disabled) { color: var(--on-warm); filter: brightness(1.08); }
+.btn:disabled, .btn-sm:disabled, .actions button:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.danger { border-color: rgba(235,107,107,0.25); color: var(--red); }
 .btn.danger:hover { background: var(--red-bg); }
 .btn-sm { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
           border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
           background: transparent; color: var(--text-muted); margin-right: 4px;
-          transition: all 0.2s; text-transform: uppercase; }
+          transition: all 0.2s; font-family: inherit; }
 .btn-sm:hover { border-color: var(--border-hover); color: var(--text); }
+.btn-sm.primary { border-color: var(--warm); background: var(--warm); color: var(--on-warm); }
+.btn-sm.primary:hover:not(:disabled) { color: var(--on-warm); filter: brightness(1.08); }
 .btn-sm.cancel { border-color: rgba(235,107,107,0.25); color: var(--red); }
 .btn-sm.cancel:hover { background: var(--red-bg); }
 .btn-sm.restore { border-color: rgba(111,207,151,0.25); color: var(--green); }
@@ -327,6 +375,12 @@ tr:hover { background: var(--surface); }
 
 /* Empty state */
 .empty-msg { text-align: center; padding: 40px; color: var(--text-muted); font-weight: 300; font-size: 14px; }
+/* Design D2 (decision 12): emptyState() — a title, a line and one action. */
+.empty-state { text-align: center; padding: 28px 16px; color: var(--text-muted); }
+.empty-state-title { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 4px; }
+.empty-state-text { font-size: 13px; font-weight: 300; line-height: 1.5; }
+.empty-state-action { display: inline-block; margin-top: 12px; text-decoration: none; }
+td .empty-state, td.empty .empty-state { padding: 20px 8px; }
 
 /* Toggles */
 .toggle { position: relative; width: 44px; height: 24px; cursor: pointer; display: inline-block; }

@@ -63,7 +63,9 @@
 
         tbody.innerHTML = data.transactions.map(function(t) {
           var amt = parseFloat(t.amount);
-          var amtClass = amt > 0 ? 'debit' : 'credit';
+          // Design D2 (decision 11): a charge is the default colour; money in
+          // (a credit — refund, deposit) is green and signed "+".
+          var amtIn = amt < 0;
           var reimbursedBadge = t.is_reimbursed ? ' <span style="font-size:10px;color:var(--teal);border:1px solid var(--teal);padding:1px 4px;border-radius:4px;">REIMBURSED</span>' : '';
           // Shared-card per-transaction settlement override. Only meaningful on
           // is_shared accounts — on a normal account, personal_for has no
@@ -78,7 +80,7 @@
             '<td data-label="Date">' + fmtDate(t.date) + '</td>' +
             '<td class="cell-primary">' + esc(t.merchant) + reimbursedBadge + personalBadge + '</td>' +
             '<td data-label="Category"><span class="txn-cat">' + esc(t.category || 'Uncategorized') + '</span></td>' +
-            '<td class="amount ' + amtClass + '" data-label="Amount">' + fmt(Math.abs(amt)) + '</td>' +
+            '<td class="amount' + (amtIn ? ' amt-in' : '') + '" data-label="Amount">' + (amtIn ? '+' : '') + fmt(Math.abs(amt)) + '</td>' +
             '<td data-label="Account" style="font-size:11px;color:var(--text-muted);">' + esc(t.account_name || '') + '</td>' +
             '<td class="row-actions cell-actions">' +
               '<button class="btn-xs" data-action="edit" data-id="' + esc(t.transaction_id) + '" data-merchant="' + esc(t.merchant || '') + '" data-notes="' + esc(t.user_notes || '') + '" data-reimbursed="' + (t.is_reimbursed ? '1' : '0') + '" data-category="' + esc(t.category || '') + '" data-shared="' + (t.account_is_shared ? '1' : '0') + '" data-personal="' + esc(t.personal_for || '') + '">Edit</button>' +
@@ -147,21 +149,29 @@
               '</div>' +
             '</div>' +
             '<div style="display:flex;gap:6px;">' +
-              '<button class="btn btn-sm" data-action="delete-dup" data-id="' + esc(d.id1) + '" title="Keep second, delete first">Delete #1</button>' +
-              '<button class="btn btn-sm" data-action="delete-dup" data-id="' + esc(d.id2) + '" title="Keep first, delete second">Delete #2</button>' +
+              '<button class="btn btn-sm" data-action="delete-dup" data-e2e-skip data-id="' + esc(d.id1) + '" title="Keep second, delete first">Delete #1</button>' +
+              '<button class="btn btn-sm" data-action="delete-dup" data-e2e-skip data-id="' + esc(d.id2) + '" title="Keep first, delete second">Delete #2</button>' +
             '</div>' +
           '</div>';
         }).join('');
       } catch (e) { /* non-critical */ }
     }
 
+    // The delete keeps a snapshot (roadmap T2.5 U1), so its toast offers Undo:
+    // restoreTransaction (perfin-shared.js) POSTs the restore and toasts the
+    // outcome; the lists reload only once it succeeded (U2).
+    function reloadAfterDelete() { loadDuplicates(); searchTransactions(currentOffset); }
+    async function undoDelete(txnId) {
+      if (await restoreTransaction(txnId)) reloadAfterDelete();
+    }
     async function deleteDuplicate(txnId) {
       if (!confirm('Delete this duplicate transaction?')) return;
       try {
         var res = await apiFetch('/api/transactions/' + encodeURIComponent(txnId), { method: 'DELETE' });
-        if (res.ok) { showMsg('Transaction deleted.', true); loadDuplicates(); searchTransactions(currentOffset); }
-        else showMsg('Failed to delete.', false);
-      } catch (e) { showMsg(e.message, false); }
+        if (!(await writeOk(res, 'Delete'))) return;
+        showMsg('Transaction deleted.', true, { action: { label: 'Undo', run: function() { undoDelete(txnId); } } });
+        reloadAfterDelete();
+      } catch (e) { showMsg("Couldn't delete the transaction — check your connection.", false); }
     }
 
     // Event bindings
@@ -218,14 +228,18 @@
     }
 
     async function openSplitModal(txnId, parentAmount, merchant) {
-      var existing = [];
+      // F103: if the existing splits can't be read, stop — opening an empty
+      // editor and saving it replaced the real splits with one "Other" row.
+      var existing;
       try {
         var r = await apiFetch('/api/transactions/' + encodeURIComponent(txnId) + '/splits');
-        if (r.ok) existing = (await r.json()).splits || [];
-      } catch (_) {}
+        if (!(await writeOk(r, 'Could not load this transaction\'s splits'))) return;
+        existing = (await r.json()).splits || [];
+      } catch (e) { showMsg('Could not load this transaction\'s splits: ' + e.message, false); return; }
 
+      // merchant_name rides along so a save doesn't drop it (F103).
       var rows = existing.length
-        ? existing.map(function(s) { return { amount: s.amount, category: s.category || 'Other', notes: s.notes || '' }; })
+        ? existing.map(function(s) { return { amount: s.amount, category: s.category || 'Other', notes: s.notes || '', merchant_name: s.merchant_name || null }; })
         : [{ amount: parentAmount, category: 'Other', notes: '' }];
 
       var backdrop = document.createElement('div');
@@ -305,7 +319,7 @@
           var r = await apiFetch('/api/transactions/' + encodeURIComponent(txnId) + '/splits', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ splits: rows.map(function(x) { return { amount: x.amount, category: x.category, notes: x.notes }; }) }),
+            body: JSON.stringify({ splits: rows.map(function(x) { return { amount: x.amount, category: x.category, notes: x.notes, merchant_name: x.merchant_name || null }; }) }),
           });
           var d = await r.json().catch(function() { return {}; });
           if (r.ok) { showMsg('Splits saved.', true); close(); searchTransactions(currentOffset); }
@@ -348,6 +362,15 @@
           '<h3>Edit Transaction</h3>' +
           '<div class="edit-field"><label for="edit-merchant">Merchant Name</label>' +
             '<input id="edit-merchant" value="' + esc(currentMerchant) + '" placeholder="Override merchant name"></div>' +
+          // F55 / ST2: a rename rule instead of a one-row override.
+          '<div class="edit-field" style="display:flex;gap:8px;align-items:flex-start;">' +
+            '<input type="checkbox" id="edit-rename-all" style="width:auto;min-height:auto;margin-top:3px;">' +
+            '<label style="margin:0;font-weight:400;" for="edit-rename-all">Apply to all past and future' +
+              '<div style="font-size:11px;color:var(--text-muted);font-weight:300;margin-top:2px;">' +
+                'Rename every transaction from this merchant, now and on future syncs, so it stays one subscription.' +
+              '</div>' +
+            '</label>' +
+          '</div>' +
           '<div class="edit-field"><label for="edit-category">Category' +
             (currentCategory ? ' <span style="color:var(--text-muted);font-weight:300;">(current: ' + esc(currentCategory) + ')</span>' : '') +
             '</label>' +
@@ -401,6 +424,10 @@
         var remember = document.getElementById('edit-remember').checked;
 
         if (newMerchant !== currentMerchant) body.merchant_name = newMerchant || null;
+        var renameAll = document.getElementById('edit-rename-all').checked;
+        if (renameAll && !newMerchant) { showMsg('Enter the merchant name to apply to all.', false); return; }
+        // Re-applying the current name as a rule is allowed (it renames the siblings).
+        if (renameAll) { body.merchant_name = newMerchant; body.apply_to_all = true; }
         if (newNotes !== currentNotes) body.notes = newNotes || null;
         if (newReimbursed !== currentReimbursed) body.is_reimbursed = newReimbursed;
         if (isSharedAccount) {
@@ -425,6 +452,11 @@
               showMsg(d.error || 'Failed to update', false);
               return;
             }
+            if (body.apply_to_all) {
+              var rr = await r.json().catch(function() { return {}; });
+              if (rr.rename_rule_error) showMsg('Renamed this one, but not the rest: ' + rr.rename_rule_error, false);
+              else showMsg('Renamed ' + ((rr.renamed || 0) + 1) + ' transaction' + (rr.renamed ? 's' : '') + ' — future ones will follow.', true);
+            }
           }
           if (categoryChanged) {
             var r2 = await apiFetch('/api/transactions/' + encodeURIComponent(txnId) + '/category', {
@@ -445,12 +477,17 @@
             // just overrode it we want to build the rule off the new name
             // so the rule matches future occurrences as they'll also be
             // renamed (user_merchant_name takes precedence in the matcher).
-            try {
-              await apiFetch('/api/categorization-rules/from-transaction', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ transaction_id: txnId, category: newCategory }),
-              });
-            } catch (_) { /* non-fatal — the category already saved */ }
+            // F99: the category already saved; a rule that wasn't created (too
+            // short a merchant, server error) is reported, not swallowed.
+            var ruleRes = await apiFetch('/api/categorization-rules/from-transaction', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ transaction_id: txnId, category: newCategory }),
+            }).catch(function() { return null; });
+            if (!(await writeOk(ruleRes, 'Category updated, but not remembered'))) {
+              closeEdit();
+              searchTransactions(currentOffset);
+              return;
+            }
           }
           showMsg(
             categoryChanged && remember ? 'Updated and remembered for this merchant.'

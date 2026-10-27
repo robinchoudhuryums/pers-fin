@@ -5,7 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { getCategorySpendingForMonth, getBudgetStatus, previousMonthKey, currentMonth, todayStr } = require("../services/financial-queries");
+const { getCategorySpendingForMonth, getBudgetStatus, previousMonthKey, currentMonth, todayStr, APP_TIMEZONE } = require("../services/financial-queries");
 const { MODEL_MAP } = require("../data/reference-data");
 
 let Anthropic;
@@ -46,22 +46,57 @@ router.get("/api/budgets", async (req, res) => {
   }
 });
 
+// GET /api/budgets/one-time — every one-month budget with its month, so the
+// Budgets page can link to a month other than the one being viewed. GET
+// /api/budgets lists only the budgets in effect for its month, so a one-time
+// budget set for a later month couldn't be seen or edited until that month.
+// (A separate route rather than a field on GET /api/budgets, whose array
+// response the dashboard, the Ask tool's tests and the contract suite read.)
+router.get("/api/budgets/one-time", async (_req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, category, monthly_limit, effective_month FROM budgets
+        WHERE budget_type = 'one_time' AND effective_month IS NOT NULL
+        ORDER BY effective_month, category`
+    );
+    res.json({ budgets: r.rows });
+  } catch (err) {
+    console.error("GET /api/budgets/one-time failed:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // POST /api/budgets — create or update a budget
 router.post("/api/budgets", async (req, res) => {
   const { category, monthly_limit, notes, rollover_enabled, budget_type, effective_month } = req.body;
   if (!category || monthly_limit == null) return res.status(400).json({ error: "category and monthly_limit are required" });
   const parsedLimit = parseFloat(monthly_limit);
   if (isNaN(parsedLimit) || parsedLimit < 0) return res.status(400).json({ error: "monthly_limit must be a non-negative number" });
-  const validTypes = ["recurring", "one_time"];
-  const type = validTypes.includes(budget_type) ? budget_type : "recurring";
+  if (budget_type !== undefined && budget_type !== null && !["recurring", "one_time"].includes(budget_type)) {
+    return res.status(400).json({ error: "budget_type must be 'recurring' or 'one_time'" });
+  }
+  if (effective_month !== undefined && effective_month !== null && effective_month !== "" && !MONTH_KEY_RE.test(String(effective_month))) {
+    return res.status(400).json({ error: "effective_month must be 'YYYY-MM' with month 01-12" });
+  }
+  // F39: a field the request leaves out keeps the existing budget's value. The
+  // upsert used to write rollover_enabled = false / budget_type = 'recurring' /
+  // notes = NULL whenever the Add form re-saved a category, silently switching
+  // its rollover off. A NULL parameter here means "not sent".
+  const type = budget_type == null ? null : budget_type;
+  const month = type === "one_time" ? (effective_month || currentMonthKey()) : null;
   try {
     const result = await pool.query(
       `INSERT INTO budgets (category, monthly_limit, notes, rollover_enabled, budget_type, effective_month)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (category) DO UPDATE SET monthly_limit = $2, notes = $3, is_ai_suggested = false,
-         rollover_enabled = $4, budget_type = $5, effective_month = $6, updated_at = now()
+       VALUES ($1, $2, $3, COALESCE($4::boolean, false), COALESCE($5::text, 'recurring'), $6)
+       ON CONFLICT (category) DO UPDATE SET monthly_limit = $2,
+         notes = COALESCE($3, budgets.notes), is_ai_suggested = false,
+         rollover_enabled = COALESCE($4::boolean, budgets.rollover_enabled),
+         budget_type = COALESCE($5::text, budgets.budget_type),
+         effective_month = CASE WHEN $5::text IS NULL THEN budgets.effective_month ELSE $6 END,
+         updated_at = now()
        RETURNING *`,
-      [category, parsedLimit, notes || null, !!rollover_enabled, type, type === "one_time" ? (effective_month || currentMonthKey()) : null]
+      [category, parsedLimit, notes == null || notes === "" ? null : notes,
+        rollover_enabled == null ? null : !!rollover_enabled, type, month]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -193,7 +228,9 @@ router.post("/api/budgets/suggest", async (_req, res) => {
               type: "object",
               additionalProperties: false,
               properties: {
-                category: { type: "string" },
+                // Only the categories we sent (cycle-7 F70 — a free string let
+                // the model invent "Dining Out" or repeat a category).
+                category: { type: "string", enum: Object.keys(categories) },
                 monthly_limit: { type: "number" },
                 notes: { type: "string" },
               },
@@ -243,9 +280,14 @@ router.post("/api/budgets/suggest", async (_req, res) => {
       console.error("Budget AI did not return expected tool_use block");
       return res.status(500).json({ error: "AI returned unexpected format" });
     }
+    const seen = new Set();
     let suggestions = toolBlock.input.suggestions.filter(s =>
       s && typeof s.category === "string" && typeof s.monthly_limit === "number"
       && s.monthly_limit >= 0 && s.monthly_limit <= 100000 && isFinite(s.monthly_limit)
+      // A real spending category, once (F70 — a repeated category made
+      // Accept 500).
+      && Object.prototype.hasOwnProperty.call(categories, s.category)
+      && !seen.has(s.category) && seen.add(s.category)
     );
 
     res.json({ suggestions, tokens_used: (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0) });
@@ -266,11 +308,18 @@ router.post("/api/budgets/accept", async (req, res) => {
     // non-negative, bounded — so a tampered/malformed array can't persist a
     // negative/NaN/absurd limit that yields a negative effective_limit and
     // nonsensical alert math downstream (F21).
-    const valid = budgets.filter(b => {
-      if (!b.category || b.monthly_limit == null) return false;
+    const filtered = budgets.filter(b => {
+      if (!b || typeof b.category !== "string" || !b.category.trim() || b.monthly_limit == null) return false;
       const n = parseFloat(b.monthly_limit);
       return Number.isFinite(n) && n >= 0 && n <= 100000;
     });
+    // One row per category (cycle-7 F70): the same category twice in one
+    // INSERT … ON CONFLICT DO UPDATE is a Postgres error ("cannot affect row a
+    // second time"), so a duplicate used to 500 the whole accept. The last
+    // entry for a category wins.
+    const byCategory = new Map();
+    for (const b of filtered) byCategory.set(b.category.trim(), { ...b, category: b.category.trim() });
+    const valid = [...byCategory.values()];
     if (valid.length === 0) return res.status(400).json({ error: "No valid budgets in array" });
 
     // Build batch upsert
@@ -395,6 +444,18 @@ router.post("/api/budgets/snapshot", async (req, res) => {
   }
 });
 
+// The APP_TIMEZONE 'YYYY-MM' of a timestamp (null when absent/invalid).
+function monthOf(ts) {
+  if (!ts) return null;
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: APP_TIMEZONE, year: "numeric", month: "2-digit" }).format(d).slice(0, 7);
+  } catch {
+    return d.toISOString().slice(0, 7); // invalid APP_TIMEZONE → UTC, like todayStr
+  }
+}
+
 // Snapshot a month's spending + rollover for every budget. `overwrite` = DO
 // UPDATE (refresh) vs DO NOTHING (create-if-missing). Returns rows written.
 async function writeBudgetSnapshot(db, month, { overwrite }) {
@@ -407,6 +468,13 @@ async function writeBudgetSnapshot(db, month, { overwrite }) {
   for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
   let written = 0;
   for (const b of budgets.rows) {
+    // F38: only months the budget was in effect — a one-time budget's own
+    // effective_month (getBudgetStatus's rule), and nothing before the month
+    // the budget was created. A budget made on Oct 3 used to get a September
+    // snapshot carrying its whole limit as "unused", inflating October.
+    if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== month) continue;
+    const createdMonth = monthOf(b.created_at);
+    if (createdMonth && createdMonth > month) continue;
     const spent = spendMap[b.category] || 0;
     const limit = parseFloat(b.monthly_limit);
     const rollover = b.rollover_enabled ? Math.max(0, limit - spent) : 0;

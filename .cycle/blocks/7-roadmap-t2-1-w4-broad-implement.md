@@ -1,0 +1,41 @@
+---BROAD SCAN IMPLEMENTATION SUMMARY---
+Findings implemented: None (roadmap work, not scan findings)
+New capabilities (G/ST): Roadmap T2.1 (Plaid and Teller webhooks), batch W4 of W1–W6 (.cycle/plan-t2-1-webhooks.md) —
+  W4 Plaid item events (re-auth signal set / cleared, new-account notification, holdings + investment-transaction syncs for one Item) and webhook registration (link tokens, a register endpoint, the URL stored per Item). Docs folded in.
+Files modified: teller/routes/plaid-webhook-events.js, teller/routes/investments.js, teller/routes/investment-performance.js, teller/services/webhook-verify.js, teller/services/hosting.js, teller/services/database.js, tests/roadmap-t2-webhooks-w4.test.js (new), tests/contract/webhooks-w4.contract.test.js (new), tests/roadmap-t2-webhooks-w2.test.js, tests/roadmap-t2-webhooks-w3.test.js, CLAUDE.md, README.md, .cycle/plan-t2-1-webhooks.md, .cycle/STATE.md
+
+CHANGES:
+W4 | teller/routes/plaid-webhook-events.js | findItem(item_id): GOOD plaid_items row (txn) + plaid_investment_items row (inv) in one UNION. ITEM: ERROR with a re-auth code (isReauthErrorCode) → setPlaidItemErrorCode(id, code); PENDING_EXPIRATION / PENDING_DISCONNECT / USER_PERMISSION_REVOKED → set to themselves; LOGIN_REPAIRED → clear; NEW_ACCOUNTS_AVAILABLE → one "New bank account available … Add accounts" notification (tag plaid-new-accounts-<kind>-<id>, /accounts, skipped when sentRecently 24h); an outage ERROR, other ITEM codes and an investments-only Item's re-auth events → 'ignored'. HOLDINGS / DEFAULT_UPDATE → syncAllPlaidHoldings({ itemId }); INVESTMENTS_TRANSACTIONS / DEFAULT_UPDATE | HISTORICAL_UPDATE → syncAllPlaidInvestmentFlows({ itemId }); a failed or partly failed sync throws ('failed'); an unknown item → 'ignored'. W3's SYNC_UPDATES_AVAILABLE path unchanged apart from the shared lookup. All deps injectable
+W4 | teller/routes/investments.js | plaidWebhookUrl(req) (hosting.webhookBaseUrl + /perfin when embedded + /api/webhooks/plaid, null without PUBLIC_URL); webhookParam spread into the four linkTokenCreate calls (link-token, link-token-transactions, hosted-link, link-token-update); noteItemWebhook after the four Item upserts (both exchanges' plaid_items, both plaid_investment_items) — fail-soft, only with a URL. POST /api/plaid/webhooks/register: 501 / 400 without PUBLIC_URL; GOOD plaid_items + investments-only registry rows (perfin_try_decrypt), itemWebhookUpdate each, webhook_url recorded on success (a combined Item's registry row too), errors carry the Plaid error CODE only, an undecryptable token is decryption_failed and never sent. PLAID_ADVANCE_WARNINGS + setPlaidItemErrorCode(id, null, { keepWarnings }) (`<> ALL($2)`), used by syncOnePlaidItem; update-complete / exchanges / LOGIN_REPAIRED still clear everything. reauthNotice(code): per-code title / body (expires soon / access revoked / sign in again). Exports setPlaidItemErrorCode, isReauthErrorCode, PLAID_ADVANCE_WARNINGS, plaidWebhookUrl
+W4 | teller/routes/investment-performance.js | syncAllPlaidInvestmentFlows({ itemId = null }) — `WHERE ($2::text IS NULL OR item_id = $2::text)`; existing callers pass nothing
+W4 | teller/services/webhook-verify.js | Plaid event gains error_code (body.error.error_code, clipped) — nothing else of the error object
+W4 | teller/services/hosting.js | webhookBaseUrl(env): PUBLIC_URL only, never RENDER_EXTERNAL_URL (the opt-in, plan decision 1)
+W4 | teller/services/database.js | plaid_items.webhook_url, plaid_investment_items.webhook_url (TEXT)
+Tests | tests/roadmap-t2-webhooks-w4.test.js (17), tests/contract/webhooks-w4.contract.test.js (5), tests/roadmap-t2-webhooks-w2.test.js, tests/roadmap-t2-webhooks-w3.test.js | Unit: every ITEM path incl. ignored ones, the lookup SQL, NEW_ACCOUNTS dedupe + tags, investment syncs and their failures; keepWarnings SQL + params, the sync path pinned to keepWarnings and update-complete to a full clear, the notification text per code; the verifier's error_code with a locally signed JWT; webhookBaseUrl / plaidWebhookUrl, all four link tokens with and without PUBLIC_URL, the exchanges' recording pinned, the register route (400, 501, per-item update, recorded rows, codes only, decryption failure not sent, the union SQL); the flow filter's params. Contract (real engine, signed events): outage ERROR ignored, re-auth ERROR sets the code with ONE notification across two deliveries, PENDING_EXPIRATION kept through a clean webhook sync then cleared by LOGIN_REPAIRED, NEW_ACCOUNTS_AVAILABLE logged once, HOLDINGS writing an investments-only Item's account + holding, register 400 then webhook_url on all three Items. W2/W3 tests updated for the event's error_code and the new lookup shape
+Docs | CLAUDE.md, README.md | Architecture (webhook-verify error_code, hosting.webhookBaseUrl, webhooks.js W1–W4, plaid-webhook-events.js, investments registration + advance warnings, flows itemId), the register endpoint + the Plaid webhook note, PUBLIC_URL now opting in to Plaid webhooks, last_error_code (webhook codes, advance warnings) + webhook_url columns, counts 1980 / 99 files / Perfin 1429, contract 183 + test-file descriptions, new INV-139, Known Open Issues (W1–W4 done, operator step, W4 follow-ons)
+
+TEST RESULTS: npm test 1980/1980 (17 new); contract 183/183 (5 new); CI migration test (both apps, twice) passed on a fresh database; Playwright not re-run (no page or mount change; without PUBLIC_URL the link tokens are byte-identical to before). Mutation checks: clearing advance warnings on a clean sync, taking the URL from publicUrl() (RENDER_EXTERNAL_URL), or dropping the NEW_ACCOUNTS dedupe each turn tests red.
+REGRESSION RISKS:
+- Setting PUBLIC_URL (e.g. on the planned VPS) now also puts `webhook` on every new link token, including update mode. Plaid accepts the field on link/token/create; whether update mode applies it to the Item wasn't confirmable offline — if Plaid rejected it, Re-authenticate would fail while PUBLIC_URL is set (visible immediately as a 500 from link-token-update).
+- A PENDING_* code now persists across clean syncs, so the Accounts page / Sync Health keep saying "needs re-authentication" until the user re-authenticates (intended) — data-health's wording doesn't distinguish "expires soon".
+- syncAllPlaidInvestmentFlows' items query gained a second parameter; a test double matching the old param list would need updating (none did).
+- With webhooks on, a HOLDINGS event can run a holdings sync concurrently with a scheduled one for the same Item (both upsert; writePlaidHoldings prunes per returned account — the same data either way).
+INVARIANTS AT RISK: None. INV-22 (register reads tokens with perfin_try_decrypt), INV-103 (no response body logged — errors log the Plaid error code), INV-131 (one notification per transition — webhook codes go through setPlaidItemErrorCode), INV-87 (holdings via writePlaidHoldings), INV-19, INV-138, new INV-139.
+NET SCORE: 0 production fixes − 0 new failure modes = 0 (new capability; switched on by PUBLIC_URL + one registration call)
+
+OPERATOR ACTIONS / DEPLOY:
+- To switch Plaid webhooks on: set PUBLIC_URL to the app's public https address, then call POST /perfin/api/plaid/webhooks/register once (W6 adds a button) — optional, the daily sync remains the backstop | BLOCKS DEPLOY: N
+Deploy: Bank Sync & Ingestion / Platform — Render auto-deploys on push to `main` (PR robinchoudhuryums/pers-fin#133).
+
+(Not complete in production until blocking operator actions are done AND
+the deploy step is confirmed.)
+
+FOLLOW-ON ITEMS:
+- Investments-only Items have no last_error_code, so their ITEM re-auth events are 'ignored' (no visible signal); a column or a deduped notification would cover them.
+- Confirm against Plaid's docs that update mode repairs USER_PERMISSION_REVOKED (the notification also suggests unlink + link) and that link/token/create in update mode accepts / applies `webhook`.
+- data-health's re-auth issue reads "need re-authentication" for an advance warning too — W6 could word PENDING_* as "expires soon".
+- A HOLDINGS webhook's holdings sync isn't serialized with a scheduled one.
+
+DOCUMENTATION UPDATES NEEDED:
+- None beyond this batch (docs folded in).
+---END BROAD SCAN IMPLEMENTATION SUMMARY---

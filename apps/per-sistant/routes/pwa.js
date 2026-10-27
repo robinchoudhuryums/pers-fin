@@ -58,7 +58,7 @@ module.exports = function ({}) {
     // the empty-string standalone case or the "/per-sistant" mounted case.
     res.type("application/javascript").send(`
     const BASE = ${JSON.stringify(bp)};
-    const CACHE = 'per-sistant-v8';
+    const CACHE = 'per-sistant-v9'; // v9: drops any login page cached as API data (seams audit #3)
     const PAGES = [BASE+'/', BASE+'/todos', BASE+'/emails', BASE+'/notes', BASE+'/calendar', BASE+'/contacts', BASE+'/review', BASE+'/analytics', BASE+'/settings'];
     const OFFLINE_KEY = 'per-sistant-offline-queue';
     // PB-17: never cache secret-tier answers (Cache Storage persists them on
@@ -98,7 +98,10 @@ module.exports = function ({}) {
           if (pathHas(url.pathname, NO_CACHE)) return; // straight to network, never stored
           e.respondWith(
             fetch(e.request).then(r => {
-              if (r.ok) {
+              // Never a redirected response (seams audit #3, Perfin F107 parity):
+              // after a session expiry the shell answers /api GETs with a redirect
+              // to /login, and that login page was cached as this API's data.
+              if (r.ok && !r.redirected) {
                 const rc = r.clone();
                 caches.open(CACHE).then(cache => cache.put(e.request, rc));
               }
