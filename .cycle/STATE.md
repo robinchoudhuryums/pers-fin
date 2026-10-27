@@ -18,6 +18,15 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A1 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a1-broad-implement.md`.
+  - **Shipped:** `teller/services/advice.js` — getAdviceInputs (seven fail-soft reads), the pure buildAdvicePlan
+    (steps, carried-balance detection, avalanche + snowball line, surplus gate, cash-floor cap, per paycheck) and
+    getAdvicePlan; no caller yet. Thresholds as the plan proposed (none changed by the user).
+  - **Verified:** npm test 2750/2750 (38 new); contract 274/274 (2 new); mutation 5/5.
+  - **Decisions to confirm at A2:** a minimum-sized last payment stands in for "paid less than the statement";
+    loans ≥ 8% join the high step; the cash cap only on money leaving cash; minimums off the surplus first.
+  - **Where I left off:** A1 committed and pushed. Next: `/sync-docs`, then `/broad-implement A2`
+    (GET /api/advice, the "Your plan" card, Ask's get_cash_plan).
 - **Status:** **Cycle 8 broad scan — Batch 8 DONE — every fix batch is done** (2026-10-27, branch
   `claude/optimistic-edison-vzuc0o`). Block: `.cycle/blocks/8-batch8-broad-implement.md`.
   - **Shipped (Batch 8 — platform hygiene):** F31 IN-list CHECKs kept in step with the code on an existing
