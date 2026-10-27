@@ -3904,7 +3904,7 @@ payment are manual fields on the dashboard loan card (`PATCH /api/accounts/:id
    `PERSISTENT_DATABASE_URL`) plus the existing Perfin/Per-sistant ones
    (see Environment Variables below)
 6. Access at `https://pers-fin-tracker.onrender.com` — lands on the PIN
-   page, then the tile picker
+   page, then Per-sistant (the tile picker, with a status line per tile, is at `/`)
 
 ### Fly.io (~$2/mo)
 ```bash
@@ -3922,7 +3922,7 @@ fly deploy
 ```bash
 npm install            # walks all three workspaces
 npm start              # boots the unified shell (node shell/index.js)
-# Open http://localhost:3000 → PIN → tile picker → either app
+# Open http://localhost:3000 → PIN → Per-sistant (the tile picker is at /)
 
 # Standalone debug (skip the shell entirely):
 npm run start:perfin       # node teller/server.js

@@ -5,7 +5,7 @@ Single Node process that hosts two related personal tools behind one PIN gate:
 - **Perfin** — finance tracker. Detects recurring charges, compares spending to benchmarks, tracks financial goals, runs AI-powered insights via Claude. Uses **Teller API** for bank links via mTLS, plus Plaid for investment holdings + transaction syncing for banks Teller doesn't cover.
 - **Per-sistant** — personal assistant. Tasks, scheduled emails, notes, calendar, an AI daily briefing, and a personal **Knowledge base** — RAG over an Obsidian vault with cited Q&A, structured facts, and a never-sent-to-AI secret tier.
 
-A small **shell** authenticates the user with a unified PIN, renders a tile picker, then routes traffic to whichever sub-app is selected. Both sub-apps mount under their own URL prefix (`/perfin` and `/per-sistant`) and continue to keep their own databases, routes, and migrations.
+A small **shell** authenticates the user with a unified PIN (a successful login lands in Per-sistant), serves a tile picker at `/` — the home-screen app's start page, with a status line per tile — and routes traffic to each sub-app. Both sub-apps mount under their own URL prefix (`/perfin` and `/per-sistant`) and continue to keep their own databases, routes, and migrations.
 
 ## Architecture
 
@@ -41,10 +41,11 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | Path | Description |
 |------|-------------|
 | `shell/index.js` | Unified PIN gate, landing tile picker, sub-app mounts |
+| `shell/landing-status.js` | The landing tiles' status lines — Perfin's from its dashboard summary, Per-sistant's from its task counts; read in-process, 1.5s each, left out when slow |
 | `shell/middleware/auth.js` | HMAC-signed cookie session (SHELL_PIN + SHELL_SECRET), global PIN-failure lockout, return_to carry-through |
 | `shell/middleware/error-handler.js` | Last-resort error handler — status + short message, never a stack trace |
 | `shell/views/login.ejs` | PIN entry screen |
-| `shell/views/landing.ejs` | Post-login tile picker |
+| `shell/views/landing.ejs` | Tile picker at `/` (the home-screen app's start page), one status line per tile |
 | `shell/public/manifest.json` | Unified PWA manifest (mask-crop PNG icons) |
 | `shell/public/landing.css` | Shell-only styles (login + landing tiles) |
 | `shell/public/transition.css` | Cosmic mask-reveal transition (Per-sistant entry) |
@@ -124,7 +125,7 @@ No manual SQL execution needed.
 ```bash
 npm install        # walks all three workspaces (shell, teller, apps/per-sistant)
 npm start          # boots the unified shell (node shell/index.js)
-# Open http://localhost:3000 → PIN screen → tile picker → either app
+# Open http://localhost:3000 → PIN screen → Per-sistant (the tile picker is at /)
 ```
 
 Standalone mode for local debugging:
