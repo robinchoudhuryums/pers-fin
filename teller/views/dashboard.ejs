@@ -1613,6 +1613,10 @@
       html += adviceList([p.idle_cash && p.idle_cash.text].concat(rb ? adviceTexts(rb.moves).concat([rb.note]) : []));
       // Roadmap T4.1 A8: what an extra $100 a month does to each loan.
       html += adviceList(adviceTexts(p.loan_extra));
+      // Roadmap T4.1 A9: sinking funds, overlapping subscriptions and unused memberships.
+      var sf = p.sinking_funds && p.sinking_funds.text ? p.sinking_funds : null;
+      var sr = p.subscription_review || {};
+      html += adviceList((sf ? [sf.text].concat(adviceTexts(sf.bills)) : []).concat(adviceTexts(sr.overlaps), adviceTexts(sr.unused)));
       html += adviceList([p.allocation && p.allocation.snowball && p.allocation.snowball.text]
         .concat((p.debts || []).map(function (d) { return d.utilization_tip && d.utilization_tip.text; })));
       html += adviceList(p.notes);

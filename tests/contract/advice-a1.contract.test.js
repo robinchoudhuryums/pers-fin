@@ -285,4 +285,40 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     const res = await supertest(perfinApp()).get("/api/advice").expect(200);
     assert.deepEqual(res.body.loan_extra, JSON.parse(JSON.stringify(plan.loan_extra)));
   });
+
+  it("A9: sinking funds from a yearly subscription and a quarterly manual bill, an overlap, and an unused membership, from real rows", async () => {
+    const { addDaysStr, seriesOccurrences, manualBillOccurrences } = require("../../teller/services/cadence");
+    const daysAgo = (n) => addDaysStr(today, -n), inDays = (n) => addDaysStr(today, n);
+    const sub = (key, name, amount, cad, last, next, extra = "") => q(
+      `INSERT INTO detected_subscriptions (merchant_key, display_name, amount, cadence_days, first_seen, last_charged, next_expected, is_active${extra ? ", " + extra : ""})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,true${extra ? ", " + (extra === "cancelled_at" ? "now()" : "true") : ""})`,
+      [key, name, amount, cad, daysAgo(400), last, next]);
+    await sub("insurer", "Car Insurance", 450, 90, daysAgo(30), inDays(60));
+    await sub("netflix", "Netflix", 15.49, 30, daysAgo(10), inDays(20));
+    await sub("hulu", "Hulu", 7.99, 30, daysAgo(10), inDays(20));
+    await sub("disney", "Disney+", 13.99, 30, daysAgo(10), inDays(20), "cancelled_at"); // cancelled — left out
+    await sub("prime", "Amazon Prime", 139, 365, daysAgo(100), inDays(265));
+    await sub("costco", "Costco Membership", 65, 365, daysAgo(200), inDays(165));
+    await q(`INSERT INTO manual_bills (name, amount, due_day, cadence, category, created_at) VALUES ('Water', 180, 20, 'quarterly', 'utility', $1::date)`, [daysAgo(50)]);
+    await q(`INSERT INTO manual_bills (name, amount, due_day, cadence, category) VALUES ('Gym', 400, 5, 'monthly', 'bill')`);
+    // A Costco purchase in the window (not the fee); Amazon only the fee itself.
+    await q(`INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, pending)
+             VALUES ('chk', 'costco-buy', 212.4, $1, 'COSTCO WHSE #123', 'COSTCO WHSE #123', false),
+                    ('chk', 'prime-fee', 139, $2, 'Amazon Prime', 'AMZN PRIME', false)`, [daysAgo(12), daysAgo(100)]);
+
+    const plan = await advice.getAdvicePlan(pool);
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.errors, []);
+    const byName = Object.fromEntries(plan.sinking_funds.bills.map((b) => [b.name, b]));
+    assert.deepEqual(Object.keys(byName).sort(), ["Amazon Prime", "Car Insurance", "Water"]);
+    assert.equal(byName["Car Insurance"].due, seriesOccurrences(daysAgo(30), inDays(60), 90, today, inDays(400))[0]);
+    const water = (await q("SELECT * FROM manual_bills WHERE name = 'Water'")).rows[0];
+    assert.equal(byName.Water.due, manualBillOccurrences(water, today, inDays(400))[0]);
+    assert.equal(byName.Water.per_year, 4);
+    assert.deepEqual(plan.subscription_review.overlaps.map((o) => o.services.map((x) => x.name)), [["Netflix", "Hulu"]]);
+    assert.deepEqual(plan.subscription_review.unused.map((u) => u.name), ["Amazon Prime"]);
+    const res = await supertest(perfinApp()).get("/api/advice").expect(200);
+    assert.deepEqual(res.body.sinking_funds, JSON.parse(JSON.stringify(plan.sinking_funds)));
+    assert.deepEqual(res.body.subscription_review, JSON.parse(JSON.stringify(plan.subscription_review)));
+  });
 });

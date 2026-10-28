@@ -18,8 +18,9 @@
 // is a named constant here, not a setting (decision 9). Nothing names a
 // security or a fund (decision 10). A5–A8 add the secondary advisors (the
 // emergency tracker, goal catch-up, raises / bonuses / spending creep, idle
-// cash / rebalancing, and A8's statement-date utilization tip and loan extra
-// payments), each computed here too.
+// cash / rebalancing, A8's statement-date utilization tip and loan extra
+// payments, and A9's sinking funds and subscription consolidation), each
+// computed here too.
 
 const { todayStr, previousMonthKey, incomePredicate, INCOME_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, INVESTMENT_ACCOUNT_TYPES } = require("./financial-queries");
 const { addMonthsYm, addMonthsYmd, computeLoanPayoff } = require("./projections");
@@ -81,6 +82,32 @@ const REBALANCE_MIN = 100;        // … and listed from $100
 const STATEMENT_MAX_AGE_DAYS = 62; // a last statement older than this is too stale to project the next close from
 const STATEMENT_PAID_SHARE = 0.95; // a payment after the statement under 95% of it = the balance was carried
 const LOAN_EXTRA_MONTHLY = 100;   // "an extra $100 a month on <loan>"
+// Roadmap T4.1 A9.
+const SINKING_MIN_CADENCE_DAYS = 90; // quarterly or less often
+const SINKING_MIN = 100;          // a bill of at least $100 a time …
+const SINKING_MAX = 8;            // … listed soonest first, at most 8
+const MEMBERSHIP_LOOKBACK_DAYS = 90; // a membership with no other purchase from its store this long
+const MEMBERSHIP_FEE_TOLERANCE = 0.5; // a charge within 50 cents of the fee is the fee itself
+// Services that do the same job (word-boundary keywords — INV-10). A
+// subscription in more than one of these is counted in the first.
+const OVERLAP_GROUPS = [
+  { key: "video", label: "video streaming", words: ["netflix", "hulu", "disney+", "disney plus", "hbo", "max.com", "peacock", "paramount", "apple tv", "youtube premium", "crunchyroll", "prime video", "starz", "showtime"] },
+  { key: "music", label: "music streaming", words: ["spotify", "apple music", "tidal", "deezer", "pandora", "youtube music", "amazon music", "siriusxm"] },
+  { key: "cloud", label: "cloud storage", words: ["icloud", "google one", "dropbox", "onedrive", "box.com", "backblaze"] },
+  { key: "vpn", label: "VPN", words: ["nordvpn", "expressvpn", "surfshark", "protonvpn", "private internet access", "mullvad"] },
+  { key: "passwords", label: "password manager", words: ["1password", "dashlane", "lastpass", "bitwarden", "keeper"] },
+];
+// Memberships whose perks are purchases at the same store: the membership's
+// keywords, and the store words its other purchases carry.
+const MEMBERSHIPS = [
+  { label: "Amazon", keys: ["amazon prime", "amzn prime", "prime membership"], not: ["video"], store: ["amazon", "amzn"] },
+  { label: "Costco", keys: ["costco"], not: [], store: ["costco"] },
+  { label: "Walmart", keys: ["walmart+", "walmart plus"], not: [], store: ["walmart", "wal-mart"] },
+  { label: "Instacart", keys: ["instacart"], not: [], store: ["instacart"] },
+  { label: "DoorDash", keys: ["dashpass", "doordash"], not: [], store: ["doordash"] },
+  { label: "Uber", keys: ["uber one"], not: [], store: ["uber"] },
+  { label: "Grubhub", keys: ["grubhub"], not: [], store: ["grubhub"] },
+];
 const REBALANCE_NOTE = "Directions only — pick the holdings yourself. Selling in a taxable account can create a taxable gain; new contributions can move the mix without selling.";
 
 // The plan needs these; without one it isn't worked out at all (a missing debt
@@ -99,6 +126,7 @@ const SOURCE_ERRORS = {
   categories: "Spending by category couldn't be read.",
   idle: "Your account balance history couldn't be read.",
   allocation: "Your investment allocation couldn't be read.",
+  subscriptions: "Your subscriptions and bills couldn't be read.",
 };
 const PLAN_ERROR = "Your plan couldn't be worked out — part of your data couldn't be read.";
 
@@ -188,6 +216,29 @@ const CATEGORY_MONTHS_SQL = `
   FROM net_category_months
   ORDER BY month, category`;
 
+// Roadmap T4.1 A9: active subscriptions (not cancelled or dismissed), the
+// quarterly / yearly manual bills, and 90 days of purchases at the stores a
+// membership covers (the display merchant, word boundaries — INV-10).
+const SUBSCRIPTIONS_SQL = `
+  SELECT id, display_name, amount, cadence_days, last_charged::text AS last_charged,
+         next_expected::text AS next_expected, first_seen::text AS first_seen, category
+  FROM detected_subscriptions
+  WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+  ORDER BY id`;
+const SINKING_BILLS_SQL = `
+  SELECT id, name, amount, due_day, cadence, category, created_at
+  FROM manual_bills
+  WHERE is_active = true AND cadence IN ('quarterly', 'yearly')
+  ORDER BY id`;
+const STORE_WORDS = [...new Set(MEMBERSHIPS.flatMap((m) => m.store))];
+const MEMBERSHIP_ACTIVITY_SQL = `
+  SELECT LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) AS merchant, t.amount, t.date::text AS date
+  FROM transactions t
+  WHERE t.amount > 0 AND t.pending = false
+    AND t.date >= $1::date - ${MEMBERSHIP_LOOKBACK_DAYS} AND t.date <= $1::date
+    AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~* '\\y(${STORE_WORDS.map((w) => w.replace(/[-+.]/g, "\\$&")).join("|")})\\y'
+  ORDER BY t.date`;
+
 // Whole days from a to b ('YYYY-MM-DD').
 const dayGap = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
 const money = (x) => Math.round((Number(x) || 0) * 100) / 100;
@@ -247,6 +298,16 @@ async function getAdviceInputs(pool, { today = todayStr(), deps = {} } = {}) {
         pool.query("SELECT target_allocation_pct FROM user_settings WHERE id = 1"),
       ]);
       return al.assetAllocation(holdings.rows, al.normalizeTargets(settings.rows[0] && settings.rows[0].target_allocation_pct));
+    },
+    subscriptions: async () => {
+      const [subs, bills, activity] = await Promise.all([
+        pool.query(SUBSCRIPTIONS_SQL), pool.query(SINKING_BILLS_SQL), pool.query(MEMBERSHIP_ACTIVITY_SQL, [today]),
+      ]);
+      return {
+        subs: subs.rows.map((r) => ({ ...r, amount: num(r.amount) || 0, cadence_days: num(r.cadence_days) || 0 })),
+        bills: bills.rows.map((r) => ({ ...r, amount: num(r.amount) || 0 })),
+        activity: activity.rows.map((r) => ({ merchant: r.merchant || "", amount: num(r.amount) || 0, date: String(r.date).slice(0, 10) })),
+      };
     },
     categories: async () => {
       const keys = completedMonthKeys(today, CREEP_MONTHS);
@@ -847,6 +908,94 @@ function loanExtraPayments(debts, allocationRows, today) {
   return out;
 }
 
+// Roadmap T4.1 A9: a word-boundary test of a lowercased name against a
+// keyword (a keyword ending in punctuation — "disney+" — matches as written).
+function hasWord(lower, word) {
+  const esc = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("(^|[^a-z0-9])" + esc + "($|[^a-z0-9])").test(lower);
+}
+const monthlyEquivalent = (amount, cadenceDays) => (cadenceDays > 0 ? (amount * 30) / cadenceDays : 0);
+
+// "Mar 15, 2027" for a 'YYYY-MM-DD'.
+function dateLabel(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
+}
+
+// Sinking funds: each yearly / quarterly bill of at least SINKING_MIN — a
+// detected subscription billed every 90+ days, or a manual quarterly / yearly
+// bill — with its next date by the app's own cadence rules (INV-70) and what to
+// set aside each month to have it by then (whole dollars, rounded up), then the
+// steady amount after.
+function sinkingFunds(source, today) {
+  const { seriesOccurrences, manualBillOccurrences, addDaysStr } = require("./cadence");
+  const out = [];
+  for (const sub of source.subs || []) {
+    if (!(sub.cadence_days >= SINKING_MIN_CADENCE_DAYS) || !(sub.amount >= SINKING_MIN)) continue;
+    const [due] = seriesOccurrences(sub.last_charged, sub.next_expected, sub.cadence_days, today, addDaysStr(today, 2 * sub.cadence_days + 31));
+    if (due) out.push({ kind: "subscription", id: sub.id, name: sub.display_name, amount: money(sub.amount), per_year: Math.max(1, Math.round(365 / sub.cadence_days)), due });
+  }
+  for (const bill of source.bills || []) {
+    if (!(bill.amount >= SINKING_MIN) || !["quarterly", "yearly"].includes(bill.cadence)) continue;
+    const [due] = manualBillOccurrences(bill, today, addDaysStr(today, 366));
+    if (due) out.push({ kind: "manual_bill", id: bill.id, name: bill.name, amount: money(bill.amount), per_year: bill.cadence === "quarterly" ? 4 : 1, due });
+  }
+  out.sort((x, y) => (x.due < y.due ? -1 : x.due > y.due ? 1 : y.amount - x.amount));
+  return out.slice(0, SINKING_MAX).map((b) => {
+    const months = Math.max(0, monthsUntil(today, b.due));
+    const monthly = Math.ceil(b.amount / Math.max(1, months));
+    const steady = Math.ceil((b.amount * b.per_year) / 12);
+    const cadence = b.per_year === 1 ? "a year" : `${b.per_year} times a year`;
+    const text = months <= 1
+      ? `${b.name}: ${fmt(b.amount)} (${cadence}) is due ${dateLabel(b.due)} — keep it ready, then set aside ${fmt(steady)} a month for the next one.`
+      : `${b.name}: ${fmt(b.amount)} (${cadence}) is due ${dateLabel(b.due)} — set aside ${fmt(monthly)} a month until then, then ${fmt(steady)} a month.`;
+    return { ...b, months_until: months, monthly, steady_monthly: steady, text };
+  });
+}
+
+// Subscription consolidation: services that overlap (two or more in one of
+// OVERLAP_GROUPS — "keeping one would save $X to $Y a month") and memberships
+// with no other purchase from their store in MEMBERSHIP_LOOKBACK_DAYS (only
+// once the membership is that old). Monthly amounts are Perfin's monthly
+// equivalent (amount × 30 / cadence days).
+function subscriptionReview(source, today) {
+  const { addDaysStr } = require("./cadence");
+  const subs = (source.subs || []).filter((s) => s.amount > 0 && s.cadence_days > 0)
+    .map((s) => ({ ...s, lower: String(s.display_name || "").toLowerCase(), monthly: money(monthlyEquivalent(s.amount, s.cadence_days)) }));
+  const overlaps = [];
+  const used = new Set();
+  for (const g of OVERLAP_GROUPS) {
+    const members = subs.filter((s) => !used.has(s.id) && g.words.some((w) => hasWord(s.lower, w)));
+    members.forEach((s) => used.add(s.id));
+    if (members.length < 2) continue;
+    members.sort((x, y) => y.monthly - x.monthly || (x.display_name < y.display_name ? -1 : 1));
+    const total = money(members.reduce((t, s) => t + s.monthly, 0));
+    const saveMin = money(total - members[0].monthly);
+    const saveMax = money(total - members[members.length - 1].monthly);
+    const names = members.map((s) => s.display_name);
+    const range = saveMin === saveMax ? fmt(saveMax) : `${fmt(saveMin)} to ${fmt(saveMax)}`;
+    overlaps.push({
+      group: g.key, label: g.label, services: members.map((s) => ({ id: s.id, name: s.display_name, monthly: s.monthly })),
+      total_monthly: total, save_min_monthly: saveMin, save_max_monthly: saveMax,
+      text: `You pay for ${members.length} ${g.label} services (${names.join(", ")}) — ${fmt(total)} a month. Keeping just one would save ${range} a month.`,
+    });
+  }
+  const since = addDaysStr(today, -MEMBERSHIP_LOOKBACK_DAYS);
+  const unused = [];
+  for (const s of subs) {
+    const m = MEMBERSHIPS.find((x) => x.keys.some((k) => hasWord(s.lower, k)) && !x.not.some((k) => hasWord(s.lower, k)));
+    if (!m || !s.first_seen || s.first_seen > since) continue;
+    const bought = (source.activity || []).some((t) => t.date >= since && m.store.some((w) => hasWord(t.merchant, w)) &&
+      Math.abs(t.amount - s.amount) > MEMBERSHIP_FEE_TOLERANCE);
+    if (bought) continue;
+    unused.push({
+      id: s.id, name: s.display_name, store: m.label, monthly: s.monthly, days: MEMBERSHIP_LOOKBACK_DAYS,
+      text: `${s.display_name} costs ${fmt(s.monthly)} a month, and there were no other ${m.label} purchases in the last ${MEMBERSHIP_LOOKBACK_DAYS} days — worth checking you still use it.`,
+    });
+  }
+  return { overlaps, unused, save_max_monthly: money(overlaps.reduce((t, o) => t + o.save_max_monthly, 0) + unused.reduce((t, u) => t + u.monthly, 0)) };
+}
+
 function stepTarget(stepKey, debtName) {
   switch (stepKey) {
     case "minimums": return "your minimum payments";
@@ -1127,6 +1276,20 @@ function buildAdvicePlan(inputs) {
   }
   const rebalance = inputs.allocation == null ? null : rebalanceMoves(inputs.allocation);
   const loanExtra = loanExtraPayments(all, allocation.debts, today);
+  // Roadmap T4.1 A9: sinking funds and subscription consolidation.
+  let sinking = null;
+  let subReview = null;
+  if (inputs.subscriptions != null) {
+    const bills = sinkingFunds(inputs.subscriptions, today);
+    // The steady amount: what the bills cost a month once each is caught up.
+    const total = bills.reduce((t, b) => t + b.steady_monthly, 0);
+    sinking = bills.length ? {
+      bills,
+      total_monthly: total,
+      text: `Your ${bills.length} quarterly or yearly bill${bills.length === 1 ? "" : "s"} come${bills.length === 1 ? "s" : ""} to about ${fmt(total)} a month — set that aside so each is covered when it comes due.`,
+    } : { bills: [], total_monthly: 0, text: null };
+    subReview = subscriptionReview(inputs.subscriptions, today);
+  }
 
   if (minimumsShort) {
     headline = `Your recent months don't cover your ${fmt(required)} of monthly minimum payments.`;
@@ -1181,6 +1344,8 @@ function buildAdvicePlan(inputs) {
     idle_cash: idleCash,
     rebalance,
     loan_extra: loanExtra,
+    sinking_funds: sinking,
+    subscription_review: subReview,
     notes,
   };
 }
@@ -1212,6 +1377,17 @@ module.exports = {
   rebalanceMoves,
   nextStatementDate,
   loanExtraPayments,
+  sinkingFunds,
+  subscriptionReview,
+  SUBSCRIPTIONS_SQL,
+  SINKING_BILLS_SQL,
+  MEMBERSHIP_ACTIVITY_SQL,
+  SINKING_MIN_CADENCE_DAYS,
+  SINKING_MIN,
+  SINKING_MAX,
+  MEMBERSHIP_LOOKBACK_DAYS,
+  OVERLAP_GROUPS,
+  MEMBERSHIPS,
   DEBTS_SQL,
   STATEMENT_MAX_AGE_DAYS,
   STATEMENT_PAID_SHARE,

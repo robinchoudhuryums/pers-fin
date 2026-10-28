@@ -221,6 +221,8 @@ async function toolCashPlan() {
     idle_cash: p.idle_cash,
     rebalance: p.rebalance,
     loan_extra: p.loan_extra,
+    sinking_funds: p.sinking_funds,
+    subscription_review: p.subscription_review,
     notes: p.notes,
   };
 }
@@ -244,7 +246,7 @@ const TOOLS = [
   { name: "get_subscriptions", description: "Active detected subscriptions with monthly costs.", input_schema: { type: "object", properties: {} } },
   { name: "get_budget_status", description: "This month's budgets: effective limit (base + rolled-over amount), spent, remaining and percent used — the Budgets page's numbers.", input_schema: { type: "object", properties: {} } },
   { name: "get_fire_projection", description: "FIRE number, progress, time to FIRE, and spending runway under the user's saved assumptions.", input_schema: { type: "object", properties: {} } },
-  { name: "get_cash_plan", description: "The user's plan for extra money — the dashboard's \"Your plan\": the current step (cash buffer, high-interest debt, emergency fund, medium debt, investing), the amount per paycheck, why, the per-debt payments and payoff months, the emergency fund's months covered and when it is reached, each goal's catch-up amount when it is behind its target date, a recent raise (and how much of it to put toward the plan), a recent bonus or one-off deposit split in the plan's order, categories whose spending grew faster than income, checking cash sitting idle above the plan's buffer and where to move it, rebalancing directions between asset classes when the target allocation has drifted (never a security), each card's next statement date (pay before it so the balance it reports is under 30%), what an extra $100 a month would save on each loan, and the disclaimer. Use its figures as given.", input_schema: { type: "object", properties: {} } },
+  { name: "get_cash_plan", description: "The user's plan for extra money — the dashboard's \"Your plan\": the current step (cash buffer, high-interest debt, emergency fund, medium debt, investing), the amount per paycheck, why, the per-debt payments and payoff months, the emergency fund's months covered and when it is reached, each goal's catch-up amount when it is behind its target date, a recent raise (and how much of it to put toward the plan), a recent bonus or one-off deposit split in the plan's order, categories whose spending grew faster than income, checking cash sitting idle above the plan's buffer and where to move it, rebalancing directions between asset classes when the target allocation has drifted (never a security), each card's next statement date (pay before it so the balance it reports is under 30%), what an extra $100 a month would save on each loan, what to set aside each month for quarterly / yearly bills, overlapping subscriptions and memberships with no other purchases, and the disclaimer. Use its figures as given.", input_schema: { type: "object", properties: {} } },
 ];
 
 // POST /api/ask — single-turn NL question over the user's finance data.

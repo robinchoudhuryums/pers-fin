@@ -49,7 +49,7 @@ function inputs(over = {}) {
     debts: [VISA],
     activity: [{ account_id: "c1", txns: 3, interest: true }],
     transfers: [], goals: [], deposits: [], categories: [],
-    idle: { accounts: [], investments: [], snapshots: [] }, allocation: { total_value: 0, has_targets: false, classes: [] },
+    idle: { accounts: [], investments: [], snapshots: [] }, allocation: { total_value: 0, has_targets: false, classes: [] }, subscriptions: { subs: [], bills: [], activity: [] },
     ...over,
   };
 }

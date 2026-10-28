@@ -114,6 +114,12 @@ function cashPlanPromptBlock(plan) {
   // Roadmap T4.1 A8: what an extra $100 a month does to each loan.
   const loans = (plan.loan_extra || []).filter((l) => l && l.text);
   if (loans.length) out += "Loan extra payments:\n" + loans.map((l) => "- " + sanitizeForPrompt(l.text)).join("\n") + "\n";
+  // Roadmap T4.1 A9: sinking funds for quarterly / yearly bills, and subscriptions to review.
+  const sf = plan.sinking_funds;
+  if (sf && sf.text) out += "Sinking funds (quarterly / yearly bills):\n- " + sanitizeForPrompt(sf.text) + "\n" + sf.bills.map((b) => "- " + sanitizeForPrompt(b.text)).join("\n") + "\n";
+  const sr = plan.subscription_review;
+  const review = sr ? [...(sr.overlaps || []), ...(sr.unused || [])].filter((x) => x && x.text) : [];
+  if (review.length) out += "Subscriptions to review:\n" + review.map((x) => "- " + sanitizeForPrompt(x.text)).join("\n") + "\n";
   const tips = (plan.debts || []).filter((d) => d.utilization_tip && d.utilization_tip.text).map((d) => sanitizeForPrompt(d.utilization_tip.text));
   if (tips.length) out += "Utilization tips:\n" + tips.map((t) => "- " + t).join("\n") + "\n";
   if (plan.notes && plan.notes.length) out += "Notes:\n" + plan.notes.map((n) => "- " + sanitizeForPrompt(n)).join("\n") + "\n";

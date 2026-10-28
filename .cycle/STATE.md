@@ -18,6 +18,16 @@ Updated: 2026-10-28
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A9 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a9-broad-implement.md`.
+  - **Shipped:** sinking funds (each quarterly / yearly bill of $100+ — a detected subscription billed every 90+ days or
+    a manual quarterly / yearly bill — with its next date from cadence.js, "set aside $X a month until then, then $Y",
+    and the steady total) and subscription consolidation (two or more video / music streaming, cloud storage, VPN or
+    password-manager services → "keeping just one would save $X to $Y a month"; a membership — Amazon Prime, Costco,
+    Walmart+, Instacart, DashPass, Uber One, Grubhub — with no other purchase from its store in 90 days) from one new
+    non-critical `subscriptions` source; on the card, in the cash_plan block, in Ask.
+  - **Verified:** npm test 2896/2896 (13 new); contract 281/282 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A9 committed and pushed. Next: `/sync-docs` for A9, then `/broad-implement A10`.
 - **Roadmap T4.1 A8 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a8-broad-implement.md`.
   - **Shipped:** a card's last statement balance + issue date stored from Plaid Liabilities (two linked_accounts columns);
     the 30% utilization tip names the day the next statement closes ("pay $Y before Nov 5, when its next statement

@@ -153,6 +153,7 @@ describe("T4.1 A5 — the goals source", () => {
     debts: async () => [], activity: async () => [], transfers: async () => [],
     deposits: async () => [], categories: async () => [],
     idle: async () => ({ accounts: [], investments: [], snapshots: [] }), allocation: async () => ({ total_value: 0, has_targets: false, classes: [] }),
+    subscriptions: async () => ({ subs: [], bills: [], activity: [] }),
   };
 
   it("reads active goals and measures a funding-linked one as balance − baseline (deriveGoalProgress)", async () => {

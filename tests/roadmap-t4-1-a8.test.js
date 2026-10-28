@@ -42,6 +42,7 @@ function inputs(over = {}) {
     transfers: [], goals: [], deposits: [], categories: [],
     idle: { accounts: [], investments: [], snapshots: [] },
     allocation: { total_value: 0, has_targets: false, classes: [] },
+    subscriptions: { subs: [], bills: [], activity: [] },
     ...over,
   };
 }
