@@ -1617,6 +1617,8 @@
       var sf = p.sinking_funds && p.sinking_funds.text ? p.sinking_funds : null;
       var sr = p.subscription_review || {};
       html += adviceList((sf ? [sf.text].concat(adviceTexts(sf.bills)) : []).concat(adviceTexts(sr.overlaps), adviceTexts(sr.unused)));
+      // Roadmap T4.1 A10: room under the yearly contribution limits you entered.
+      html += adviceList(adviceTexts(p.contribution_room && p.contribution_room.accounts));
       html += adviceList([p.allocation && p.allocation.snowball && p.allocation.snowball.text]
         .concat((p.debts || []).map(function (d) { return d.utilization_tip && d.utilization_tip.text; })));
       html += adviceList(p.notes);

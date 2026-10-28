@@ -19,8 +19,9 @@
 // security or a fund (decision 10). A5–A8 add the secondary advisors (the
 // emergency tracker, goal catch-up, raises / bonuses / spending creep, idle
 // cash / rebalancing, A8's statement-date utilization tip and loan extra
-// payments, and A9's sinking funds and subscription consolidation), each
-// computed here too.
+// payments, A9's sinking funds and subscription consolidation, A10's
+// contribution room), each computed here too — and A10's what-if runs this
+// same engine on changed inputs (whatIfPlan).
 
 const { todayStr, previousMonthKey, incomePredicate, INCOME_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, INVESTMENT_ACCOUNT_TYPES } = require("./financial-queries");
 const { addMonthsYm, addMonthsYmd, computeLoanPayoff } = require("./projections");
@@ -88,6 +89,9 @@ const SINKING_MIN = 100;          // a bill of at least $100 a time …
 const SINKING_MAX = 8;            // … listed soonest first, at most 8
 const MEMBERSHIP_LOOKBACK_DAYS = 90; // a membership with no other purchase from its store this long
 const MEMBERSHIP_FEE_TOLERANCE = 0.5; // a charge within 50 cents of the fee is the fee itself
+// Roadmap T4.1 A10.
+const CONTRIBUTION_LIMIT_MAX = 1000000; // a yearly limit entered by hand: 0 – $1,000,000
+const WHAT_IF_MAX = 100000;       // a what-if change: up to $100,000 a month either way
 // Services that do the same job (word-boundary keywords — INV-10). A
 // subscription in more than one of these is counted in the first.
 const OVERLAP_GROUPS = [
@@ -127,6 +131,7 @@ const SOURCE_ERRORS = {
   idle: "Your account balance history couldn't be read.",
   allocation: "Your investment allocation couldn't be read.",
   subscriptions: "Your subscriptions and bills couldn't be read.",
+  contributions: "Your investment contributions couldn't be read.",
 };
 const PLAN_ERROR = "Your plan couldn't be worked out — part of your data couldn't be read.";
 
@@ -239,6 +244,28 @@ const MEMBERSHIP_ACTIVITY_SQL = `
     AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~* '\\y(${STORE_WORDS.map((w) => w.replace(/[-+.]/g, "\\$&")).join("|")})\\y'
   ORDER BY t.date`;
 
+// Roadmap T4.1 A10: the yearly contribution limits you entered, the
+// investment accounts they can name (the GET /api/investments list — a
+// Teller-linked account by its linked_accounts id, Plaid / manual by its
+// investment_accounts id) and this calendar year's contributions recorded in
+// investment_flows. No account type is assumed: a limit applies only where
+// you set one.
+const CONTRIBUTION_ACCOUNTS_SQL = `
+  SELECT 'linked' AS source, la.id, la.name, NULL::timestamptz AS flows_synced_at, false AS plaid
+  FROM linked_accounts la
+  WHERE ${INVESTMENT_ACCOUNT_TYPES} AND la.plaid_item_id IS NULL
+  UNION ALL
+  SELECT 'investment' AS source, ia.id, ia.name, ia.flows_synced_at, ia.plaid_account_id IS NOT NULL AS plaid
+  FROM investment_accounts ia
+  WHERE ia.is_active = true
+  ORDER BY source, id`;
+const CONTRIBUTION_FLOWS_SQL = `
+  SELECT source, source_id, ROUND(SUM(amount), 2) AS contributed, COUNT(*)::int AS flows
+  FROM investment_flows
+  WHERE flow_type = 'contribution' AND flow_date >= $1::date AND flow_date <= $2::date
+  GROUP BY source, source_id
+  ORDER BY source, source_id`;
+
 // Whole days from a to b ('YYYY-MM-DD').
 const dayGap = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
 const money = (x) => Math.round((Number(x) || 0) * 100) / 100;
@@ -307,6 +334,18 @@ async function getAdviceInputs(pool, { today = todayStr(), deps = {} } = {}) {
         subs: subs.rows.map((r) => ({ ...r, amount: num(r.amount) || 0, cadence_days: num(r.cadence_days) || 0 })),
         bills: bills.rows.map((r) => ({ ...r, amount: num(r.amount) || 0 })),
         activity: activity.rows.map((r) => ({ merchant: r.merchant || "", amount: num(r.amount) || 0, date: String(r.date).slice(0, 10) })),
+      };
+    },
+    contributions: async () => {
+      const [settings, accounts, flows] = await Promise.all([
+        pool.query("SELECT contribution_limits FROM user_settings WHERE id = 1"),
+        pool.query(CONTRIBUTION_ACCOUNTS_SQL),
+        pool.query(CONTRIBUTION_FLOWS_SQL, [today.slice(0, 4) + "-01-01", today]),
+      ]);
+      return {
+        limits: normalizeLimits(settings.rows[0] && settings.rows[0].contribution_limits),
+        accounts: accounts.rows.map((r) => ({ key: `${r.source}:${r.id}`, name: r.name, plaid: !!r.plaid, flows_synced: !!r.flows_synced_at })),
+        flows: flows.rows.map((r) => ({ key: `${r.source}:${r.source_id}`, contributed: num(r.contributed) || 0, count: r.flows })),
       };
     },
     categories: async () => {
@@ -447,6 +486,9 @@ function normalizeDebts(rows, activityRows, today = todayStr()) {
       const pay = num(r.monthly_payment);
       if (pay != null && pay > 0) minimum = Math.min(pay, balance);
     }
+    // Roadmap T4.1 A10: a what-if's extra monthly payment on this debt.
+    const whatIfExtra = num(r.what_if_extra_monthly);
+    if (whatIfExtra != null && whatIfExtra > 0 && minimum != null) minimum = money(Math.min(minimum + whatIfExtra, balance));
     const limit = isCard ? cardLimit(r) : null;
     const debt = {
       id: r.id,
@@ -1021,6 +1063,65 @@ function payPeriod(streams) {
     : { unit: "month", paychecks_per_year: 12, cadence: null, source: null };
 }
 
+// Roadmap T4.1 A10: user_settings.contribution_limits → { "<source>:<id>":
+// dollars } — a JSON string parsed, a key or value that isn't valid dropped
+// (PATCH /api/settings validates the same way).
+const LIMIT_KEY_RE = /^(investment|linked):[1-9][0-9]{0,9}$/;
+function normalizeLimits(raw) {
+  let obj = raw;
+  if (typeof obj === "string") {
+    try { obj = JSON.parse(obj); } catch (err) { return {}; } // a malformed stored value reads as no limits
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const n = num(v);
+    if (LIMIT_KEY_RE.test(k) && n != null && n >= 0 && n <= CONTRIBUTION_LIMIT_MAX) out[k] = money(n);
+  }
+  return out;
+}
+
+// Paychecks (or months) left this calendar year after today.
+function periodsLeftInYear(today, ppy) {
+  const days = dayGap(today, today.slice(0, 4) + "-12-31");
+  return Math.max(1, Math.floor((days * ppy) / 365));
+}
+
+// Roadmap T4.1 A10: for each account with a yearly limit you entered, what
+// this calendar year's recorded contributions leave — and what per paycheck
+// (rounded up to the dollar) fills it by Dec 31. A limit naming an account
+// that no longer exists is left out; a $0 limit is left out.
+function contributionRoom(source, today, { unit = "month", ppy = 12, step = null } = {}) {
+  const limits = normalizeLimits(source && source.limits);
+  const accounts = new Map(((source && source.accounts) || []).map((a) => [a.key, a]));
+  const flows = new Map(((source && source.flows) || []).map((f) => [f.key, f]));
+  const periods = periodsLeftInYear(today, ppy);
+  const year = today.slice(0, 4);
+  const rows = [];
+  for (const [key, limit] of Object.entries(limits)) {
+    const acct = accounts.get(key);
+    if (!acct || !(limit > 0)) continue;
+    const f = flows.get(key);
+    const contributed = money(Math.max(0, f ? f.contributed : 0));
+    const room = money(Math.max(0, limit - contributed));
+    const perPeriod = room > 0 ? Math.ceil(room / periods) : 0;
+    // A Plaid account counts its contributions only once its flows have synced (F24).
+    const unknown = acct.plaid && !acct.flows_synced;
+    let text = `${acct.name}: ${fmt(contributed)} of your ${fmt(limit)} limit for ${year} contributed`;
+    if (room <= 0) text += " — the limit is reached.";
+    else {
+      text += ` — ${fmt(room)} of room left. ${fmt(perPeriod)} per ${unit} would fill it by Dec 31.`;
+      if (step === "invest" || step === "medium_interest_debt") text += " Your plan's investing could go here first.";
+    }
+    if (unknown) text += " Its contributions haven't synced from Plaid yet, so this may be low.";
+    else text += " Only contributions recorded as investment flows count — log any others under Investments.";
+    rows.push({ key, name: acct.name, limit, contributed, room, reached: room <= 0, per_period: perPeriod,
+      periods_left: periods, flows: f ? f.count : 0, contributions_unknown: unknown, text });
+  }
+  rows.sort((a, b) => b.room - a.room || (a.name < b.name ? -1 : 1));
+  return { year: Number(year), accounts: rows, room_total: money(rows.reduce((t, r) => t + r.room, 0)) };
+}
+
 // ---------------------------------------------------------------- the plan
 
 function buildAdvicePlan(inputs) {
@@ -1290,6 +1391,8 @@ function buildAdvicePlan(inputs) {
     } : { bills: [], total_monthly: 0, text: null };
     subReview = subscriptionReview(inputs.subscriptions, today);
   }
+  const contributions = inputs.contributions == null ? null
+    : contributionRoom(inputs.contributions, today, { unit, ppy, step: minimumsShort ? "minimums" : current.key });
 
   if (minimumsShort) {
     headline = `Your recent months don't cover your ${fmt(required)} of monthly minimum payments.`;
@@ -1346,7 +1449,135 @@ function buildAdvicePlan(inputs) {
     loan_extra: loanExtra,
     sinking_funds: sinking,
     subscription_review: subReview,
+    contribution_room: contributions,
+    what_if: inputs.what_if || null,
     notes,
+  };
+}
+
+// ---------------------------------------------------------------- what-if (A10)
+
+// The same engine on changed inputs (roadmap T4.1 A10): an income or spending
+// change a month (applied to every month the surplus reads, so the buffer and
+// the emergency target move with it) and an extra monthly payment on one
+// carried debt (its minimum raised — the surplus falls by as much). Each
+// change also moves the lowest projected cash day by that much a month until
+// it. Returns { ok, inputs, changes } or { ok: false, error }.
+function whatIfAmount(v, label, { positive = false } = {}) {
+  if ((v === undefined || v === null || v === "") && !positive) return { value: 0 };
+  const n = typeof v === "number" ? v : typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : NaN;
+  if (!Number.isFinite(n) || Math.abs(n) > WHAT_IF_MAX || (positive && n <= 0)) {
+    return { error: `${label} must be a number${positive ? " above 0" : ""} up to ${fmt(WHAT_IF_MAX)} a month.` };
+  }
+  return { value: money(n) };
+}
+
+function applyWhatIf(inputs, overrides = {}) {
+  if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return { ok: false, error: "The what-if changes must be an object." };
+  const income = whatIfAmount(overrides.income_change_monthly, "income_change_monthly");
+  if (income.error) return { ok: false, error: income.error };
+  const spending = whatIfAmount(overrides.spending_change_monthly, "spending_change_monthly");
+  if (spending.error) return { ok: false, error: spending.error };
+  const today = inputs.today || todayStr();
+  const changes = [];
+  let debts = inputs.debts;
+  let extra = 0;
+  const ep = overrides.extra_payment;
+  if (ep != null) {
+    if (typeof ep !== "object" || Array.isArray(ep)) return { ok: false, error: "extra_payment must be { debt, amount_monthly }." };
+    const amt = whatIfAmount(ep.amount_monthly, "extra_payment.amount_monthly", { positive: true });
+    if (amt.error) return { ok: false, error: amt.error };
+    if (inputs.debts == null) return { ok: false, error: PLAN_ERROR };
+    const carried = normalizeDebts(inputs.debts, inputs.activity, today).filter((d) => d.carried);
+    const names = carried.map((d) => d.name).join(", ") || "none";
+    const q = typeof ep.debt === "string" ? ep.debt.trim().toLowerCase() : "";
+    if (!q) return { ok: false, error: `extra_payment.debt must name one of your carried debts: ${names}.` };
+    const exact = carried.filter((d) => String(d.name).toLowerCase() === q || (d.mask && String(d.mask) === q));
+    const matches = exact.length ? exact : carried.filter((d) => String(d.name).toLowerCase().includes(q));
+    if (matches.length !== 1) {
+      return { ok: false, error: matches.length
+        ? `"${ep.debt}" matches more than one debt (${matches.map((d) => d.name).join(", ")}) — name one.`
+        : `"${ep.debt}" isn't one of your carried debts: ${names}.` };
+    }
+    const hit = matches[0];
+    if (hit.minimum == null) return { ok: false, error: `${hit.name} has no monthly payment on file — set it on the loan card first.` };
+    debts = inputs.debts.map((r) => (r.id === hit.id ? { ...r, what_if_extra_monthly: amt.value } : r));
+    extra = amt.value;
+    changes.push({ kind: "extra_payment", debt: hit.name, amount_monthly: amt.value, text: `${fmt(amt.value)} a month more on ${hit.name}` });
+  }
+  if (income.value) changes.push({ kind: "income", amount_monthly: income.value, text: `income ${income.value > 0 ? "up" : "down"} ${fmt(Math.abs(income.value))} a month` });
+  if (spending.value) changes.push({ kind: "spending", amount_monthly: spending.value, text: `spending ${spending.value > 0 ? "up" : "down"} ${fmt(Math.abs(spending.value))} a month` });
+  if (!changes.length) return { ok: false, error: "Say what changes: extra_payment, income_change_monthly or spending_change_monthly." };
+
+  const months = inputs.months == null ? null : inputs.months.map((r) => ({
+    ...r,
+    income: money((num(r.income) || 0) + income.value),
+    spending: money((num(r.spending) || 0) + spending.value),
+  }));
+  let cash = inputs.cash;
+  const delta = income.value - spending.value - extra;
+  if (cash && cash.lowest && delta) {
+    const days = Math.max(0, dayGap(today, cash.lowest.date));
+    cash = { ...cash, lowest: { ...cash.lowest, balance: money((num(cash.lowest.balance) || 0) + delta * days / 30) } };
+  }
+  return { ok: true, changes, inputs: { ...inputs, months, debts, cash, what_if: changes } };
+}
+
+// The plan before and after the changes, and what moved: the headline step
+// and amount, the emergency fund's month, and each debt's payoff and interest.
+function whatIfPlan(inputs, overrides) {
+  const base = buildAdvicePlan(inputs);
+  if (!base.ok) return base;
+  const applied = applyWhatIf(inputs, overrides);
+  if (!applied.ok) return { ok: false, error: applied.error, disclaimer: DISCLAIMER };
+  const changed = buildAdvicePlan(applied.inputs);
+  if (!changed.ok) return changed;
+  const rowsOf = (p) => new Map(p.allocation.debts.map((r) => [r.id, r]));
+  const before = rowsOf(base), after = rowsOf(changed);
+  const debts = [...after.values()].map((a) => {
+    const b = before.get(a.id) || {};
+    return {
+      name: a.name,
+      payment_monthly: { before: b.payment_monthly ?? null, after: a.payment_monthly },
+      payoff_month: { before: b.payoff_month ?? null, after: a.payoff_month },
+      months_to_payoff: { before: b.months_to_payoff ?? null, after: a.months_to_payoff },
+      interest: { before: b.interest ?? null, after: a.interest },
+      interest_change: b.interest != null && a.interest != null ? money(a.interest - b.interest) : null,
+    };
+  }).filter((d) => d.payment_monthly.before !== d.payment_monthly.after || d.payoff_month.before !== d.payoff_month.after);
+  const em = (p) => (p.emergency && p.emergency.projection ? p.emergency.projection.month : null);
+  const lines = [`If ${applied.changes.map((c) => c.text).join(" and ")}:`];
+  const stepName = (p, key) => {
+    const st = p.steps.find((x) => x.key === key);
+    const t = st ? st.title : key.replace(/_/g, " ");
+    return t.charAt(0).toLowerCase() + t.slice(1);
+  };
+  lines.push(base.headline.step === changed.headline.step
+    ? `your plan's step stays "${stepName(changed, changed.headline.step)}"`
+    : `your plan's step moves from "${stepName(base, base.headline.step)}" to "${stepName(changed, changed.headline.step)}"`);
+  if (base.headline.amount_per_period !== changed.headline.amount_per_period) {
+    lines.push(`its amount goes from ${fmt(base.headline.amount_per_period)} to ${fmt(changed.headline.amount_per_period)} per ${changed.period.unit}`);
+  }
+  for (const d of debts) {
+    let t = d.payment_monthly.before == null
+      ? `${d.name} gets ${fmt(d.payment_monthly.after)} a month`
+      : `${d.name}'s payment goes from ${fmt(d.payment_monthly.before)} to ${fmt(d.payment_monthly.after)} a month`;
+    if (d.payoff_month.after && d.payoff_month.before !== d.payoff_month.after) {
+      t += `, paid off ${d.payoff_month.before ? `in ${monthLabel(d.payoff_month.after)} instead of ${monthLabel(d.payoff_month.before)}` : `in ${monthLabel(d.payoff_month.after)}`}`;
+    }
+    if (d.interest_change != null && Math.abs(d.interest_change) >= 1) t += `, ${d.interest_change < 0 ? "saving" : "costing"} about ${fmt(Math.abs(d.interest_change))} in interest`;
+    lines.push(t);
+  }
+  if (em(base) !== em(changed) && em(changed)) lines.push(`the emergency fund is reached around ${monthLabel(em(changed))}${em(base) ? ` instead of ${monthLabel(em(base))}` : ""}`);
+  return {
+    ok: true,
+    disclaimer: DISCLAIMER,
+    changes: applied.changes,
+    before: { step: base.headline.step, text: base.headline.text, amount_per_period: base.headline.amount_per_period, amount_monthly: base.headline.amount_monthly, emergency_month: em(base) },
+    after: { step: changed.headline.step, text: changed.headline.text, amount_per_period: changed.headline.amount_per_period, amount_monthly: changed.headline.amount_monthly, emergency_month: em(changed) },
+    debts,
+    text: lines[0] + " " + lines.slice(1).join("; ") + ".",
+    plan: changed,
   };
 }
 
@@ -1379,6 +1610,15 @@ module.exports = {
   loanExtraPayments,
   sinkingFunds,
   subscriptionReview,
+  normalizeLimits,
+  periodsLeftInYear,
+  contributionRoom,
+  applyWhatIf,
+  whatIfPlan,
+  CONTRIBUTION_ACCOUNTS_SQL,
+  CONTRIBUTION_FLOWS_SQL,
+  CONTRIBUTION_LIMIT_MAX,
+  WHAT_IF_MAX,
   SUBSCRIPTIONS_SQL,
   SINKING_BILLS_SQL,
   MEMBERSHIP_ACTIVITY_SQL,

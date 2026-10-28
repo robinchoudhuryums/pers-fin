@@ -1,7 +1,8 @@
 // Real-Postgres contract test for roadmap T4.1 A1 — the advice engine on real
 // rows, the app's own migrations (and, since A2, GET /api/advice through the
 // production mount order answering the same plan; since A3 the insight
-// prompt's CASH PLAN block and the audit's plan figures):
+// prompt's CASH PLAN block and the audit's plan figures; through A10 each
+// advisor's figures, contribution room and a what-if):
 //  - getAdviceInputs reads every source with no error (the income / spending
 //    months, the pay stream, the cash forecast, the floor, the cards and
 //    loans, card activity and the savings transfers)
@@ -320,5 +321,48 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     const res = await supertest(perfinApp()).get("/api/advice").expect(200);
     assert.deepEqual(res.body.sinking_funds, JSON.parse(JSON.stringify(plan.sinking_funds)));
     assert.deepEqual(res.body.subscription_review, JSON.parse(JSON.stringify(plan.subscription_review)));
+  });
+
+  it("A10: contribution room from limits set through PATCH and flows logged through the route, and a what-if on real inputs", async () => {
+    const year = Number(today.slice(0, 4));
+    // A manual Roth IRA and a Teller-style IRA in linked_accounts (no Plaid item).
+    const roth = (await q(`INSERT INTO investment_accounts (name, account_type, balance) VALUES ('Roth IRA', 'roth_ira', 10000) RETURNING id`)).rows[0].id;
+    const ira = (await q(`INSERT INTO linked_accounts (account_id, name, type, subtype, is_manual, current_balance)
+                          VALUES ('ira1', 'Old IRA', 'investment', 'ira', true, 30000) RETURNING id`)).rows[0].id;
+    const flow = (body) => supertest(perfinApp()).post("/api/investment-flows").send(body).expect(200);
+    await flow({ source: "investment", source_id: roth, flow_date: today, amount: 2000, flow_type: "contribution" });
+    await flow({ source: "investment", source_id: roth, flow_date: `${year}-01-01`, amount: 500, flow_type: "contribution" });
+    await flow({ source: "investment", source_id: roth, flow_date: `${year - 1}-12-31`, amount: 6500, flow_type: "contribution" }); // last year
+    await flow({ source: "investment", source_id: roth, flow_date: today, amount: 300, flow_type: "withdrawal" });          // not a contribution
+    // The Settings editor's keys are GET /api/investments' accounts.
+    const accts = (await supertest(perfinApp()).get("/api/investments").expect(200)).body.accounts;
+    assert.ok(accts.some((x) => x.source === "teller" && x.id === ira));
+    assert.ok(accts.some((x) => x.source === "manual" && x.id === roth));
+    await supertest(perfinApp()).patch("/api/settings").send({ contribution_limits: { [`investment:${roth}`]: "abc" } }).expect(400);
+    await supertest(perfinApp()).patch("/api/settings").send({ contribution_limits: { [`investment:${roth}`]: 7000, [`linked:${ira}`]: 7000, "investment:999999": 5000 } }).expect(200);
+    assert.deepEqual((await supertest(perfinApp()).get("/api/settings").expect(200)).body.contribution_limits,
+      { [`investment:${roth}`]: 7000, [`linked:${ira}`]: 7000, "investment:999999": 5000 });
+
+    const plan = await advice.getAdvicePlan(pool);
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.errors, []);
+    assert.deepEqual(plan.contribution_room.accounts.map((r) => [r.name, r.limit, r.contributed, r.room, r.flows]), [
+      ["Old IRA", 7000, 0, 7000, 0],
+      ["Roth IRA", 7000, 2500, 4500, 2],
+    ]);
+    assert.equal(plan.contribution_room.year, year);
+    const res = await supertest(perfinApp()).get("/api/advice").expect(200);
+    assert.deepEqual(res.body.contribution_room, JSON.parse(JSON.stringify(plan.contribution_room)));
+
+    // What-if: $100 a month more on a carried card (Visa was paid off in A4) —
+    // the same engine on the real inputs.
+    const inputs = await advice.getAdviceInputs(pool);
+    const card = plan.debts.find((d) => d.carried && d.type === "credit" && d.minimum != null);
+    const w = advice.whatIfPlan(inputs, { extra_payment: { debt: card.name, amount_monthly: 100 } });
+    assert.equal(w.ok, true);
+    assert.equal(w.plan.debts.find((d) => d.name === card.name).minimum, Math.min(Math.round((card.minimum + 100) * 100) / 100, card.balance));
+    assert.equal(w.before.step, plan.headline.step);
+    assert.deepEqual(w.changes.map((c) => c.debt), [card.name]);
+    assert.match(advice.whatIfPlan(inputs, { extra_payment: { debt: "Amex", amount_monthly: 300 } }).error, /isn't one of your carried debts/);
   });
 });

@@ -45,6 +45,7 @@ function inputs(over = {}) {
     idle: { accounts: [CHK(), SAV], investments: [], snapshots: snaps(10, [["2026-08-20", 9000], ["2026-09-15", 7000], ["2026-10-20", 12000]]) },
     allocation: NO_ALLOC,
     subscriptions: { subs: [], bills: [], activity: [] },
+    contributions: { limits: {}, accounts: [], flows: [] },
     ...over,
   };
 }

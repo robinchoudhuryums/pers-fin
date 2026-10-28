@@ -912,6 +912,9 @@ async function runMigrationsOnce() {
     // Roadmap T4.1 A4: "tell me when my plan changes" (services/advice-alerts.js)
     // — off by default; the last notified plan signature + the day last checked.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS advice_alerts_enabled BOOLEAN NOT NULL DEFAULT false");
+    // Roadmap T4.1 A10: yearly contribution limits entered by hand, per
+    // investment account — { "investment:<id>" | "linked:<id>": dollars }.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS contribution_limits JSONB NOT NULL DEFAULT '{}'::jsonb");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS advice_state JSONB");
     // Roadmap T2.4 X2a: linked tasks — Perfin items kept as Per-sistant tasks
     // (services/linked-tasks.js). Off by default; which sources (decision 5 —

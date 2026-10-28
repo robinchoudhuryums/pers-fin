@@ -105,7 +105,7 @@ advice changes.
 | A7 | Idle cash (checking above floor + buffer for 60+ days while a savings or brokerage account exists → "move $X") and rebalancing directions (Target Allocation drift > 5 points → "move ~$X from bonds to equities"; directions only, never securities). | done (2026-10-28) |
 | A8 | Statement-date utilization (store Plaid Liabilities `last_statement_issue_date` / statement balance, then "pay $Y before <date> to report under 30%") and loan extra payments ("an extra $100/month saves $Y and ends it Z months early", `computeLoanPayoff`). | done (2026-10-28) |
 | A9 | Sinking funds for yearly / quarterly bills ("set aside $X/month") and subscription consolidation (overlapping services, ones with no related activity — builds on the subscription audit). | done (2026-10-28) |
-| A10 | Tax-advantaged room (yearly limits entered by hand, compared with contributions seen in investment flows; no account types assumed) and what-if questions in Ask (`get_cash_plan` with overrides: "pay $300 more on card X", "rent goes up $150" — the same engine on changed inputs). | queued |
+| A10 | Tax-advantaged room (yearly limits entered by hand, compared with contributions seen in investment flows; no account types assumed) and what-if questions in Ask (`get_cash_plan` with overrides: "pay $300 more on card X", "rent goes up $150" — the same engine on changed inputs). | done (2026-10-28) |
 
 A5–A10 surface through the same three places as the plan (the "Your plan" card's
 secondary list, the `cash_plan` insight module, Ask) and the same notify checkbox — no

@@ -18,6 +18,16 @@ Updated: 2026-10-28
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A10 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a10-broad-implement.md`.
+  - **Shipped:** contribution room (user_settings.contribution_limits — yearly limits entered by hand per investment
+    account in Settings → Planning → Target Allocation, no account type assumed — compared with this calendar year's
+    contributions in investment_flows: room left and the per-paycheck amount that fills it by Dec 31) from a 14th,
+    non-critical `contributions` source, on the card, in the cash_plan block and Ask; and what-if in Ask (get_cash_plan
+    with extra_payment / income_change_monthly / spending_change_monthly — applyWhatIf / whatIfPlan run the same engine
+    on changed inputs and return a before / after comparison). That completes T4.1's planned batches (A1–A10).
+  - **Verified:** npm test 2917/2917 (21 new); contract 282/283 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A10 committed and pushed. Next: `/sync-docs` for A10, then T4.1 is done (a `/reflect` or the next roadmap item).
 - **Roadmap T4.1 A9 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a9-broad-implement.md`.
   - **Shipped:** sinking funds (each quarterly / yearly bill of $100+ — a detected subscription billed every 90+ days or
     a manual quarterly / yearly bill — with its next date from cadence.js, "set aside $X a month until then, then $Y",

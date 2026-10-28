@@ -356,6 +356,7 @@ describe("T4.1 A1 — reads are fail-soft; a missing critical source is no plan"
     idle: async () => ({ accounts: [], investments: [], snapshots: [] }),
     allocation: async () => ({ total_value: 0, has_targets: false, classes: [] }),
     subscriptions: async () => ({ subs: [], bills: [], activity: [] }),
+    contributions: async () => ({ limits: {}, accounts: [], flows: [] }),
   };
   const quietly = async (fn) => {
     const err = console.error; console.error = () => {};

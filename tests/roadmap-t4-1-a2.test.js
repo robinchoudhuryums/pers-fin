@@ -203,7 +203,9 @@ describe("T4.1 A2 — Ask's get_cash_plan", () => {
   it("advertised with an executor", () => {
     const t = ask.TOOLS.find((x) => x.name === "get_cash_plan");
     assert.ok(t);
-    assert.deepEqual(t.input_schema, { type: "object", properties: {} });
+    // Roadmap T4.1 A10: the what-if overrides (all optional).
+    assert.deepEqual(Object.keys(t.input_schema.properties), ["extra_payment", "income_change_monthly", "spending_change_monthly"]);
+    assert.equal(t.input_schema.required, undefined);
     assert.equal(typeof ask.TOOL_EXECUTORS.get_cash_plan, "function");
   });
 

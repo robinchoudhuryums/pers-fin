@@ -574,6 +574,22 @@
         <span id="target-alloc-sum" style="font-size:11px;color:var(--text-muted);margin-left:auto;"></span>
       </div>
     </div>
+    <!-- Roadmap T4.1 A10: yearly contribution limits, entered by hand per
+         investment account (no account type is assumed). "Your plan" compares
+         them with this year's contributions recorded as investment flows. -->
+    <div class="setting-row" id="contrib-limits" style="flex-direction:column;align-items:stretch;">
+      <div class="setting-info" style="margin-bottom:8px;">
+        <div class="name">Yearly contribution limits</div>
+        <div class="desc">
+          Enter the most you can put into an account this calendar year (e.g. an IRA's or 401(k)'s limit).
+          "Your plan" shows the room left, from the contributions recorded for that account. Leave it blank for no limit.
+        </div>
+      </div>
+      <div id="contrib-limit-rows" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:12px;">
+        <button class="btn primary" id="contrib-limit-save-btn">Save limits</button>
+      </div>
+    </div>
   </div>
 
   <!-- Watchlist editor. Tracks user-curated merchants / categories /
@@ -853,6 +869,11 @@
         if (typeof ta === 'string') { try { ta = JSON.parse(ta); } catch { ta = {}; } }
         TARGET_ALLOC = ta || {};
         renderTargetAlloc();
+        // Roadmap T4.1 A10: the contribution limits editor.
+        var cl = s.contribution_limits;
+        if (typeof cl === 'string') { try { cl = JSON.parse(cl); } catch { cl = {}; } }
+        CONTRIB_LIMITS = cl || {};
+        loadContribAccounts();
         document.getElementById('auto-sync-last').textContent = s.last_auto_sync_at
           ? new Date(s.last_auto_sync_at).toLocaleString()
           : 'Never';
@@ -1423,6 +1444,80 @@
       });
     }
 
+    // Roadmap T4.1 A10: one limit box per investment account (GET
+    // /api/investments — a Teller-linked account is linked:<id>, Plaid /
+    // manual investment:<id>). A blank box is no limit.
+    var CONTRIB_LIMITS = {};
+    var CONTRIB_ACCOUNTS = null;
+    function contribKey(acct) {
+      return (acct.source === 'teller' ? 'linked:' : 'investment:') + acct.id;
+    }
+    function renderContribLimits(accounts, limits) {
+      if (!accounts) return '<div style="font-size:12px;color:var(--text-muted);">Your investment accounts couldn\'t be loaded.</div>';
+      if (!accounts.length) return '<div style="font-size:12px;color:var(--text-muted);font-style:italic;">No investment accounts yet.</div>';
+      return accounts.map(function (a) {
+        var key = contribKey(a);
+        var v = limits && limits[key] != null ? Number(limits[key]) : '';
+        return '<div style="display:flex;align-items:center;gap:8px;">' +
+          '<span style="flex:1 1 auto;font-size:13px;color:var(--text);">' + esc(a.name) + '</span>' +
+          '<span style="font-size:11px;color:var(--text-muted);">$</span>' +
+          '<input type="number" min="0" max="1000000" step="0.01" inputmode="decimal" value="' + esc(String(v)) + '" placeholder="no limit"' +
+            ' data-contrib-key="' + esc(key) + '" aria-label="Yearly contribution limit for ' + esc(a.name) + '"' +
+            ' style="width:120px;padding:6px 8px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:12px;text-align:right;">' +
+        '</div>';
+      }).join('');
+    }
+    // The limits typed into the boxes: blank → left out; anything else must be 0-1,000,000.
+    function readContribLimits(rows) {
+      var out = {};
+      var bad = null;
+      rows.querySelectorAll('input[data-contrib-key]').forEach(function (inp) {
+        var raw = String(inp.value || '').trim();
+        if (!raw) return;
+        var n = Number(raw);
+        if (!Number.isFinite(n) || n < 0 || n > 1000000) { bad = bad || inp; return; }
+        out[inp.getAttribute('data-contrib-key')] = Math.round(n * 100) / 100;
+      });
+      return { limits: out, bad: bad };
+    }
+    async function loadContribAccounts() {
+      var rows = document.getElementById('contrib-limit-rows');
+      if (!rows) return;
+      try {
+        var res = await apiFetch('/api/investments');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        CONTRIB_ACCOUNTS = ((await res.json()).accounts || []);
+      } catch (e) {
+        CONTRIB_ACCOUNTS = null;
+      }
+      rows.innerHTML = renderContribLimits(CONTRIB_ACCOUNTS, CONTRIB_LIMITS);
+    }
+    (function wireContribLimits() {
+      var saveBtn = document.getElementById('contrib-limit-save-btn');
+      var rows = document.getElementById('contrib-limit-rows');
+      if (!saveBtn || !rows) return;
+      saveBtn.addEventListener('click', async function () {
+        var read = readContribLimits(rows);
+        if (read.bad) { showMsg('A contribution limit must be a number from 0 to 1,000,000.', false); read.bad.focus(); return; }
+        if (saveBtn.disabled) return;
+        saveBtn.disabled = true;
+        try {
+          var res = await apiFetch('/api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contribution_limits: read.limits }),
+          });
+          if (await writeOk(res, 'Saving contribution limits')) {
+            CONTRIB_LIMITS = read.limits;
+            showMsg('Contribution limits saved', true);
+          }
+        } catch (e) {
+          showMsg('Saving contribution limits: ' + e.message, false);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+    })();
     (function wireTargetAlloc() {
       var addBtn = document.getElementById('target-alloc-add-btn');
       var saveBtn = document.getElementById('target-alloc-save-btn');

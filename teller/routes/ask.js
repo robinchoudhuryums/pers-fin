@@ -196,9 +196,26 @@ async function toolFireProjection() {
 
 // Roadmap T4.1 A2: the "where should my extra money go?" plan — every figure
 // is services/advice.js's (decision 1); the model only words it. Trimmed to
-// what an answer needs (the surplus months stay, for "why").
-async function toolCashPlan() {
-  const p = await require("../services/advice").getAdvicePlan(pool);
+// what an answer needs (the surplus months stay, for "why"). Roadmap T4.1
+// A10: with what-if changes (an extra payment on one debt, income or spending
+// up / down a month) the same engine runs on the changed inputs and the
+// answer carries the before / after comparison too.
+const WHAT_IF_KEYS = ["extra_payment", "income_change_monthly", "spending_change_monthly"];
+async function toolCashPlan(input = {}) {
+  const advice = require("../services/advice");
+  const asked = WHAT_IF_KEYS.some((k) => input && input[k] != null);
+  if (!asked) return trimCashPlan(await advice.getAdvicePlan(pool));
+  const overrides = {};
+  for (const k of WHAT_IF_KEYS) if (input[k] != null) overrides[k] = input[k];
+  const w = advice.whatIfPlan(await advice.getAdviceInputs(pool), overrides);
+  if (!w.ok) return { ok: false, error: w.error, disclaimer: w.disclaimer || advice.DISCLAIMER };
+  return {
+    ...trimCashPlan(w.plan),
+    what_if: { changes: w.changes, before: w.before, after: w.after, debts: w.debts, text: w.text },
+  };
+}
+
+function trimCashPlan(p) {
   if (!p.ok) return { ok: false, error: p.error, disclaimer: p.disclaimer };
   return {
     ok: true,
@@ -223,6 +240,7 @@ async function toolCashPlan() {
     loan_extra: p.loan_extra,
     sinking_funds: p.sinking_funds,
     subscription_review: p.subscription_review,
+    contribution_room: p.contribution_room,
     notes: p.notes,
   };
 }
@@ -246,7 +264,11 @@ const TOOLS = [
   { name: "get_subscriptions", description: "Active detected subscriptions with monthly costs.", input_schema: { type: "object", properties: {} } },
   { name: "get_budget_status", description: "This month's budgets: effective limit (base + rolled-over amount), spent, remaining and percent used — the Budgets page's numbers.", input_schema: { type: "object", properties: {} } },
   { name: "get_fire_projection", description: "FIRE number, progress, time to FIRE, and spending runway under the user's saved assumptions.", input_schema: { type: "object", properties: {} } },
-  { name: "get_cash_plan", description: "The user's plan for extra money — the dashboard's \"Your plan\": the current step (cash buffer, high-interest debt, emergency fund, medium debt, investing), the amount per paycheck, why, the per-debt payments and payoff months, the emergency fund's months covered and when it is reached, each goal's catch-up amount when it is behind its target date, a recent raise (and how much of it to put toward the plan), a recent bonus or one-off deposit split in the plan's order, categories whose spending grew faster than income, checking cash sitting idle above the plan's buffer and where to move it, rebalancing directions between asset classes when the target allocation has drifted (never a security), each card's next statement date (pay before it so the balance it reports is under 30%), what an extra $100 a month would save on each loan, what to set aside each month for quarterly / yearly bills, overlapping subscriptions and memberships with no other purchases, and the disclaimer. Use its figures as given.", input_schema: { type: "object", properties: {} } },
+  { name: "get_cash_plan", description: "The user's plan for extra money — the dashboard's \"Your plan\": the current step (cash buffer, high-interest debt, emergency fund, medium debt, investing), the amount per paycheck, why, the per-debt payments and payoff months, the emergency fund's months covered and when it is reached, each goal's catch-up amount when it is behind its target date, a recent raise (and how much of it to put toward the plan), a recent bonus or one-off deposit split in the plan's order, categories whose spending grew faster than income, checking cash sitting idle above the plan's buffer and where to move it, rebalancing directions between asset classes when the target allocation has drifted (never a security), each card's next statement date (pay before it so the balance it reports is under 30%), what an extra $100 a month would save on each loan, what to set aside each month for quarterly / yearly bills, overlapping subscriptions and memberships with no other purchases, the room left under each yearly contribution limit the user entered, and the disclaimer. Use its figures as given. For a what-if (\"what if I pay $300 more on my Visa\", \"rent goes up $150\", \"I get a $500 raise\"), pass the change: the same plan is worked out on the changed numbers and what_if compares before and after.", input_schema: { type: "object", properties: {
+    extra_payment: { type: "object", description: "Pay this much more each month on one carried card or loan.", properties: { debt: { type: "string", description: "The card or loan's name, as get_cash_plan lists it." }, amount_monthly: { type: "number", description: "Dollars a month, above 0." } }, required: ["debt", "amount_monthly"] },
+    income_change_monthly: { type: "number", description: "Take-home pay up (positive) or down (negative), dollars a month." },
+    spending_change_monthly: { type: "number", description: "Spending up (positive — e.g. rent goes up $150) or down (negative), dollars a month." },
+  } } },
 ];
 
 // POST /api/ask — single-turn NL question over the user's finance data.
@@ -310,6 +332,9 @@ router.post("/api/ask", async (req, res) => {
       "For questions about what to do with extra money, paying down debt, an emergency fund or how much to " +
       "invest, call get_cash_plan and give its figures as they are; say it is educational, not financial " +
       "advice, and never name a specific security or fund. " +
+      // Roadmap T4.1 A10: what-if questions run the same plan on changed numbers.
+      "For \"what if\" questions about paying more on a debt or income / spending changing, call " +
+      "get_cash_plan with that change and give its what_if comparison. " +
       // APP_TIMEZONE date (F66 — UTC's date made "this month" the next month
       // on the last evening of a month west of UTC).
       `Today's date is ${todayStr()}.`;

@@ -120,6 +120,9 @@ function cashPlanPromptBlock(plan) {
   const sr = plan.subscription_review;
   const review = sr ? [...(sr.overlaps || []), ...(sr.unused || [])].filter((x) => x && x.text) : [];
   if (review.length) out += "Subscriptions to review:\n" + review.map((x) => "- " + sanitizeForPrompt(x.text)).join("\n") + "\n";
+  // Roadmap T4.1 A10: room left under the yearly contribution limits the user entered.
+  const room = plan.contribution_room && plan.contribution_room.accounts ? plan.contribution_room.accounts.filter((r) => r.text) : [];
+  if (room.length) out += "Contribution room (yearly limits the user entered):\n" + room.map((r) => "- " + sanitizeForPrompt(r.text)).join("\n") + "\n";
   const tips = (plan.debts || []).filter((d) => d.utilization_tip && d.utilization_tip.text).map((d) => sanitizeForPrompt(d.utilization_tip.text));
   if (tips.length) out += "Utilization tips:\n" + tips.map((t) => "- " + t).join("\n") + "\n";
   if (plan.notes && plan.notes.length) out += "Notes:\n" + plan.notes.map((n) => "- " + sanitizeForPrompt(n)).join("\n") + "\n";

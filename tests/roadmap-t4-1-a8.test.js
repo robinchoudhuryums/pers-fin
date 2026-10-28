@@ -43,6 +43,7 @@ function inputs(over = {}) {
     idle: { accounts: [], investments: [], snapshots: [] },
     allocation: { total_value: 0, has_targets: false, classes: [] },
     subscriptions: { subs: [], bills: [], activity: [] },
+    contributions: { limits: {}, accounts: [], flows: [] },
     ...over,
   };
 }
