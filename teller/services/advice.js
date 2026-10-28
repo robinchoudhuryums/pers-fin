@@ -16,10 +16,13 @@
 // least max($200, 10% of income) (decision 5); 60% of the median is
 // recommended, rounded down to $25 per paycheck (decision 6). Every threshold
 // is a named constant here, not a setting (decision 9). Nothing names a
-// security or a fund (decision 10).
+// security or a fund (decision 10). A5–A8 add the secondary advisors (the
+// emergency tracker, goal catch-up, raises / bonuses / spending creep, idle
+// cash / rebalancing, and A8's statement-date utilization tip and loan extra
+// payments), each computed here too.
 
 const { todayStr, previousMonthKey, incomePredicate, INCOME_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, INVESTMENT_ACCOUNT_TYPES } = require("./financial-queries");
-const { addMonthsYm } = require("./projections");
+const { addMonthsYm, addMonthsYmd, computeLoanPayoff } = require("./projections");
 
 const DISCLAIMER = "Educational, based on your data — not financial advice.";
 
@@ -74,6 +77,10 @@ const SAVINGS_SUBTYPES = new Set(["savings", "money market", "money_market", "ca
 const REBALANCE_DRIFT = 5;        // a class more than 5 points off its target
 const REBALANCE_ROUND_TO = 100;   // moves rounded to the nearest $100 …
 const REBALANCE_MIN = 100;        // … and listed from $100
+// Roadmap T4.1 A8.
+const STATEMENT_MAX_AGE_DAYS = 62; // a last statement older than this is too stale to project the next close from
+const STATEMENT_PAID_SHARE = 0.95; // a payment after the statement under 95% of it = the balance was carried
+const LOAN_EXTRA_MONTHLY = 100;   // "an extra $100 a month on <loan>"
 const REBALANCE_NOTE = "Directions only — pick the holdings yourself. Selling in a taxable account can create a taxable gain; new contributions can move the mix without selling.";
 
 // The plan needs these; without one it isn't worked out at all (a missing debt
@@ -104,7 +111,9 @@ const INTEREST_CHARGE_SQL = `(t.amount > 0 AND (
 const DEBTS_SQL = `
   SELECT la.id, la.account_id, la.name, la.mask, la.type, la.subtype,
          la.current_balance, la.available_balance, la.credit_limit, la.apr,
-         la.minimum_payment, la.monthly_payment, la.last_payment_amount, la.last_payment_date
+         la.minimum_payment, la.monthly_payment, la.last_payment_amount,
+         la.last_payment_date::text AS last_payment_date,
+         la.last_statement_balance, la.last_statement_issue_date::text AS last_statement_issue_date
   FROM linked_accounts la
   WHERE la.type IN ('credit', 'loan') AND la.current_balance > 0
   ORDER BY la.id`;
@@ -302,16 +311,24 @@ function cardLimit(row) {
 }
 
 // Decision 3: a card paid in full every month is not debt. It's carried when
-// it was charged interest in the last 60 days, or its last payment was about
-// the minimum while more was owed. (The plan's "last payment smaller than the
-// balance it was paying" needs the statement balance, which isn't stored until
-// A8 — so a minimum-sized payment stands in for it.) No activity and no
-// payment data → unknown, treated as not carried and said so.
+// it was charged interest in the last 60 days, or its last payment — made after
+// its last statement (roadmap T4.1 A8) — was smaller than that statement. With
+// no statement to compare, a last payment about the minimum while more was
+// owed stands in for it. No activity and no payment data → unknown, treated as
+// not carried and said so.
 function carryStatus(row, activity) {
   const balance = num(row.current_balance) || 0;
   if (activity && activity.interest) return { carried: true, reason: "interest_charged" };
   const last = num(row.last_payment_amount);
   const min = num(row.minimum_payment);
+  const stmt = num(row.last_statement_balance);
+  const stmtDate = row.last_statement_issue_date ? String(row.last_statement_issue_date).slice(0, 10) : null;
+  const payDate = row.last_payment_date ? String(row.last_payment_date).slice(0, 10) : null;
+  if (stmt != null && stmt > 0 && last != null && stmtDate && payDate && payDate >= stmtDate) {
+    return last < stmt * STATEMENT_PAID_SHARE
+      ? { carried: true, reason: "statement_not_paid" }
+      : { carried: false, reason: "statement_paid" };
+  }
   if (last != null && min != null && min > 0 && last <= min * MINIMUM_ONLY_TOLERANCE && balance > last) {
     return { carried: true, reason: "minimum_payments" };
   }
@@ -326,7 +343,27 @@ function tierOf(apr) {
   return "low";
 }
 
-function normalizeDebts(rows, activityRows) {
+// Roadmap T4.1 A8: the day a card's next statement closes — the balance
+// reported to the credit bureaus — stepped by calendar month from the last
+// statement Plaid reported (its day kept, clamped to the month). Null without
+// a statement, or with one older than STATEMENT_MAX_AGE_DAYS.
+function nextStatementDate(row, today) {
+  const last = row.last_statement_issue_date ? String(row.last_statement_issue_date).slice(0, 10) : null;
+  if (!last || !/^\d{4}-\d{2}-\d{2}$/.test(last) || last > today || dayGap(last, today) > STATEMENT_MAX_AGE_DAYS) return null;
+  for (let k = 1; k <= 3; k++) {
+    const d = addMonthsYmd(last, k);
+    if (d > today) return d;
+  }
+  return null;
+}
+
+// "Nov 5" for a 'YYYY-MM-DD'.
+function dayLabel(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
+}
+
+function normalizeDebts(rows, activityRows, today = todayStr()) {
   const activity = new Map((activityRows || []).map((a) => [a.account_id, a]));
   return (rows || []).map((r) => {
     const balance = money(num(r.current_balance) || 0);
@@ -367,10 +404,27 @@ function normalizeDebts(rows, activityRows) {
       utilization_pct: limit ? Math.round((balance / limit) * 100) : null,
       utilization_tip: null,
     };
-    // Decision 4's optional tip: what brings a card under 30% before its due date.
+    if (isCard) {
+      // Roadmap T4.1 A8: the last statement and when the next one closes.
+      const stmt = num(r.last_statement_balance);
+      const next = nextStatementDate(r, today);
+      debt.statement = {
+        last_date: r.last_statement_issue_date ? String(r.last_statement_issue_date).slice(0, 10) : null,
+        last_balance: stmt == null ? null : money(stmt),
+        reported_pct: stmt != null && limit ? Math.round((stmt / limit) * 100) : null,
+        next_date: next,
+      };
+    }
+    // Decision 4's optional tip: what brings a card under 30%. With a statement
+    // date known (A8) the deadline is the day the next statement closes — the
+    // balance the card reports — else its due date.
     if (limit && balance > limit * UTILIZATION_TARGET) {
       const pay = Math.ceil(balance - limit * UTILIZATION_TARGET);
-      debt.utilization_tip = { pay, text: `Paying ${fmt(pay)} on ${r.name} before its due date brings it under ${Math.round(UTILIZATION_TARGET * 100)}% of its limit.` };
+      const pct = Math.round(UTILIZATION_TARGET * 100);
+      const next = debt.statement && debt.statement.next_date;
+      debt.utilization_tip = next
+        ? { pay, by: next, basis: "statement", text: `Paying ${fmt(pay)} on ${r.name} before ${dayLabel(next)}, when its next statement closes, keeps the balance it reports under ${pct}% of its limit.` }
+        : { pay, by: null, basis: "due_date", text: `Paying ${fmt(pay)} on ${r.name} before its due date brings it under ${pct}% of its limit.` };
     }
     return debt;
   });
@@ -755,6 +809,44 @@ function rebalanceMoves(alloc) {
 }
 
 // Where the plan's current step sends money, in words.
+// Roadmap T4.1 A8: what LOAN_EXTRA_MONTHLY more a month does to each loan with
+// a known APR and payment (computeLoanPayoff — the loan card's own math): the
+// interest saved and how many months sooner it's paid off. A loan the plan
+// already sends extra to is left out (its row in the debt table shows that).
+function loanExtraPayments(debts, allocationRows, today) {
+  const funded = new Set((allocationRows || []).filter((r) => r.extra_monthly > 0).map((r) => r.id));
+  const out = [];
+  for (const d of debts || []) {
+    if (d.type !== "loan" || !d.carried || funded.has(d.id) || !(d.apr > 0) || !(d.minimum > 0)) continue;
+    const now = computeLoanPayoff({ balance: d.balance, aprPct: d.apr, monthlyPayment: d.minimum, today });
+    const more = computeLoanPayoff({ balance: d.balance, aprPct: d.apr, monthlyPayment: d.minimum + LOAN_EXTRA_MONTHLY, today });
+    if (now.months_to_payoff == null || more.months_to_payoff == null) continue;
+    const sooner = now.months_to_payoff - more.months_to_payoff;
+    const saved = money(now.total_interest - more.total_interest);
+    if (sooner < 1 || saved <= 0) continue;
+    let text = `An extra ${fmt(LOAN_EXTRA_MONTHLY)} a month on ${d.name} would save about ${fmt(saved)} in interest and pay it off ` +
+      `${sooner} month${sooner === 1 ? "" : "s"} sooner (${monthLabel(more.payoff_date)} instead of ${monthLabel(now.payoff_date)}).`;
+    if (d.tier === "low") text += ` At ${d.apr}% APR it's low-interest debt, so your plan keeps it on its minimum.`;
+    out.push({
+      id: d.id,
+      name: d.name,
+      apr: d.apr,
+      tier: d.tier,
+      balance: d.balance,
+      payment_monthly: d.minimum,
+      extra_monthly: LOAN_EXTRA_MONTHLY,
+      months_now: now.months_to_payoff,
+      months_with_extra: more.months_to_payoff,
+      months_sooner: sooner,
+      payoff_month_now: now.payoff_date,
+      payoff_month_with_extra: more.payoff_date,
+      interest_saved: saved,
+      text,
+    });
+  }
+  return out;
+}
+
 function stepTarget(stepKey, debtName) {
   switch (stepKey) {
     case "minimums": return "your minimum payments";
@@ -806,7 +898,7 @@ function buildAdvicePlan(inputs) {
   const lowest = inputs.cash.lowest || null;
 
   // Debts.
-  const all = normalizeDebts(inputs.debts, inputs.activity);
+  const all = normalizeDebts(inputs.debts, inputs.activity, today);
   const debts = all.filter((d) => d.carried);
   for (const d of all) {
     if (d.apr_assumed) notes.push(`${d.name}: APR unknown — assumed ${UNKNOWN_CARD_APR}%; set it on the card.`);
@@ -1034,6 +1126,7 @@ function buildAdvicePlan(inputs) {
     }
   }
   const rebalance = inputs.allocation == null ? null : rebalanceMoves(inputs.allocation);
+  const loanExtra = loanExtraPayments(all, allocation.debts, today);
 
   if (minimumsShort) {
     headline = `Your recent months don't cover your ${fmt(required)} of monthly minimum payments.`;
@@ -1087,6 +1180,7 @@ function buildAdvicePlan(inputs) {
     spending_creep: creep,
     idle_cash: idleCash,
     rebalance,
+    loan_extra: loanExtra,
     notes,
   };
 }
@@ -1116,6 +1210,12 @@ module.exports = {
   checkingLow,
   idleDestinations,
   rebalanceMoves,
+  nextStatementDate,
+  loanExtraPayments,
+  DEBTS_SQL,
+  STATEMENT_MAX_AGE_DAYS,
+  STATEMENT_PAID_SHARE,
+  LOAN_EXTRA_MONTHLY,
   IDLE_ACCOUNTS_SQL,
   IDLE_INVESTMENTS_SQL,
   IDLE_SNAPSHOTS_SQL,

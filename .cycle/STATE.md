@@ -18,6 +18,16 @@ Updated: 2026-10-28
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A8 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a8-broad-implement.md`.
+  - **Shipped:** a card's last statement balance + issue date stored from Plaid Liabilities (two linked_accounts columns);
+    the 30% utilization tip names the day the next statement closes ("pay $Y before Nov 5, when its next statement
+    closes") when that's known, else its due date; the carried-balance test reads the statement (a payment after it under
+    95% → carried, at or above → paid in full); loan extra payments ("an extra $100 a month on Car Loan would save about
+    $Y and pay it off N months sooner", computeLoanPayoff; a low-APR loan's note; a loan the plan already funds left out)
+    — on the card, in the cash_plan block, in Ask; the audit counts the loan's extra $100.
+  - **Verified:** npm test 2883/2883 (13 new); contract 280/281 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A8 committed and pushed. Next: `/sync-docs` for A8, then `/broad-implement A9`.
 - **Roadmap T4.1 A7 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a7-broad-implement.md`.
   - **Shipped:** idle cash (checking above the starter buffer for 60 days → moved in the plan's order — the card first,
     the emergency fund to a savings account, investing to a non-tax-advantaged brokerage — only to accounts that exist,

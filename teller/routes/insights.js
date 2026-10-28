@@ -111,6 +111,9 @@ function cashPlanPromptBlock(plan) {
     out += "Rebalancing (directions between asset classes — never name a security or fund):\n" +
       rb.moves.map((m) => "- " + sanitizeForPrompt(m.text)).join("\n") + "\n- " + rb.note + "\n";
   }
+  // Roadmap T4.1 A8: what an extra $100 a month does to each loan.
+  const loans = (plan.loan_extra || []).filter((l) => l && l.text);
+  if (loans.length) out += "Loan extra payments:\n" + loans.map((l) => "- " + sanitizeForPrompt(l.text)).join("\n") + "\n";
   const tips = (plan.debts || []).filter((d) => d.utilization_tip && d.utilization_tip.text).map((d) => sanitizeForPrompt(d.utilization_tip.text));
   if (tips.length) out += "Utilization tips:\n" + tips.map((t) => "- " + t).join("\n") + "\n";
   if (plan.notes && plan.notes.length) out += "Notes:\n" + plan.notes.map((n) => "- " + sanitizeForPrompt(n)).join("\n") + "\n";

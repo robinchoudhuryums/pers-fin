@@ -323,6 +323,11 @@ function planFigures(plan) {
       monthly: [d.payment_monthly, d.extra_monthly, d.minimum_monthly].filter((v) => v > 0),
     };
   }
+  // Roadmap T4.1 A8: a loan's "extra $100 a month" and its payment with it.
+  for (const l of plan.loan_extra || []) {
+    const d = l && l.name && debts[String(l.name).toLowerCase()];
+    if (d) d.monthly.push(...[l.extra_monthly, r2(l.payment_monthly + l.extra_monthly)].filter((v) => v > 0));
+  }
   const a = plan.allocation || {};
   const perPeriod = [plan.headline && plan.headline.amount_per_period, plan.surplus && plan.surplus.recommended_per_period,
     a.buffer_per_period, a.emergency_per_period, a.invest_per_period, a.debt_extra_per_period,

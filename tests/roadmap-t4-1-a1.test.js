@@ -223,7 +223,7 @@ describe("T4.1 A1 — APRs, minimums and carried balances", () => {
     assert.equal(p.surplus.required_minimums_monthly, 0);
     assert.equal(p.headline.step, "invest");
     assert.equal(d.utilization_pct, 60);
-    assert.deepEqual(d.utilization_tip, { pay: 900, text: "Paying $900.00 on Visa before its due date brings it under 30% of its limit." });
+    assert.deepEqual(d.utilization_tip, { pay: 900, by: null, basis: "due_date", text: "Paying $900.00 on Visa before its due date brings it under 30% of its limit." });
   });
 
   it("a card with no activity and no payment data is said to be treated as paid in full", () => {

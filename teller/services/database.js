@@ -476,6 +476,11 @@ async function runMigrationsOnce() {
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS next_payment_due_date DATE DEFAULT NULL");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS last_payment_amount NUMERIC(12,2) DEFAULT NULL");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS last_payment_date DATE DEFAULT NULL");
+    // Roadmap T4.1 A8: the last statement Plaid Liabilities reports for a card
+    // (its closing date and balance) — the plan's "pay before the statement
+    // closes" utilization tip and its carried-balance test read them.
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS last_statement_balance NUMERIC(12,2) DEFAULT NULL");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS last_statement_issue_date DATE DEFAULT NULL");
     // Transaction logo URL from Plaid's counterparties enrichment.
     // Stored at sync time; NULL for Teller-sourced or un-enriched rows.
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS logo_url TEXT DEFAULT NULL");

@@ -216,7 +216,7 @@ describe("T4.1 A2 — Ask's get_cash_plan", () => {
     assert.deepEqual(r.headline, plan.headline);
     assert.deepEqual(r.allocation, plan.allocation);
     assert.deepEqual(r.steps, plan.steps);
-    assert.deepEqual(Object.keys(r.debts[0]).sort(), ["apr", "apr_assumed", "balance", "carried", "minimum", "name", "tier", "type", "utilization_pct", "utilization_tip"]);
+    assert.deepEqual(Object.keys(r.debts[0]).sort(), ["apr", "apr_assumed", "balance", "carried", "last_statement_reported_pct", "minimum", "name", "next_statement_date", "tier", "type", "utilization_pct", "utilization_tip"]);
     assert.equal(r.debts.find((d) => d.name === "Amex").utilization_tip, "Paying $900.00 on Amex before its due date brings it under 30% of its limit.");
     assert.equal("errors" in r, false);
   });

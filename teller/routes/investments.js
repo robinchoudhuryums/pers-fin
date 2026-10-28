@@ -1484,7 +1484,8 @@ async function syncAllPlaidBalances() {
 // Syncs credit-card and loan liability details from Plaid into
 // linked_accounts columns. Called once at exchange time and on each
 // auto-sync cycle. Updates apr, credit_limit, minimum_payment,
-// next_payment_due_date, and last_payment fields.
+// next_payment_due_date, the last_payment fields and (roadmap T4.1 A8) a
+// card's last statement balance + issue date.
 
 async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
   try {
@@ -1505,6 +1506,8 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
            next_payment_due_date = $3,
            last_payment_amount = $4,
            last_payment_date = $5,
+           last_statement_balance = $8,
+           last_statement_issue_date = $9,
            balance_updated_at = now()
          WHERE account_id = $6 AND plaid_item_id = $7`,
         [
@@ -1517,6 +1520,9 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
           cc.last_payment_date || null,
           cc.account_id,
           plaidItemDbId,
+          // Roadmap T4.1 A8: the last statement (a $0 statement is real — `??`).
+          cc.last_statement_balance ?? null,
+          cc.last_statement_issue_date || null,
         ]
       );
       updated++;

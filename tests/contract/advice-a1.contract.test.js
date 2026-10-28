@@ -253,4 +253,36 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     assert.deepEqual(res.body.idle_cash, JSON.parse(JSON.stringify(idle)));
     assert.deepEqual(res.body.rebalance, JSON.parse(JSON.stringify(plan.rebalance)));
   });
+
+  it("A8: a card's statement date in its tip and its carried test, and a loan's extra $100 a month, from real rows", async () => {
+    const { addDaysStr } = require("../../teller/services/cadence");
+    const { addMonthsYmd, computeLoanPayoff } = require("../../teller/services/projections");
+    const daysAgo = (n) => addDaysStr(today, -n);
+    // Amex: $3,000 of an $8,000 limit, its last statement ($1,400) paid in full after it closed.
+    await q(`UPDATE linked_accounts SET current_balance = 3000, last_statement_balance = 1400, last_statement_issue_date = $1,
+               last_payment_amount = 1400, last_payment_date = $2 WHERE account_id = 'amex'`, [daysAgo(20), daysAgo(5)]);
+    await q(`INSERT INTO linked_accounts (account_id, name, type, subtype, is_manual, current_balance, apr, monthly_payment)
+             VALUES ('car', 'Car Loan', 'loan', 'auto', true, 18000, 6.5, 400)`);
+
+    const plan = await advice.getAdvicePlan(pool);
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.errors, []);
+    const amex = plan.debts.find((d) => d.name === "Amex");
+    assert.equal(amex.carried, false);
+    assert.equal(amex.carry_reason, "statement_paid");
+    const next = addMonthsYmd(daysAgo(20), 1);
+    assert.deepEqual(amex.statement, { last_date: daysAgo(20), last_balance: 1400, reported_pct: 18, next_date: next });
+    assert.equal(amex.utilization_tip.basis, "statement");
+    assert.equal(amex.utilization_tip.by, next);
+    assert.equal(amex.utilization_tip.pay, 600);
+
+    assert.notEqual(plan.headline.step, "medium_interest_debt");
+    const car = plan.loan_extra.find((l) => l.name === "Car Loan");
+    const now = computeLoanPayoff({ balance: 18000, aprPct: 6.5, monthlyPayment: 400, today });
+    const more = computeLoanPayoff({ balance: 18000, aprPct: 6.5, monthlyPayment: 500, today });
+    assert.equal(car.months_sooner, now.months_to_payoff - more.months_to_payoff);
+    assert.equal(car.interest_saved, Math.round((now.total_interest - more.total_interest) * 100) / 100);
+    const res = await supertest(perfinApp()).get("/api/advice").expect(200);
+    assert.deepEqual(res.body.loan_extra, JSON.parse(JSON.stringify(plan.loan_extra)));
+  });
 });
