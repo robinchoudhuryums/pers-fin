@@ -211,6 +211,8 @@ async function toolCashPlan() {
     cash: p.cash,
     debts: p.debts.map((d) => ({ name: d.name, type: d.type, balance: d.balance, apr: d.apr, apr_assumed: d.apr_assumed, minimum: d.minimum, carried: d.carried, tier: d.tier, utilization_pct: d.utilization_pct, utilization_tip: d.utilization_tip && d.utilization_tip.text })),
     allocation: p.allocation,
+    emergency: p.emergency,
+    goals: p.goals,
     notes: p.notes,
   };
 }
@@ -234,7 +236,7 @@ const TOOLS = [
   { name: "get_subscriptions", description: "Active detected subscriptions with monthly costs.", input_schema: { type: "object", properties: {} } },
   { name: "get_budget_status", description: "This month's budgets: effective limit (base + rolled-over amount), spent, remaining and percent used — the Budgets page's numbers.", input_schema: { type: "object", properties: {} } },
   { name: "get_fire_projection", description: "FIRE number, progress, time to FIRE, and spending runway under the user's saved assumptions.", input_schema: { type: "object", properties: {} } },
-  { name: "get_cash_plan", description: "The user's plan for extra money — the dashboard's \"Your plan\": the current step (cash buffer, high-interest debt, emergency fund, medium debt, investing), the amount per paycheck, why, the per-debt payments and payoff months, and the disclaimer. Use its figures as given.", input_schema: { type: "object", properties: {} } },
+  { name: "get_cash_plan", description: "The user's plan for extra money — the dashboard's \"Your plan\": the current step (cash buffer, high-interest debt, emergency fund, medium debt, investing), the amount per paycheck, why, the per-debt payments and payoff months, the emergency fund's months covered and when it is reached, each goal's catch-up amount when it is behind its target date, and the disclaimer. Use its figures as given.", input_schema: { type: "object", properties: {} } },
 ];
 
 // POST /api/ask — single-turn NL question over the user's finance data.

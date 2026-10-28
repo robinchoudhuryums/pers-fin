@@ -43,6 +43,7 @@ const UTILIZATION_TARGET = 0.30;
 const MEDIUM_DEBT_SHARE = 0.5;
 const SIM_CAP_MONTHS = 600;
 const PAYCHECKS_PER_YEAR = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
+const GOAL_CATCHUP_MIN = 5;       // a goal is behind when it needs at least this much more a month
 
 // The plan needs these; without one it isn't worked out at all (a missing debt
 // or transfer read would otherwise say "invest" over a 24% card).
@@ -55,6 +56,7 @@ const SOURCE_ERRORS = {
   debts: "Your cards and loans couldn't be read.",
   activity: "Recent card activity couldn't be read.",
   transfers: "Your recurring savings transfers couldn't be read.",
+  goals: "Your goals couldn't be read.",
 };
 const PLAN_ERROR = "Your plan couldn't be worked out — part of your data couldn't be read.";
 
@@ -87,6 +89,22 @@ const TRANSFERS_SQL = `
   WHERE is_active = true AND is_dismissed = false AND direction = 'outgoing'
     AND transfer_type IN ('savings', 'investment')`;
 
+// Active goals with what deriveGoalProgress needs (INV-11 — a funding-linked
+// goal is balance − baseline, the Goals page's figure). Roadmap T4.1 A5.
+const GOALS_SQL = `
+  SELECT g.id, g.name, g.target_amount, g.current_amount, g.monthly_contribution,
+         g.target_date::text AS target_date, g.interest_rate,
+         g.funding_account_id, g.funding_investment_id, g.goal_baseline_amount,
+         COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+         la.name AS funding_account_name,
+         ia.balance AS funding_investment_balance,
+         ia.name AS funding_investment_name
+  FROM financial_goals g
+  LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
+  LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+  WHERE g.is_active = true
+  ORDER BY g.target_date NULLS LAST, g.id`;
+
 // Whole days from a to b ('YYYY-MM-DD').
 const dayGap = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
 const money = (x) => Math.round((Number(x) || 0) * 100) / 100;
@@ -113,6 +131,18 @@ async function getAdviceInputs(pool, { today = todayStr(), deps = {} } = {}) {
     debts: async () => (await pool.query(DEBTS_SQL)).rows,
     activity: async () => (await pool.query(ACTIVITY_SQL, [today])).rows,
     transfers: async () => (await pool.query(TRANSFERS_SQL)).rows,
+    goals: async () => {
+      const { deriveGoalProgress } = require("../routes/goals");
+      return (await pool.query(GOALS_SQL)).rows.map((g) => ({
+        id: g.id,
+        name: g.name,
+        target: num(g.target_amount) || 0,
+        current: money(deriveGoalProgress(g).current),
+        monthly_contribution: num(g.monthly_contribution) || 0,
+        target_date: g.target_date ? String(g.target_date).slice(0, 10) : null,
+        interest_rate: num(g.interest_rate) || 0,
+      }));
+    },
     ...deps,
   };
   const errors = [];
@@ -326,6 +356,67 @@ function allocateDebts(debts, extraMonthly, today, ppy) {
   return { rows, snowball };
 }
 
+// "Mar 2027" for a 'YYYY-MM'.
+function monthLabel(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", year: "numeric" });
+}
+
+// Whole calendar months from today until the target date's month — a target
+// later this month is 0, a target next month 1 (roadmap T4.1 A5).
+function monthsUntil(today, target) {
+  const [y, m] = today.split("-").map(Number);
+  const [ty, tm] = target.split("-").map(Number);
+  return (ty - y) * 12 + (tm - m);
+}
+
+// The monthly deposit that reaches `target` from `current` in `n` months at
+// `ratePct` a year compounded monthly (the Goals page's interest model).
+function requiredMonthly(target, current, n, ratePct) {
+  if (n <= 0) return Math.max(0, target - current);
+  const r = (ratePct || 0) / 1200;
+  if (r <= 0) return Math.max(0, (target - current) / n);
+  const g = Math.pow(1 + r, n);
+  return Math.max(0, ((target - current * g) * r) / (g - 1));
+}
+
+// Roadmap T4.1 A5: each goal with a target date, measured against it. A goal
+// whose monthly contribution falls GOAL_CATCHUP_MIN or more short of what
+// finishes it on time is "behind" — "add $X per paycheck" (rounded UP to the
+// dollar, so it's enough). A goal past (or in) its target month with money to
+// go is "overdue" / "due". Goals with no date or no target, or already
+// reached, are "no_date" / "reached".
+function goalCatchUps(goals, today, { unit, perPeriod }) {
+  return (goals || []).map((g) => {
+    const remaining = money(Math.max(0, g.target - g.current));
+    const out = {
+      id: g.id, name: g.name, target: money(g.target), current: money(g.current), remaining,
+      target_date: g.target_date, monthly_contribution: money(g.monthly_contribution),
+      status: null, months_left: null, required_monthly: null, add_monthly: null, add_per_period: null, text: null,
+    };
+    if (!(g.target > 0) || remaining <= 0) { out.status = "reached"; return out; }
+    if (!g.target_date) { out.status = "no_date"; return out; }
+    const n = monthsUntil(today, g.target_date);
+    out.months_left = Math.max(0, n);
+    if (n <= 0) {
+      out.status = g.target_date < today ? "overdue" : "due";
+      out.text = g.target_date < today
+        ? `${g.name} is past its target date with ${fmt(remaining)} to go.`
+        : `${g.name} is due this month with ${fmt(remaining)} to go.`;
+      return out;
+    }
+    const required = money(requiredMonthly(g.target, g.current, n, g.interest_rate));
+    out.required_monthly = required;
+    const short = required - g.monthly_contribution;
+    if (short < GOAL_CATCHUP_MIN) { out.status = "on_track"; return out; }
+    out.status = "behind";
+    out.add_monthly = money(short);
+    out.add_per_period = Math.ceil(perPeriod(short));
+    out.text = `Add ${fmt(out.add_per_period)} per ${unit} to ${g.name} to finish by ${monthLabel(g.target_date.slice(0, 7))}.`;
+    return out;
+  });
+}
+
 // Decision 6: the main pay stream sets "per paycheck"; without one, per month.
 function payPeriod(streams) {
   let best = null;
@@ -473,6 +564,39 @@ function buildAdvicePlan(inputs) {
     allocation.debts = minimumRows(planned);
     headline = recommended > 0 ? `Invest ${per(recommended)} more.` : "Invest the rest once there's a surplus.";
   }
+  // Roadmap T4.1 A5: the emergency-fund tracker — months of spending covered,
+  // progress to the target and, when money is going toward it, when it gets
+  // there (after the high-interest debt when that step comes first).
+  const emergencyRemaining = money(Math.max(0, emergencyTarget - spendable));
+  const emergency = {
+    months_covered: avgSpending > 0 ? Math.floor((spendable / avgSpending) * 10) / 10 : null,
+    target_months: EMERGENCY_MONTHS,
+    target: emergencyTarget,
+    have: spendable,
+    remaining: emergencyRemaining,
+    pct: emergencyTarget > 0 ? Math.min(100, Math.floor((Math.max(0, spendable) / emergencyTarget) * 100)) : 100,
+    reached: emergencyRemaining <= 0,
+    projection: null,
+    note: null,
+  };
+  if (!emergency.reached) {
+    if (minimumsShort || recommended <= 0) {
+      emergency.note = "Nothing is going toward it right now.";
+    } else if (current.key === "starter_buffer" || current.key === "emergency_fund") {
+      const m = Math.ceil(emergencyRemaining / recommended);
+      emergency.projection = { months: m, month: addMonthsYm(today, m) };
+    } else if (current.key === "high_interest_debt") {
+      const highIds = new Set(high.map((d) => d.id));
+      const payoffs = allocation.debts.filter((r) => highIds.has(r.id)).map((r) => r.months_to_payoff);
+      if (payoffs.length && payoffs.every((x) => x != null)) {
+        const m = Math.max(...payoffs) + Math.ceil(emergencyRemaining / recommended);
+        emergency.projection = { months: m, month: addMonthsYm(today, m) };
+      }
+      emergency.note = "It comes after your high-interest debt is paid off.";
+    }
+  }
+  const goals = inputs.goals == null ? null : goalCatchUps(inputs.goals, today, { unit, perPeriod });
+
   if (minimumsShort) {
     headline = `Your recent months don't cover your ${fmt(required)} of monthly minimum payments.`;
     reason = reason || `Your recent months netted ${fmt(medianNet)} a month — less than your minimum payments.`;
@@ -518,6 +642,8 @@ function buildAdvicePlan(inputs) {
       invest_per_period: perPeriod(allocation.invest_monthly),
       debt_extra_per_period: perPeriod(allocation.debt_extra_monthly),
     },
+    emergency,
+    goals,
     notes,
   };
 }
@@ -538,7 +664,12 @@ module.exports = {
   simulatePayoff,
   allocateDebts,
   payPeriod,
+  goalCatchUps,
+  requiredMonthly,
+  monthsUntil,
   INTEREST_CHARGE_SQL,
+  GOALS_SQL,
+  GOAL_CATCHUP_MIN,
   SOURCE_ERRORS,
   PLAN_ERROR,
   CRITICAL_SOURCES,

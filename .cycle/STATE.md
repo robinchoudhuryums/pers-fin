@@ -18,6 +18,15 @@ Updated: 2026-10-28
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A5 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a5-broad-implement.md`.
+  - **Shipped:** the emergency-fund tracker (`plan.emergency`: months covered, progress, the date at the plan's pace or
+    after the high-interest debt) and the goal catch-up (`plan.goals`: a non-critical goals source through
+    deriveGoalProgress; behind = $5+/month short of finishing on time, "Add $X per paycheck … to finish by …", rounded
+    up; due / overdue), on the "Your plan" card (a labelled <progress>), in the cash_plan prompt block and in Ask's
+    get_cash_plan; the audit counts a goal's catch-up as a plan figure.
+  - **Verified:** npm test 2825/2825 (17 new); contract 277/278 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 seed); mutation 6/7 (the 7th equivalent).
+  - **Where I left off:** A5 committed and pushed. Next: `/sync-docs`, then `/broad-implement A6`.
 - **Roadmap T4.1 A4 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a4-broad-implement.md`.
   - **Shipped:** "Tell me when my plan changes" — `teller/services/advice-alerts.js` + the hourly `advice-plan` away job
     (at most one evaluation a local day; a silent first baseline; a push on a step change, a debt step's new target

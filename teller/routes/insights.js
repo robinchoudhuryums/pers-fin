@@ -87,6 +87,18 @@ function cashPlanPromptBlock(plan) {
     if (a[key] > 0) out += label + ": " + usd(a[key]) + " per " + unit + ".\n";
   }
   if (a.snowball && a.snowball.text) out += "Snowball comparison: " + a.snowball.text + "\n";
+  // Roadmap T4.1 A5: the emergency-fund tracker and the goals behind their dates.
+  const e = plan.emergency;
+  if (e) {
+    let line = "Emergency fund: " + (e.months_covered == null ? "unknown" : e.months_covered) + " of " + e.target_months +
+      " months of spending covered (" + usd(e.have) + " of " + usd(e.target) + ", " + e.pct + "%)";
+    if (e.reached) line += ", reached";
+    else if (e.projection) line += ", reaches it around " + e.projection.month + " at this pace";
+    if (!e.reached && e.note) line += " — " + e.note.charAt(0).toLowerCase() + e.note.slice(1).replace(/\.$/, "");
+    out += line + ".\n";
+  }
+  const late = (plan.goals || []).filter((g) => g.text && ["behind", "overdue", "due"].includes(g.status));
+  if (late.length) out += "Goals behind their target dates:\n" + late.map((g) => "- " + sanitizeForPrompt(g.text)).join("\n") + "\n";
   const tips = (plan.debts || []).filter((d) => d.utilization_tip && d.utilization_tip.text).map((d) => sanitizeForPrompt(d.utilization_tip.text));
   if (tips.length) out += "Utilization tips:\n" + tips.map((t) => "- " + t).join("\n") + "\n";
   if (plan.notes && plan.notes.length) out += "Notes:\n" + plan.notes.map((n) => "- " + sanitizeForPrompt(n)).join("\n") + "\n";

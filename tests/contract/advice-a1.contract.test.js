@@ -142,4 +142,32 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     assert.equal((await aa.runAdviceAlerts(pool, { today })).status, "baseline");
     assert.equal((await pushes()).length, 1);
   });
+
+  it("A5: the emergency tracker and a funding-linked goal's catch-up from real rows", async () => {
+    const { addMonthsYmd } = require("../../teller/services/projections");
+    const chk = (await q("SELECT id FROM linked_accounts WHERE account_id = 'chk'")).rows[0].id;
+    // $20,000 in checking − a $15,000 baseline = $5,000 toward $30,000 in 10 months at $1,000 a month.
+    await q(`INSERT INTO financial_goals (name, target_amount, current_amount, monthly_contribution, target_date, funding_account_id, goal_baseline_amount)
+             VALUES ('House', 30000, 0, 1000, $1, $2, 15000)`, [addMonthsYmd(today, 10), chk]);
+    await q(`INSERT INTO financial_goals (name, target_amount, current_amount, monthly_contribution, target_date)
+             VALUES ('Trip', 1200, 600, 200, $1)`, [addMonthsYmd(today, 6)]);
+    await q(`INSERT INTO financial_goals (name, target_amount, current_amount, is_active) VALUES ('Old', 500, 0, false)`);
+    const plan = await advice.getAdvicePlan(pool);
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.errors, []);
+    const e = plan.emergency;
+    assert.equal(e.have, plan.cash.spendable);
+    assert.equal(e.months_covered, Math.floor((e.have / plan.cash.avg_monthly_spending) * 10) / 10);
+    assert.equal(e.reached, e.have >= e.target);
+    const byName = Object.fromEntries(plan.goals.map((g) => [g.name, g]));
+    assert.deepEqual(Object.keys(byName).sort(), ["House", "Trip"]);
+    assert.equal(byName.House.current, 5000);
+    assert.equal(byName.House.status, "behind");
+    assert.equal(byName.House.required_monthly, 2500);
+    assert.equal(byName.House.add_monthly, 1500);
+    assert.equal(byName.Trip.status, "on_track");
+    // The same plan through the route, the card's source.
+    const res = await supertest(perfinApp()).get("/api/advice").expect(200);
+    assert.deepEqual(res.body.goals, JSON.parse(JSON.stringify(plan.goals)));
+  });
 });

@@ -35,6 +35,9 @@
     .advice-table td.num, .advice-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .advice-list { margin: 6px 0 10px; padding-left: 18px; font-size: 13px; color: var(--text-muted); }
     .advice-disclaimer { color: var(--text-muted); font-size: 11px; margin: 8px 0 0; }
+    .advice-ef { margin: 6px 0 10px; font-size: 13px; }
+    .advice-ef progress { display: block; width: 100%; height: 8px; margin: 4px 0; accent-color: var(--teal); }
+    .advice-ef .advice-ef-sub { color: var(--text-muted); }
     .advice-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .skel { display: block; border-radius: 6px; background: var(--surface-2); animation: skelPulse 1.4s ease-in-out infinite; }
     .skel.line { height: 12px; margin-top: 8px; }
@@ -1566,6 +1569,22 @@
       items = (items || []).filter(Boolean);
       return items.length ? '<ul class="advice-list">' + items.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('') + '</ul>' : '';
     }
+    // Roadmap T4.1 A5: the emergency-fund tracker and goal catch-up lines.
+    function adviceEmergency(e) {
+      if (!e) return '';
+      var covered = e.months_covered == null ? '\u2014' : esc(String(e.months_covered));
+      var sub = e.reached ? 'Reached.'
+        : e.projection ? 'At this pace, reached around ' + esc(adviceMonth(e.projection.month)) + '.'
+        : esc(e.note || '');
+      return '<div class="advice-ef"><div>Emergency fund: ' + covered + ' of ' + esc(String(e.target_months)) +
+        ' months of spending (' + fmt(e.have) + ' of ' + fmt(e.target) + ')</div>' +
+        '<progress max="100" value="' + esc(String(e.pct)) + '" aria-label="Emergency fund: ' + esc(String(e.pct)) + '% of the target"></progress>' +
+        (sub ? '<div class="advice-ef-sub">' + sub + '</div>' : '') + '</div>';
+    }
+    function adviceGoalLines(goals) {
+      return (goals || []).filter(function (g) { return g && g.text && (g.status === 'behind' || g.status === 'overdue' || g.status === 'due'); })
+        .map(function (g) { return g.text; });
+    }
     function renderAdvice(p) {
       var disclaimer = '<p class="advice-disclaimer">' + esc((p && p.disclaimer) || ADVICE_DISCLAIMER) + '</p>';
       if (!p || !p.ok) return '<p class="advice-note">' + esc((p && p.error) || 'Your plan couldn\'t be worked out.') + '</p>' + disclaimer;
@@ -1582,6 +1601,8 @@
           '<span><span class="advice-sr">' + (ADVICE_STATUS[st.status] || '') + '</span>' + esc(st.title) + '</span></li>';
       }).join('') + '</ol>';
       html += adviceDebtRows(p);
+      html += adviceEmergency(p.emergency);
+      html += adviceList(adviceGoalLines(p.goals));
       html += adviceList([p.allocation && p.allocation.snowball && p.allocation.snowball.text]
         .concat((p.debts || []).map(function (d) { return d.utilization_tip && d.utilization_tip.text; })));
       html += adviceList(p.notes);

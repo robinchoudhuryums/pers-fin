@@ -326,7 +326,9 @@ function planFigures(plan) {
   const a = plan.allocation || {};
   const perPeriod = [plan.headline && plan.headline.amount_per_period, plan.surplus && plan.surplus.recommended_per_period,
     a.buffer_per_period, a.emergency_per_period, a.invest_per_period, a.debt_extra_per_period,
-    ...Object.values(debts).flatMap((d) => d.per_period)].filter((v) => v > 0);
+    ...Object.values(debts).flatMap((d) => d.per_period),
+    // A goal's catch-up amount (roadmap T4.1 A5) is a plan figure too.
+    ...(plan.goals || []).map((g) => g && g.add_per_period)].filter((v) => v > 0);
   return { unit: plan.period && plan.period.unit, perPeriod, debts };
 }
 // The finding for one plan claim, or null when it matches (or isn't a plan claim).
