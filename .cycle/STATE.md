@@ -26,7 +26,7 @@ implement and reflect sessions only set Phase.)
     into services/allocation.js so both read one definition; on the card, in the cash_plan block, in Ask.
   - **Verified:** npm test 2870/2870 (18 new); contract 279/280 (1 new passes; the failure is the known date-dependent
     cash-alerts-l2 test). Mutation checks turn tests red.
-  - **Where I left off:** A7 committed and pushed. Next: `/sync-docs` for A7, then `/broad-implement A8`.
+  - **Where I left off:** A7 committed and pushed; docs synced (CLAUDE.md: services/allocation.js in the tree + the Financial Analytics subsystem list, advice.js's idle / allocation sources + the A7 advisors, the performance route + Target Allocation reading the helper, the cash_plan block and Ask, Known Open Issues (A7 follow-ons) + Priority Next Features, INV-150, counts 2870 / 152 / Perfin 2149 / contract 280 + the new test entry; README counts + clause). Next: `/broad-implement A8`.
 - **Roadmap T4.1 A6 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a6-broad-implement.md`.
   - **Shipped:** raise detection (a payer's deposits step up to a new steady level → half of it, rounded down to $25 per
     paycheck, toward the plan's current step), bonus detection (a stand-alone deposit ≥ $500 and 1.5× usual, or a
