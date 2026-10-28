@@ -26,7 +26,7 @@ implement and reflect sessions only set Phase.)
     get_cash_plan; the audit counts a goal's catch-up as a plan figure.
   - **Verified:** npm test 2825/2825 (17 new); contract 277/278 (1 new passes; the failure is the known date-dependent
     cash-alerts-l2 seed); mutation 6/7 (the 7th equivalent).
-  - **Where I left off:** A5 committed and pushed. Next: `/sync-docs`, then `/broad-implement A6`.
+  - **Where I left off:** A5 committed and pushed; docs synced (CLAUDE.md: advice.js's eighth source + the tracker / goal catch-up, the audit's goal figures, the cash_plan block, Known Open Issues (A5 follow-ons) + Priority Next Features, INV-11 / INV-150, counts 2825 / 150 / contract 278 + the new test entry; README counts + clause). Next: `/broad-implement A6`.
 - **Roadmap T4.1 A4 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a4-broad-implement.md`.
   - **Shipped:** "Tell me when my plan changes" — `teller/services/advice-alerts.js` + the hourly `advice-plan` away job
     (at most one evaluation a local day; a silent first baseline; a push on a step change, a debt step's new target
