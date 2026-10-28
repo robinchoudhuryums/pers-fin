@@ -6870,7 +6870,7 @@ spendable cash, not a named account or goal (A5 kept that — its tracker reads 
 fixed minimum, so payoff months are estimates. A2 follow-ons: the plan has no "tell me when my plan
 changes" option yet (A4 — done since); the card fetches its own request, whose 60-day cash
 forecast can differ from the Summary card's 30-day lowest day; the Settings toggle reads "Your Plan" (Title
-Case, like the other widget labels). A3 follow-ons: every insight run reads the plan's seven sources (a
+Case, like the other widget labels). A3 follow-ons: every insight run reads the plan's sources (eight since A5; a
 few more queries and a longer prompt); the audit checks a plan amount only when it is stated per paycheck
 or as a named debt's monthly figure ("$750 toward your cards" isn't checked); a "Plan (…)" pending action
 an earlier run wrote stays when cash_plan is switched off or the plan can't be worked out (the model may
@@ -7270,8 +7270,8 @@ perfin_url) and its contract-coverage gap were fixed by the follow-on batch
    catch-up, are done; A6 next; plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
    high-APR card debt first with a per-card avalanche split, a 3-month emergency fund, then
    "invest $X more per paycheck" from a sustained surplus — on the dashboard, in AI insights and
-   in Ask, with one opt-in "tell me when my plan changes" checkbox; then (A5–A10) emergency-fund
-   and goal catch-up, raise / bonus split, spending creep, idle cash, rebalancing directions,
+   in Ask, with one opt-in "tell me when my plan changes" checkbox; then (A5, done) emergency-fund
+   and goal catch-up and (A6–A10) raise / bonus split, spending creep, idle cash, rebalancing directions,
    statement-date utilization, loan extra payments, sinking funds, subscription consolidation,
    tax-advantaged room and what-if questions in Ask.
 
