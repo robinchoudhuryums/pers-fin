@@ -412,7 +412,26 @@ teller/
                            plan adds `loan_extra` (loanExtraPayments: each carried loan with
                            an APR > 0 and a payment the plan doesn't already fund — an extra
                            $100 a month through computeLoanPayoff: interest saved, months
-                           sooner, a low-APR note)
+                           sooner, a low-APR note). Roadmap T4.1 A9: a thirteenth,
+                           NON-critical source `subscriptions` (SUBSCRIPTIONS_SQL: active
+                           detected subscriptions not dismissed or cancelled;
+                           SINKING_BILLS_SQL: active quarterly / yearly manual bills;
+                           MEMBERSHIP_ACTIVITY_SQL: 90 days of settled debits whose display
+                           merchant names a membership store, word boundaries). The plan
+                           adds `sinking_funds` (sinkingFunds: each subscription billed
+                           every 90+ days and each quarterly / yearly manual bill of $100+,
+                           its next date by cadence.seriesOccurrences / manualBillOccurrences,
+                           the set-aside per month until then rounded up to the dollar and
+                           the steady amount after, soonest first, at most 8; total_monthly
+                           = the steady sum) and `subscription_review` (subscriptionReview:
+                           OVERLAP_GROUPS — video / music streaming, cloud storage, VPN,
+                           password manager, a service counted in its first group — with two
+                           or more members → what keeping one saves; MEMBERSHIPS — Amazon
+                           Prime (not Prime Video), Costco, Walmart+, Instacart, DashPass,
+                           Uber One, Grubhub — 90+ days old with no other purchase from the
+                           store in 90 days, a charge within 50 cents of the fee not counted;
+                           monthly = amount × 30 / cadence days) — each null when the read
+                           failed
     advice-alerts.js     — "Tell me when my plan changes" (roadmap T4.1 A4, plan
                            decision 8): runAdviceAlerts(pool, { now, today, deps }), run
                            hourly by the "advice-plan" away job. Off by default
@@ -903,7 +922,8 @@ teller/
                            since roadmap T4.1 A2 get_cash_plan — the advice plan,
                            trimmed (raises / bonuses / spending creep since A6, idle
                            cash / rebalancing since A7, loan extra payments and each
-                           card's next statement date since A8); the prompt sends extra-money questions to it,
+                           card's next statement date since A8, sinking funds and the
+                           subscription review since A9); the prompt sends extra-money questions to it,
                            says it is educational and names no security or fund) so
                            cited numbers match the dashboard by construction —
                            the model never writes SQL. Bounded tool loop
@@ -1295,9 +1315,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2883 tests as of latest); use
+  Perfin and Per-sistant test files (2896 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2883 tests across 153 test files (incl.
+  Current count: 2896 tests across 154 test files (incl.
+  `tests/roadmap-t4-1-a9.test.js` — roadmap T4.1 A9: sinkingFunds (each quarterly / yearly bill of $100+, its date
+  equal to cadence.seriesOccurrences / manualBillOccurrences — a stale next_expected projected from today — the
+  set-aside rounded up until then and the steady amount after, a bill due within a month, soonest first, at most 8;
+  monthly / small bills left out), subscriptionReview (an overlap's save range, word boundaries, the monthly
+  equivalent, a bundle counted in its first group; a membership with no other store purchase in 90 days — the fee
+  itself, a new membership and Prime Video not flagged), the plan's fields and a failing read, the readers' SQL, the
+  card, the cash_plan block and Ask;
   `tests/roadmap-t4-1-a8.test.js` — roadmap T4.1 A8: the liabilities sync writing a card's last statement balance
   and date ($0 kept) and the migration's columns; nextStatementDate (a month on, the day clamped — Jan 31 → Feb 28 →
   Mar 31 — stale / future / malformed → null); the carried test reading the statement (under 95% after it carried, at
@@ -2254,8 +2281,10 @@ shell/
   Dining creep net of a refund; since A7 a $9,000 checking dip moved only to real destinations — never the $0
   brokerage phantom — a bond → equity $3,000 move, and the plan's drift equal to GET /api/investments/performance's;
   since A8 a card's statement paid in full after it closed — not carried, its tip naming the next close — and a car
-  loan's extra $100 a month equal to computeLoanPayoff, through GET /api/advice).
-  281 tests, run
+  loan's extra $100 a month equal to computeLoanPayoff, through GET /api/advice; since A9 a quarterly subscription, a
+  quarterly manual bill and a yearly membership as sinking funds on the cadence helpers' dates — a monthly bill and a
+  cancelled service left out — a Netflix + Hulu overlap and an Amazon Prime with no other purchase, through GET /api/advice).
+  282 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3421,7 +3450,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
     "Raises:", "Bonuses / one-off deposits:" (each with its split) and "Spending growing faster
     than income:" lines; since A7 "Idle cash:" and "Rebalancing (directions between asset
     classes — never name a security or fund):" lines; since A8 "Loan extra payments:" lines (the
-    statement-date utilization tip rides the "Utilization tips:" lines)
+    statement-date utilization tip rides the "Utilization tips:" lines); since A9 "Sinking funds
+    (quarterly / yearly bills):" and "Subscriptions to review:" lines
   - Debt payoff optimizer (avalanche vs snowball, credit score projections — while `cash_plan`
     is on, the payoff order, amounts and interest saved come from the plan instead).
     A card's limit is `credit_limit` (Plaid or manual), else owed + available
@@ -4422,7 +4452,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2883 tests passing across 153 test files (Perfin 2162 + Per-sistant 721), plus the real-Postgres route contract suite (281 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2896 tests passing across 154 test files (Perfin 2175 + Per-sistant 721), plus the real-Postgres route contract suite (282 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -6965,7 +6995,7 @@ aren't re-checked; Per-sistant's calendar projection starts its window at UTC mi
 east of UTC — cosmetic); DATE values Per-sistant reads through perfinPool (finance search, the
 Perfin widget, housingDue) are still Perfin's Dates; a landing line can be up to 30 s stale.
 
-**Roadmap T4.1 (in progress — A1–A8 done):** `services/advice.js` computes the plan; since A2 it is
+**Roadmap T4.1 (in progress — A1–A9 done):** `services/advice.js` computes the plan; since A2 it is
 served by GET /api/advice, shown in the dashboard's "Your plan" card (widget key `advice`, on by default)
 and read by Ask's get_cash_plan; since A3 it is the `cash_plan` insight module (the model words the plan,
 the audit checks its figures, its current step is one "Plan (…)" pending action). The A1 choices stand
@@ -6980,7 +7010,7 @@ spendable cash, not a named account or goal (A5 kept that — its tracker reads 
 fixed minimum, so payoff months are estimates. A2 follow-ons: the plan has no "tell me when my plan
 changes" option yet (A4 — done since); the card fetches its own request, whose 60-day cash
 forecast can differ from the Summary card's 30-day lowest day; the Settings toggle reads "Your Plan" (Title
-Case, like the other widget labels). A3 follow-ons: every insight run reads the plan's sources (twelve since A7; a
+Case, like the other widget labels). A3 follow-ons: every insight run reads the plan's sources (thirteen since A9; a
 few more queries and a longer prompt); the audit checks a plan amount only when it is stated per paycheck
 or as a named debt's monthly figure ("$750 toward your cards" isn't checked); a "Plan (…)" pending action
 an earlier run wrote stays when cash_plan is switched off or the plan can't be worked out (the model may
@@ -7025,7 +7055,14 @@ to what it reports; a refund between the statement and the payment can make a fu
 (carried until the next statement); the loan line's $100 is a constant, it ignores a prepayment penalty and
 leaves out a loan the plan already funds; the audit doesn't check the loan line's interest saved or months;
 once the statements fill in, a card's carried status (and so the plan's step) can change, and with the
-plan-change alert on that pushes once.
+plan-change alert on that pushes once. Since A9 the plan lists each quarterly / yearly bill of $100+ with
+what to set aside each month until it's due and the steady amount after, overlapping services (what keeping
+one would save) and memberships with no other purchase from their store in 90 days. A9 follow-ons: the
+surplus doesn't subtract the sinking-fund amount (a yearly bill outside the last 3 completed months makes it
+read high; the 60% slack partly absorbs it); a 60-day subscription isn't a sinking fund; the overlap groups
+and memberships are fixed keyword lists and "keeping one" doesn't know which you use; a membership's store
+purchases are matched on the display merchant only; nothing notifies for A9 and the audit doesn't check its
+figures; each advice read runs three more queries.
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
@@ -7404,12 +7441,12 @@ perfin_url) and its contract-coverage gap were fixed by the follow-on batch
 2. **Roadmap T4.1 — "Where should my extra money go?"** (in progress — A1, the engine
    `services/advice.js`, A2, GET /api/advice + the dashboard card + Ask's get_cash_plan, and A3, the cash_plan insight
    module, A4, the "tell me when my plan changes" checkbox, and A5, the emergency-fund tracker and goal
-   catch-up, A6, raise / bonus split and spending creep, and A7, idle cash and rebalancing directions, and A8, statement-date utilization and loan extra payments, are done; A9 next; plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
+   catch-up, A6, raise / bonus split and spending creep, and A7, idle cash and rebalancing directions, A8, statement-date utilization and loan extra payments, and A9, sinking funds and subscription consolidation, are done; A10 next; plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
    high-APR card debt first with a per-card avalanche split, a 3-month emergency fund, then
    "invest $X more per paycheck" from a sustained surplus — on the dashboard, in AI insights and
-   in Ask, with one opt-in "tell me when my plan changes" checkbox; then (A5–A8, done) emergency-fund
+   in Ask, with one opt-in "tell me when my plan changes" checkbox; then (A5–A9, done) emergency-fund
    and goal catch-up, raise / bonus split, spending creep, idle cash and rebalancing directions,
-   statement-date utilization and loan extra payments, and (A9–A10) sinking funds, subscription consolidation,
+   statement-date utilization, loan extra payments, sinking funds and subscription consolidation, and (A10)
    tax-advantaged room and what-if questions in Ask.
 
 Shipped (June 2026): **Job Radar (Per-sistant)** — a personal job-listing radar
@@ -7712,7 +7749,7 @@ INV-147 | The dashboard summary has one definition per figure, each the helper i
 INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only. Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
 INV-149 | A linked task follows its source without ever overriding the user: one sync at a time (a transaction under pg_advisory_xact_lock(727274010), creations announced only after COMMIT); a key deleted for good is never inserted again (linked_task_tombstones, db/031's BEFORE DELETE trigger on every delete path); a task is closed only when its source says the item is resolved — a still-open item past the creation window is retained, not closed; an auto-close is not a completion (no todo_completed event, and analytics / the weekly review / Ask / stats leave it out); a task completed, reopened, edited or trashed by hand is never touched (source_detached, per-field snapshot) | Subsystem: Per-sistant Backend / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x1a + x1b + broad-scan-c8-batch5 + tests/broad-scan-c8-batch5 + tests/contract/linked-tasks / linked-tasks-crossapp / c8-batch5
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
-INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 + tests/contract/advice-a1
+INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — and the sinking funds and subscription review — A9, the dates from cadence.js — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 / a9 + tests/contract/advice-a1
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

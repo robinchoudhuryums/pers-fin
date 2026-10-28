@@ -27,7 +27,7 @@ implement and reflect sessions only set Phase.)
     non-critical `subscriptions` source; on the card, in the cash_plan block, in Ask.
   - **Verified:** npm test 2896/2896 (13 new); contract 281/282 (1 new passes; the failure is the known date-dependent
     cash-alerts-l2 test). Mutation checks turn tests red.
-  - **Where I left off:** A9 committed and pushed. Next: `/sync-docs` for A9, then `/broad-implement A10`.
+  - **Where I left off:** A9 committed and pushed; docs synced (CLAUDE.md: advice.js's subscriptions source + sinkingFunds / subscriptionReview, the cash_plan block and Ask, Known Open Issues (A1–A9 done, thirteen sources, A9 follow-ons) + Priority Next Features (A10 next), INV-150, counts 2896 / 154 / Perfin 2175 / contract 282 + the new test entry; README counts + clause). Next: `/broad-implement A10`.
 - **Roadmap T4.1 A8 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a8-broad-implement.md`.
   - **Shipped:** a card's last statement balance + issue date stored from Plaid Liabilities (two linked_accounts columns);
     the 30% utilization tip names the day the next statement closes ("pay $Y before Nov 5, when its next statement
