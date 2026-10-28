@@ -18,6 +18,11 @@ Updated: 2026-10-28
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 expansion E1–E5 (PLANNED, 2026-10-28):** the scan's expansion plan saved as `.cycle/plan-cycle8-expansion.md`;
+  the operator wants E1–E5 done before cycle 8's `/reflect`. E1 (G1 forecast overrides + G5 bulk Resolve undo) is planned in
+  `.cycle/plan-e1-forecast-corrections.md` as three batches — E1a (G1 server), E1b (G1 UI), E1c (G5). Found while planning:
+  no page shows recurring transfers or calls CSV-overlap Resolve today (both API only).
+  - **Where I left off:** plans committed and pushed. Next: `/broad-implement E1a` (confirm the plan's proposed decisions there).
 - **Roadmap T4.1 A10 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a10-broad-implement.md`.
   - **Shipped:** contribution room (user_settings.contribution_limits — yearly limits entered by hand per investment
     account in Settings → Planning → Target Allocation, no account type assumed — compared with this calendar year's
