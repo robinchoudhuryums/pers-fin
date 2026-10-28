@@ -51,6 +51,7 @@ const JOB_INTERVALS_MS = {
   "housing-ledger": 6 * HOUR, // ticked since FAN-3 but never watched (F8)
   "cash-alerts": 1 * HOUR, // roadmap T2.2 L2
   "linked-tasks": 1 * HOUR, // roadmap T2.4 X2b
+  "advice-plan": 1 * HOUR, // roadmap T4.1 A4
 };
 const MISSED_FACTOR = 4;
 const MIN_THRESHOLD_MS = 36 * HOUR;

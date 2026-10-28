@@ -285,6 +285,23 @@ async function runCashAlertsTick() {
   else if (ran) jobHealth.result("cash-alerts", { ok: true });
 }
 
+// "Tell me when my plan changes" (roadmap T4.1 A4 — services/advice-alerts.js).
+// An away channel (INV-77): NOT activity-gated, ticks hourly but evaluates at
+// most once a local day (an in-memory memo skips even the settings read once
+// it has checked or found itself off; a Settings change clears it). Push only.
+// An outcome is recorded only when it evaluated.
+async function runAdvicePlanTick() {
+  jobHealth.tick("advice-plan");
+  try {
+    const r = await require("./services/advice-alerts").runAdviceAlerts(pool);
+    if (r.status === "unlogged") jobHealth.result("advice-plan", { ok: false, error: "notification not logged" });
+    else if (r.ran) jobHealth.result("advice-plan", { ok: true });
+  } catch (err) {
+    console.error("Plan alert scheduler error:", err.message);
+    jobHealth.result("advice-plan", { ok: false, error: err.message });
+  }
+}
+
 // Linked tasks (roadmap T2.4 X2b — services/linked-tasks.js): reconcile the
 // Per-sistant tasks Perfin keeps in step (rent due, utility amounts, manual
 // bills). An away channel (INV-77): NOT activity-gated, ticks hourly; while
@@ -792,6 +809,10 @@ function startBackgroundJobs() {
   // runLinkedTasksTick — nothing while off or standalone.
   intervalHandles.push(setInterval(() => runLinkedTasksTick(), 60 * 60 * 1000));
 
+  // Plan-change alert (roadmap T4.1 A4). Hourly, NOT activity-gated; see
+  // runAdvicePlanTick — at most one evaluation a local day.
+  intervalHandles.push(setInterval(() => runAdvicePlanTick(), 60 * 60 * 1000));
+
   // Missed-job watchdog (F4). Flushes the in-memory job heartbeats to the
   // job_runs table and alerts (once per outage, signature-deduped) when any
   // scheduled job hasn't ticked for 36h+ — i.e. the process was asleep or
@@ -840,6 +861,7 @@ function startBackgroundJobs() {
   scheduleBootRuns({
     "cash-alerts": runCashAlertsTick,
     "linked-tasks": runLinkedTasksTick,
+    "advice-plan": runAdvicePlanTick,
     "budget-alerts": runBudgetAlertTick,
     "housing-ledger": runHousingLedgerTick,
     "csv-reminder": runCsvReminderTick,
@@ -927,7 +949,7 @@ module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity
 module.exports._awayJobs = {
   runBudgetAlertTick, runWeeklyDigestTick, runDailyDigestTick, runCsvReminderTick,
   runHousingLedgerTick, runInsightsAutoTriggerTick, runCashAlertsTick, runLinkedTasksTick,
-  runBankAutoSyncTick, runSelfHealingReconcileTick,
+  runAdvicePlanTick, runBankAutoSyncTick, runSelfHealingReconcileTick,
   reset() { invalidateJobMemos(); },
 };
 module.exports._boot = { bootRunPlan, BOOT_FIRST_DELAY_MS, BOOT_STAGGER_MS };

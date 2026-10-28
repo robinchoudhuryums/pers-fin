@@ -12,12 +12,21 @@ to the "none in progress" state.
 Cycle: 8
 Phase: implement
 Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
-Updated: 2026-10-27
+Updated: 2026-10-28
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A4 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a4-broad-implement.md`.
+  - **Shipped:** "Tell me when my plan changes" — `teller/services/advice-alerts.js` + the hourly `advice-plan` away job
+    (at most one evaluation a local day; a silent first baseline; a push on a step change, a debt step's new target
+    or a ≥ 20% and ≥ $50 move per paycheck; push only; signature advanced only when logged), user_settings
+    advice_alerts_enabled / advice_state, the strict-boolean PATCH (switch-on resets the baseline) and the
+    "Plan Changes" checkbox in Settings → Cash Alerts. reset-fresh needed no change.
+  - **Verified:** npm test 2808/2808 (24 new); contract 276/277 (1 new passes; the 1 failure is the pre-existing,
+    date-dependent cash-alerts-l2 seed — follow-on); mutation 6/6.
+  - **Where I left off:** A4 committed and pushed. Next: `/sync-docs`, then `/broad-implement A5`.
 - **Roadmap T4.1 A3 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a3-broad-implement.md`.
   - **Shipped:** the `cash_plan` insight module (13 modules): the engine's plan in the prompt (cashPlanPromptBlock),
     the debt optimizer pointed at the plan's order, the plan's current step kept as one "Plan (...)" pending action

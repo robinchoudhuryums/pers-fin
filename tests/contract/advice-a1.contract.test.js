@@ -105,4 +105,41 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     assert.ok(f.perPeriod.includes(1000));
     assert.deepEqual(f.debts.visa.per_period, [1090, 1000]);
   });
+
+  it("A4: switched on through PATCH, a silent baseline, then one push when Visa is paid off", async () => {
+    const aa = require("../../teller/services/advice-alerts");
+    aa._reset();
+    const pushes = async () => (await q("SELECT title, body, data FROM notification_log WHERE type = 'advice-plan'")).rows;
+    assert.equal((await aa.runAdviceAlerts(pool, { today })).status, "disabled"); // off by default
+    await supertest(perfinApp()).patch("/api/settings").send({ advice_alerts_enabled: "yes" }).expect(400);
+    await supertest(perfinApp()).patch("/api/settings").send({ advice_alerts_enabled: true }).expect(200);
+    const base = await aa.runAdviceAlerts(pool, { today });
+    assert.equal(base.status, "baseline");
+    assert.equal(base.signature.target, "Visa");
+    assert.equal((await aa.runAdviceAlerts(pool, { today })).status, "checked"); // once a local day
+    assert.equal((await pushes()).length, 0);
+
+    // Visa paid off: no balance, no interest. Pretend the check was yesterday.
+    await q("UPDATE linked_accounts SET current_balance = 0 WHERE account_id = 'visa'");
+    await q("DELETE FROM transactions WHERE transaction_id = 'visa-int'");
+    await q("UPDATE user_settings SET advice_state = jsonb_set(advice_state, '{checked_on}', '\"2000-01-01\"') WHERE id = 1");
+    aa._reset();
+    const r = await aa.runAdviceAlerts(pool, { today });
+    assert.equal(r.status, "notified");
+    const rows = await pushes();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, "Your plan changed");
+    assert.match(rows[0].body, /^Visa is paid off — your plan now puts \$[\d,]+ per paycheck toward Store card\.$/);
+    assert.equal(rows[0].data.url, "/dashboard");
+    const state = (await q("SELECT advice_state FROM user_settings WHERE id = 1")).rows[0].advice_state;
+    assert.equal(state.signature.target, "Store card");
+    assert.equal(state.checked_on, today);
+
+    // Switching off and on again starts from a fresh baseline.
+    await supertest(perfinApp()).patch("/api/settings").send({ advice_alerts_enabled: false }).expect(200);
+    await supertest(perfinApp()).patch("/api/settings").send({ advice_alerts_enabled: true }).expect(200);
+    assert.equal((await q("SELECT advice_state FROM user_settings WHERE id = 1")).rows[0].advice_state, null);
+    assert.equal((await aa.runAdviceAlerts(pool, { today })).status, "baseline");
+    assert.equal((await pushes()).length, 1);
+  });
 });

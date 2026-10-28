@@ -353,6 +353,12 @@
       </div>
     </div>
     <div class="setting-row">
+      <div class="setting-info"><div class="name">Plan Changes</div><div class="desc">Tell me when my plan changes — when the dashboard's "Your plan" moves to a new step (a card paid off, the emergency fund reached) or its amount per paycheck moves by 20% and at least $50. Checked once a day. Push only, never email.</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="advice-alert-toggle" aria-label="Tell me when my plan changes"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">Account Floors</div><div class="desc">Also notify me when one account's current balance is below its own floor (once a day per account; needs Low Cash Alert on). Leave blank for none.</div></div>
     </div>
     <div id="cash-floor-list" class="desc" style="margin:-4px 0 10px;">Loading…</div>
@@ -833,6 +839,7 @@
         horizonSel.value = String(s.cash_alert_horizon_days || 14);
         if (horizonSel.value !== String(s.cash_alert_horizon_days || 14)) horizonSel.value = '14';
         document.getElementById('payday-alert-toggle').checked = !!s.payday_alerts_enabled;
+        document.getElementById('advice-alert-toggle').checked = !!s.advice_alerts_enabled;
         renderCashAlertLast(s);
         renderLinkedTasks(s);
         var critToggle = document.getElementById('critical-alert-toggle');
@@ -1704,6 +1711,7 @@
       ['critical-alert-toggle', 'change', function() { saveToggle(this, 'critical_alert_emails_enabled'); }],
       ['cash-alert-toggle', 'change', function() { saveToggle(this, 'cash_alert_enabled'); }],
       ['payday-alert-toggle', 'change', function() { saveToggle(this, 'payday_alerts_enabled'); }],
+      ['advice-alert-toggle', 'change', function() { saveToggle(this, 'advice_alerts_enabled'); }],
       ['cash-alert-horizon', 'change', function() { updateSetting('cash_alert_horizon_days', parseInt(this.value, 10)); }],
       ['cash-alert-threshold-save', 'click', function() {
         var n = parseAmountInput(document.getElementById('cash-alert-threshold').value);
