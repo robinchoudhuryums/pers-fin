@@ -18,6 +18,15 @@ Updated: 2026-10-28
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A7 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a7-broad-implement.md`.
+  - **Shipped:** idle cash (checking above the starter buffer for 60 days → moved in the plan's order — the card first,
+    the emergency fund to a savings account, investing to a non-tax-advantaged brokerage — only to accounts that exist,
+    outflows capped by the projected low) and rebalancing directions (a target-allocation class > 5 points off →
+    "move about $X from bond to equity", asset classes only, with a note); the Investments card's allocation moved
+    into services/allocation.js so both read one definition; on the card, in the cash_plan block, in Ask.
+  - **Verified:** npm test 2870/2870 (18 new); contract 279/280 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A7 committed and pushed. Next: `/sync-docs` for A7, then `/broad-implement A8`.
 - **Roadmap T4.1 A6 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a6-broad-implement.md`.
   - **Shipped:** raise detection (a payer's deposits step up to a new steady level → half of it, rounded down to $25 per
     paycheck, toward the plan's current step), bonus detection (a stand-alone deposit ≥ $500 and 1.5× usual, or a

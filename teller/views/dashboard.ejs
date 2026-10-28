@@ -1608,6 +1608,9 @@
       html += adviceEmergency(p.emergency);
       html += adviceList(adviceGoalLines(p.goals));
       html += adviceList(adviceTexts(p.raises).concat(adviceTexts(p.bonuses), adviceTexts(p.spending_creep)));
+      // Roadmap T4.1 A7: idle cash, and rebalancing directions with their note.
+      var rb = p.rebalance && p.rebalance.moves && p.rebalance.moves.length ? p.rebalance : null;
+      html += adviceList([p.idle_cash && p.idle_cash.text].concat(rb ? adviceTexts(rb.moves).concat([rb.note]) : []));
       html += adviceList([p.allocation && p.allocation.snowball && p.allocation.snowball.text]
         .concat((p.debts || []).map(function (d) { return d.utilization_tip && d.utilization_tip.text; })));
       html += adviceList(p.notes);

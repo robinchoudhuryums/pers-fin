@@ -18,7 +18,7 @@
 // is a named constant here, not a setting (decision 9). Nothing names a
 // security or a fund (decision 10).
 
-const { todayStr, previousMonthKey, incomePredicate, INCOME_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS } = require("./financial-queries");
+const { todayStr, previousMonthKey, incomePredicate, INCOME_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, INVESTMENT_ACCOUNT_TYPES } = require("./financial-queries");
 const { addMonthsYm } = require("./projections");
 
 const DISCLAIMER = "Educational, based on your data — not financial advice.";
@@ -65,6 +65,16 @@ const CREEP_MIN_INCREASE = 50;    // … that rose by at least $50 a month …
 const CREEP_MARGIN = 0.15;        // … and 15 points faster than income
 const CREEP_MAX = 3;              // categories listed
 const CREEP_SKIP = new Set(["uncategorized"]);
+// Roadmap T4.1 A7 — idle cash and rebalancing directions.
+const IDLE_DAYS = 60;             // checking has stayed above the line this long …
+const IDLE_PAD_DAYS = 31;         // … (snapshots read this far before the window for its first day)
+const IDLE_MIN = 500;             // at least this much to move
+const IDLE_ROUND_TO = 100;        // rounded down to $100
+const SAVINGS_SUBTYPES = new Set(["savings", "money market", "money_market", "cash management", "cash_management"]);
+const REBALANCE_DRIFT = 5;        // a class more than 5 points off its target
+const REBALANCE_ROUND_TO = 100;   // moves rounded to the nearest $100 …
+const REBALANCE_MIN = 100;        // … and listed from $100
+const REBALANCE_NOTE = "Directions only — pick the holdings yourself. Selling in a taxable account can create a taxable gain; new contributions can move the mix without selling.";
 
 // The plan needs these; without one it isn't worked out at all (a missing debt
 // or transfer read would otherwise say "invest" over a 24% card).
@@ -80,6 +90,8 @@ const SOURCE_ERRORS = {
   goals: "Your goals couldn't be read.",
   deposits: "Recent paychecks couldn't be read.",
   categories: "Spending by category couldn't be read.",
+  idle: "Your account balance history couldn't be read.",
+  allocation: "Your investment allocation couldn't be read.",
 };
 const PLAN_ERROR = "Your plan couldn't be worked out — part of your data couldn't be read.";
 
@@ -140,6 +152,26 @@ const DEPOSITS_SQL = `
     AND t.date >= $1::date - ${DEPOSIT_LOOKBACK_DAYS} AND t.date <= $1::date
     AND ${incomePredicate("t")}
   ORDER BY t.date, t.transaction_id`;
+// Roadmap T4.1 A7: the accounts idle cash can move between (no Plaid
+// brokerage phantom — the getNetWorth dedupe), the active investment
+// accounts, and the checking accounts' daily balances over the window.
+const IDLE_ACCOUNTS_SQL = `
+  SELECT la.id, la.name, la.type, LOWER(COALESCE(la.subtype, '')) AS subtype, la.current_balance,
+         ${INVESTMENT_ACCOUNT_TYPES} AS is_investment
+  FROM linked_accounts la
+  WHERE (la.type = 'depository' OR ${INVESTMENT_ACCOUNT_TYPES})
+    AND NOT EXISTS (SELECT 1 FROM investment_accounts ia WHERE ia.plaid_account_id = la.account_id AND ia.is_active)
+  ORDER BY la.id`;
+const IDLE_INVESTMENTS_SQL = `
+  SELECT id, name, account_type FROM investment_accounts WHERE is_active = true ORDER BY id`;
+const IDLE_SNAPSHOTS_SQL = `
+  SELECT s.source_id AS id, s.snapshot_date::text AS date, s.balance
+  FROM account_balance_snapshots s
+  JOIN linked_accounts la ON la.id = s.source_id
+  WHERE s.source = 'linked' AND la.type = 'depository' AND LOWER(COALESCE(la.subtype, '')) = 'checking'
+    AND NOT ${INVESTMENT_ACCOUNT_TYPES}
+    AND s.snapshot_date >= $1::date - ${IDLE_DAYS + IDLE_PAD_DAYS} AND s.snapshot_date <= $1::date
+  ORDER BY s.snapshot_date, s.source_id`;
 const CATEGORY_MONTHS_SQL = `
   WITH ${spendLinesCTE("t.date >= $1::date AND t.date < $2::date")},
   ${NET_CATEGORY_MONTHS}
@@ -189,6 +221,24 @@ async function getAdviceInputs(pool, { today = todayStr(), deps = {} } = {}) {
     deposits: async () => (await pool.query(DEPOSITS_SQL, [today])).rows
       .map((r) => ({ date: String(r.date).slice(0, 10), source: r.source, amount: num(r.amount) || 0 }))
       .filter((r) => r.source && r.amount > 0),
+    idle: async () => {
+      const [accounts, investments, snapshots] = await Promise.all([
+        pool.query(IDLE_ACCOUNTS_SQL), pool.query(IDLE_INVESTMENTS_SQL), pool.query(IDLE_SNAPSHOTS_SQL, [today]),
+      ]);
+      return {
+        accounts: accounts.rows.map((r) => ({ id: r.id, name: r.name, type: r.type, subtype: r.subtype || "", current_balance: num(r.current_balance), is_investment: !!r.is_investment })),
+        investments: investments.rows.map((r) => ({ id: r.id, name: r.name, account_type: r.account_type })),
+        snapshots: snapshots.rows.map((r) => ({ id: r.id, date: String(r.date).slice(0, 10), balance: num(r.balance) })),
+      };
+    },
+    allocation: async () => {
+      const al = require("./allocation");
+      const [holdings, settings] = await Promise.all([
+        pool.query(al.HOLDINGS_SQL),
+        pool.query("SELECT target_allocation_pct FROM user_settings WHERE id = 1"),
+      ]);
+      return al.assetAllocation(holdings.rows, al.normalizeTargets(settings.rows[0] && settings.rows[0].target_allocation_pct));
+    },
     categories: async () => {
       const keys = completedMonthKeys(today, CREEP_MONTHS);
       return (await pool.query(CATEGORY_MONTHS_SQL, [keys[0] + "-01", today.slice(0, 7) + "-01"])).rows
@@ -624,6 +674,86 @@ function spendingCreep(categoryRows, monthRows, today) {
   return out.sort((a, b) => b.increase_monthly - a.increase_monthly).slice(0, CREEP_MAX);
 }
 
+// ---------------------------------------------------------------- A7
+
+// Pure: the lowest total the checking accounts held on any day of the last
+// IDLE_DAYS (each account's latest snapshot carried forward), or null when an
+// account has no balance known at the window's start (not enough history).
+function checkingLow(idle, today) {
+  const checking = (idle.accounts || []).filter((a) => a.type === "depository" && a.subtype === "checking" && !a.is_investment);
+  if (!checking.length) return null;
+  const start = new Date(Date.parse(today + "T00:00:00Z") - IDLE_DAYS * 86400000).toISOString().slice(0, 10);
+  const series = new Map(checking.map((a) => [a.id, []]));
+  for (const snap of idle.snapshots || []) if (series.has(snap.id) && snap.balance != null) series.get(snap.id).push(snap);
+  for (const list of series.values()) {
+    list.sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
+    if (!list.length || list[0].date > start) return null;
+  }
+  // The days that matter: the window's start and every snapshot day in it.
+  const days = new Set([start]);
+  for (const list of series.values()) for (const snap of list) if (snap.date > start) days.add(snap.date);
+  let low = Infinity;
+  for (const day of days) {
+    let total = 0;
+    for (const list of series.values()) {
+      let bal = null;
+      for (const snap of list) { if (snap.date <= day) bal = snap.balance; else break; }
+      total += bal || 0;
+    }
+    low = Math.min(low, total);
+  }
+  // Today's balance too, when it's lower than the last snapshot.
+  const now = checking.reduce((t, a) => t + (a.current_balance || 0), 0);
+  if (checking.every((a) => a.current_balance != null)) low = Math.min(low, now);
+  return money(low);
+}
+
+// The accounts idle cash can move to: a savings account, and a brokerage that
+// isn't tax-advantaged (cash can't simply go into an IRA or 401(k)).
+function idleDestinations(idle) {
+  const { accountTaxAdvantaged } = require("./tax-investments");
+  const accounts = idle.accounts || [];
+  const savings = accounts.find((a) => a.type === "depository" && !a.is_investment && SAVINGS_SUBTYPES.has(a.subtype)) || null;
+  const linkedBroker = accounts.find((a) => a.is_investment && a.subtype && !accountTaxAdvantaged(a.subtype));
+  const broker = linkedBroker || (idle.investments || []).find((i) => !accountTaxAdvantaged(i.account_type)) || null;
+  return { savings, brokerage: broker };
+}
+
+// Pure: target-allocation drift beyond REBALANCE_DRIFT points, paired
+// largest-overweight to largest-underweight. Asset classes only — never a
+// security. null without targets or holdings.
+function rebalanceMoves(alloc) {
+  if (!alloc || !alloc.has_targets || !(alloc.total_value > 0)) return null;
+  const total = alloc.total_value;
+  const off = alloc.classes.filter((c) => c.drift_pct !== undefined && Math.abs(c.drift_pct) > REBALANCE_DRIFT);
+  const over = off.filter((c) => c.drift_pct > 0).map((c) => ({ c, left: (c.drift_pct / 100) * total })).sort((a, b) => b.left - a.left);
+  const under = off.filter((c) => c.drift_pct < 0).map((c) => ({ c, left: (-c.drift_pct / 100) * total })).sort((a, b) => b.left - a.left);
+  const pct = (n) => Math.round(n);
+  const moves = [];
+  let i = 0, j = 0;
+  while (i < over.length && j < under.length) {
+    const amount = Math.min(over[i].left, under[j].left);
+    const rounded = Math.round(amount / REBALANCE_ROUND_TO) * REBALANCE_ROUND_TO;
+    if (rounded >= REBALANCE_MIN) {
+      const from = over[i].c, to = under[j].c;
+      moves.push({
+        from: from.security_type, to: to.security_type, amount: rounded,
+        text: `Move about ${fmt(rounded)} from ${from.security_type} (${pct(from.pct_of_portfolio)}% now, target ${pct(from.target_pct)}%) to ${to.security_type} (${pct(to.pct_of_portfolio)}% now, target ${pct(to.target_pct)}%).`,
+      });
+    }
+    over[i].left -= amount;
+    under[j].left -= amount;
+    if (over[i].left <= 0.005) i++;
+    if (under[j].left <= 0.005) j++;
+  }
+  return {
+    total_value: money(total),
+    drifting: off.map((c) => ({ security_type: c.security_type, pct: Math.round(c.pct_of_portfolio * 10) / 10, target_pct: c.target_pct, drift_pct: Math.round(c.drift_pct * 10) / 10 })),
+    moves,
+    note: moves.length ? REBALANCE_NOTE : null,
+  };
+}
+
 // Where the plan's current step sends money, in words.
 function stepTarget(stepKey, debtName) {
   switch (stepKey) {
@@ -856,6 +986,55 @@ function buildAdvicePlan(inputs) {
       text: `${c.category} spending rose from ${fmt(c.prior_monthly)} to ${fmt(c.recent_monthly)} a month (+${c.growth_pct}%) over the last 3 months, while your income ${incomeText}. Bringing it back would free ${fmt(freed)} per ${unit}.` };
   });
 
+  // Roadmap T4.1 A7: checking that held more than the floor + a month of
+  // spending (the starter buffer) for IDLE_DAYS, moved in the plan's order —
+  // only to an account that exists, and never more out of cash than keeps the
+  // lowest projected day at the floor.
+  let idleCash = null;
+  if (inputs.idle != null) {
+    const low = checkingLow(inputs.idle, today);
+    const dest = idleDestinations(inputs.idle);
+    const amount = low == null ? 0 : Math.floor((low - starterTarget) / IDLE_ROUND_TO) * IDLE_ROUND_TO;
+    if (amount >= IDLE_MIN && (dest.savings || dest.brokerage)) {
+      const base = money(spendable - amount);
+      const state = {
+        buffer_gap: money(Math.max(0, starterTarget - base)),
+        emergency_gap: money(Math.max(0, emergencyTarget - Math.max(base, starterTarget))),
+        high: [...high].sort(AVALANCHE).map((d) => ({ name: d.name, balance: d.balance })),
+        medium: [...medium].sort(AVALANCHE).map((d) => ({ name: d.name, balance: d.balance })),
+      };
+      let moves = splitWindfall(amount, state).map((l) => {
+        if (l.key === "debt") return { ...l, to: l.name, leaves_cash: true };
+        if (l.key === "invest") return dest.brokerage ? { ...l, to: `${dest.brokerage.name} (investing)`, leaves_cash: true } : null;
+        if (l.key === "emergency" && dest.savings) return { ...l, to: `${dest.savings.name} (emergency fund)`, leaves_cash: false };
+        return null; // the buffer, an emergency fund with no savings account, investing with no brokerage: stays in checking
+      }).filter(Boolean);
+      // Money leaving cash keeps the lowest projected day at the floor (decision 5's cap).
+      if (lowest) {
+        let room = Math.max(0, num(lowest.balance) - floor);
+        moves = moves.map((m) => {
+          if (!m.leaves_cash) return m;
+          const v = Math.floor(Math.min(m.amount, room) / IDLE_ROUND_TO) * IDLE_ROUND_TO;
+          room -= v;
+          return { ...m, amount: v };
+        }).filter((m) => m.amount > 0);
+      }
+      const moved = money(moves.reduce((t, m) => t + m.amount, 0));
+      if (moved >= IDLE_MIN) {
+        idleCash = {
+          checking_low: low,
+          keep: starterTarget,
+          amount: moved,
+          days: IDLE_DAYS,
+          moves: moves.map(({ key, to, amount: v }) => ({ key, to, amount: v })),
+          text: `Your checking hasn't dropped below ${fmt(low)} in ${IDLE_DAYS} days — more than the ${fmt(starterTarget)} your plan keeps there (your floor plus a month of spending). Move ${fmt(moved)}: ` +
+            moves.map((m) => `${fmt(m.amount)} to ${m.to}`).join(", ") + ".",
+        };
+      }
+    }
+  }
+  const rebalance = inputs.allocation == null ? null : rebalanceMoves(inputs.allocation);
+
   if (minimumsShort) {
     headline = `Your recent months don't cover your ${fmt(required)} of monthly minimum payments.`;
     reason = reason || `Your recent months netted ${fmt(medianNet)} a month — less than your minimum payments.`;
@@ -906,6 +1085,8 @@ function buildAdvicePlan(inputs) {
     raises,
     bonuses,
     spending_creep: creep,
+    idle_cash: idleCash,
+    rebalance,
     notes,
   };
 }
@@ -932,6 +1113,21 @@ module.exports = {
   detectBonuses,
   splitWindfall,
   spendingCreep,
+  checkingLow,
+  idleDestinations,
+  rebalanceMoves,
+  IDLE_ACCOUNTS_SQL,
+  IDLE_INVESTMENTS_SQL,
+  IDLE_SNAPSHOTS_SQL,
+  IDLE_DAYS,
+  IDLE_PAD_DAYS,
+  IDLE_MIN,
+  IDLE_ROUND_TO,
+  SAVINGS_SUBTYPES,
+  REBALANCE_DRIFT,
+  REBALANCE_ROUND_TO,
+  REBALANCE_MIN,
+  REBALANCE_NOTE,
   DEPOSITS_SQL,
   CATEGORY_MONTHS_SQL,
   DEPOSIT_LOOKBACK_DAYS,

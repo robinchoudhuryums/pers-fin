@@ -104,6 +104,13 @@ function cashPlanPromptBlock(plan) {
     const lines = (plan[key] || []).filter((x) => x && x.text);
     if (lines.length) out += label + ":\n" + lines.map((x) => "- " + sanitizeForPrompt(x.text)).join("\n") + "\n";
   }
+  // Roadmap T4.1 A7: idle cash and rebalancing directions (asset classes only).
+  if (plan.idle_cash && plan.idle_cash.text) out += "Idle cash: " + sanitizeForPrompt(plan.idle_cash.text) + "\n";
+  const rb = plan.rebalance;
+  if (rb && rb.moves && rb.moves.length) {
+    out += "Rebalancing (directions between asset classes — never name a security or fund):\n" +
+      rb.moves.map((m) => "- " + sanitizeForPrompt(m.text)).join("\n") + "\n- " + rb.note + "\n";
+  }
   const tips = (plan.debts || []).filter((d) => d.utilization_tip && d.utilization_tip.text).map((d) => sanitizeForPrompt(d.utilization_tip.text));
   if (tips.length) out += "Utilization tips:\n" + tips.map((t) => "- " + t).join("\n") + "\n";
   if (plan.notes && plan.notes.length) out += "Notes:\n" + plan.notes.map((n) => "- " + sanitizeForPrompt(n)).join("\n") + "\n";

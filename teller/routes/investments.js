@@ -2134,33 +2134,18 @@ router.get("/api/investments", async (_req, res) => {
 // Auto-hides on the dashboard when total_value === 0 (no Plaid holdings).
 router.get("/api/investments/performance", async (_req, res) => {
   try {
+    const { HOLDINGS_SQL, normalizeTargets, assetAllocation } = require("../services/allocation");
     const [holdings, targetsRow] = await Promise.all([
-      pool.query(
-        `SELECT h.name, h.ticker, h.quantity, h.cost_basis, h.current_value,
-                h.security_type, h.plaid_account_id, ia.name AS account_name
-         FROM investment_holdings h
-         LEFT JOIN investment_accounts ia ON ia.plaid_account_id = h.plaid_account_id
-         WHERE COALESCE(ia.is_active, true) = true`
-      ),
+      pool.query(HOLDINGS_SQL),
       // #8: user-configured target allocation per asset class (security_type).
       // JSONB defaults to '{}'::jsonb so this never errors; empty object → no
       // target_pct/drift_pct fields on the response.
       pool.query("SELECT target_allocation_pct FROM user_settings WHERE id = 1")
         .catch(() => ({ rows: [{ target_allocation_pct: {} }] })),
     ]);
-    let targets = targetsRow.rows[0]?.target_allocation_pct || {};
-    if (typeof targets === "string") {
-      try { targets = JSON.parse(targets); } catch { targets = {}; }
-    }
-    // Normalize keys to lowercase to match the by-asset-class keys we build
-    // below (which lowercase security_type). Numbers cast through Number()
-    // so a string "70" still works.
-    const targetMap = {};
-    for (const [k, v] of Object.entries(targets || {})) {
-      const n = Number(v);
-      if (Number.isFinite(n)) targetMap[String(k).toLowerCase()] = n;
-    }
-    const hasTargets = Object.keys(targetMap).length > 0;
+    // Keys lowercased to match the by-asset-class keys (lowercased
+    // security_type); numbers cast through Number() so a string "70" works.
+    const targetMap = normalizeTargets(targetsRow.rows[0]?.target_allocation_pct);
 
     // BSI-5: a holding with an UNKNOWN cost basis (NULL) counts toward value
     // and allocation but not toward any return figure — treating it as $0 cost
@@ -2171,7 +2156,6 @@ router.get("/api/investments/performance", async (_req, res) => {
     let totalCostBasis = 0;
     let valueWithBasis = 0;
     let holdingsWithBasis = 0;
-    const byClass = {};
     const enrichedHoldings = [];
 
     for (const h of holdings.rows) {
@@ -2185,13 +2169,6 @@ router.get("/api/investments/performance", async (_req, res) => {
         totalCostBasis += cost;
         valueWithBasis += value;
         holdingsWithBasis++;
-      }
-      const cls = (h.security_type || "unknown").toLowerCase();
-      if (!byClass[cls]) byClass[cls] = { security_type: cls, value: 0, cost_basis: 0, value_with_basis: 0 };
-      byClass[cls].value += value;
-      if (known) {
-        byClass[cls].cost_basis += cost;
-        byClass[cls].value_with_basis += value;
       }
       enrichedHoldings.push({
         name: h.name,
@@ -2207,50 +2184,26 @@ router.get("/api/investments/performance", async (_req, res) => {
     const totalReturn = valueWithBasis - totalCostBasis;
     const totalReturnPct = totalCostBasis > 0 ? (totalReturn / totalCostBasis) * 100 : null;
 
-    const byAssetClass = Object.values(byClass).map(c => {
+    // Per class (services/allocation.js — shared with the cash plan's
+    // rebalancing directions, roadmap T4.1 A7). #8: target_pct + drift_pct
+    // when the user has set a target allocation (drift = actual − target,
+    // positive = overweight); a targeted class with no holdings at 0%.
+    const byAssetClass = assetAllocation(holdings.rows, targetMap).classes.map((c) => {
       const ret = c.value_with_basis - c.cost_basis;
-      const retPct = c.cost_basis > 0 ? (ret / c.cost_basis) * 100 : null;
-      const pctOfPortfolio = totalValue > 0 ? (c.value / totalValue) * 100 : 0;
       const row = {
         security_type: c.security_type,
         value: c.value,
         cost_basis: c.cost_basis,
         return: ret,
-        return_pct: retPct,
-        pct_of_portfolio: pctOfPortfolio,
+        return_pct: c.cost_basis > 0 ? (ret / c.cost_basis) * 100 : null,
+        pct_of_portfolio: c.pct_of_portfolio,
       };
-      // #8: attach target_pct + drift_pct when the user has configured a
-      // target allocation. drift = actual − target (positive = overweight).
-      if (hasTargets) {
-        const target = targetMap[c.security_type];
-        if (Number.isFinite(target)) {
-          row.target_pct = target;
-          row.drift_pct = pctOfPortfolio - target;
-        }
+      if (c.drift_pct !== undefined) {
+        row.target_pct = c.target_pct;
+        row.drift_pct = c.drift_pct;
       }
       return row;
-    }).sort((a, b) => b.value - a.value);
-
-    // #8: surface asset classes the user wants exposure to but currently
-    // holds none of (zero-weight in actual portfolio). These need their own
-    // rows since the loop above only iterates classes present in holdings.
-    if (hasTargets) {
-      const presentClasses = new Set(byAssetClass.map(c => c.security_type));
-      for (const [cls, target] of Object.entries(targetMap)) {
-        if (!presentClasses.has(cls)) {
-          byAssetClass.push({
-            security_type: cls,
-            value: 0,
-            cost_basis: 0,
-            return: 0,
-            return_pct: null,
-            pct_of_portfolio: 0,
-            target_pct: target,
-            drift_pct: -target,  // underweight by the full target
-          });
-        }
-      }
-    }
+    });
 
     // Sort holdings by return_pct, filter to those with valid (non-null) pct.
     // Winners are gains and losers are losses (WD-17): with fewer than five

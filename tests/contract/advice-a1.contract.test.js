@@ -208,4 +208,49 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     assert.deepEqual(res.body.raises, JSON.parse(JSON.stringify(plan.raises)));
     assert.deepEqual(res.body.spending_creep, JSON.parse(JSON.stringify(plan.spending_creep)));
   });
+
+  it("A7: idle checking moved only to accounts that exist, and rebalancing drift equal to the Investments card's", async () => {
+    const { addDaysStr } = require("../../teller/services/cadence");
+    const daysAgo = (n) => addDaysStr(today, -n);
+    const idOf = async (accountId) => (await q("SELECT id FROM linked_accounts WHERE account_id = $1", [accountId])).rows[0].id;
+    const snap = (id, date, bal) => q(
+      `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance) VALUES ('linked', $1, $2, $3)
+       ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET balance = EXCLUDED.balance`, [id, date, bal]);
+    // Checking dipped to $9,000 a month ago; the joint checking held $0 the whole time.
+    const chk = await idOf("chk"), joint = await idOf("joint");
+    await snap(chk, daysAgo(70), 20000);
+    await snap(chk, daysAgo(30), 9000);
+    await snap(chk, daysAgo(5), 20000);
+    await snap(joint, daysAgo(70), 0);
+    await q(`INSERT INTO linked_accounts (account_id, name, type, subtype, is_manual, current_balance)
+             VALUES ('sav', 'Savings', 'depository', 'savings', true, 0)`);
+    // A taxable brokerage (holdings 55% equity / 45% bond) and its $0 linked phantom.
+    await q(`INSERT INTO investment_accounts (name, account_type, balance, plaid_account_id) VALUES ('Taxable', 'brokerage', 20000, 'pb1')`);
+    await q(`INSERT INTO linked_accounts (account_id, name, type, subtype, is_manual, current_balance)
+             VALUES ('pb1', 'Taxable phantom', 'investment', 'brokerage', true, 0)`);
+    await q(`INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name, current_value, cost_basis, security_type)
+             VALUES ('pb1', 's1', 'VTI', 'Total market', 11000, 9000, 'equity'), ('pb1', 's2', 'BND', 'Bond fund', 9000, NULL, 'bond')`);
+    await supertest(perfinApp()).patch("/api/settings").send({ target_allocation_pct: { equity: 70, bond: 30 } }).expect(200);
+
+    const plan = await advice.getAdvicePlan(pool);
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.errors, []);
+    const idle = plan.idle_cash;
+    assert.equal(idle.checking_low, 9000);
+    assert.equal(idle.keep, plan.cash.starter_target);
+    assert.ok(idle.amount <= idle.checking_low - idle.keep);
+    const debts = new Set(plan.debts.map((d) => d.name));
+    for (const m of idle.moves) {
+      assert.ok(debts.has(m.to) || m.to === "Savings (emergency fund)" || m.to === "Taxable (investing)", m.to);
+    }
+    assert.equal(JSON.stringify(idle).includes("phantom"), false);
+    assert.deepEqual(plan.rebalance.moves.map((m) => [m.from, m.to, m.amount]), [["bond", "equity", 3000]]);
+    assert.doesNotMatch(JSON.stringify(plan.rebalance), /VTI|BND|Bond fund|Total market/);
+    const perf = (await supertest(perfinApp()).get("/api/investments/performance").expect(200)).body;
+    const card = Object.fromEntries(perf.by_asset_class.map((c) => [c.security_type, Math.round(c.drift_pct * 10) / 10]));
+    assert.deepEqual(Object.fromEntries(plan.rebalance.drifting.map((c) => [c.security_type, c.drift_pct])), card);
+    const res = await supertest(perfinApp()).get("/api/advice").expect(200);
+    assert.deepEqual(res.body.idle_cash, JSON.parse(JSON.stringify(idle)));
+    assert.deepEqual(res.body.rebalance, JSON.parse(JSON.stringify(plan.rebalance)));
+  });
 });
