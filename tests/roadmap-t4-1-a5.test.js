@@ -151,6 +151,7 @@ describe("T4.1 A5 — the goals source", () => {
     months: async () => [{ month: "2026-07", income: 5000, spending: 3500 }, { month: "2026-08", income: 5000, spending: 3600 }, { month: "2026-09", income: 5000, spending: 3400 }],
     streams: async () => [], cash: async () => lowCash(4000), settings: async () => ({ cash_alert_threshold: "500" }),
     debts: async () => [], activity: async () => [], transfers: async () => [],
+    deposits: async () => [], categories: async () => [],
   };
 
   it("reads active goals and measures a funding-linked one as balance − baseline (deriveGoalProgress)", async () => {

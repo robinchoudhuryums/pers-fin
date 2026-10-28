@@ -1585,6 +1585,10 @@
       return (goals || []).filter(function (g) { return g && g.text && (g.status === 'behind' || g.status === 'overdue' || g.status === 'due'); })
         .map(function (g) { return g.text; });
     }
+    // Roadmap T4.1 A6: a raise, a bonus's split and spending creep, one line each.
+    function adviceTexts(list) {
+      return (list || []).map(function (x) { return x && x.text; });
+    }
     function renderAdvice(p) {
       var disclaimer = '<p class="advice-disclaimer">' + esc((p && p.disclaimer) || ADVICE_DISCLAIMER) + '</p>';
       if (!p || !p.ok) return '<p class="advice-note">' + esc((p && p.error) || 'Your plan couldn\'t be worked out.') + '</p>' + disclaimer;
@@ -1603,6 +1607,7 @@
       html += adviceDebtRows(p);
       html += adviceEmergency(p.emergency);
       html += adviceList(adviceGoalLines(p.goals));
+      html += adviceList(adviceTexts(p.raises).concat(adviceTexts(p.bonuses), adviceTexts(p.spending_creep)));
       html += adviceList([p.allocation && p.allocation.snowball && p.allocation.snowball.text]
         .concat((p.debts || []).map(function (d) { return d.utilization_tip && d.utilization_tip.text; })));
       html += adviceList(p.notes);

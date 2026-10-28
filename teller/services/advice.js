@@ -18,7 +18,7 @@
 // is a named constant here, not a setting (decision 9). Nothing names a
 // security or a fund (decision 10).
 
-const { todayStr, previousMonthKey } = require("./financial-queries");
+const { todayStr, previousMonthKey, incomePredicate, INCOME_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS } = require("./financial-queries");
 const { addMonthsYm } = require("./projections");
 
 const DISCLAIMER = "Educational, based on your data — not financial advice.";
@@ -44,6 +44,27 @@ const MEDIUM_DEBT_SHARE = 0.5;
 const SIM_CAP_MONTHS = 600;
 const PAYCHECKS_PER_YEAR = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
 const GOAL_CATCHUP_MIN = 5;       // a goal is behind when it needs at least this much more a month
+// Roadmap T4.1 A6 — raises, bonuses and spending creep.
+const DEPOSIT_LOOKBACK_DAYS = 240; // deposits read for raise / bonus detection (~8 months)
+const RAISE_MIN_BEFORE = 3;       // steady deposits needed before the step up …
+const RAISE_MIN_AFTER = 2;        // … and at the new level
+const RAISE_CLUSTER = 0.10;       // deposits within ±10% of their median are one level (the streams' tolerance)
+const RAISE_MIN_SHARE = 0.03;     // the new level at least 3% above the old …
+const RAISE_MIN_MONTHLY = 50;     // … and at least $50 a month more
+const RAISE_RECENT_DAYS = 90;     // the first raised deposit within this many days
+const RAISE_LIVE_DAYS = 45;       // the latest deposit within this many days
+const RAISE_SHARE = 0.5;          // of the raise, toward the plan's current step
+const BONUS_RECENT_DAYS = 45;     // a bonus that landed within this many days
+const BONUS_MIN = 500;            // a bonus is at least $500 …
+const BONUS_MULTIPLE = 1.5;       // … and 1.5× the payer's usual deposit
+const BONUS_ONE_OFF_MIN = 1000;   // a payer with no other deposit: at least $1,000
+const CREEP_MONTHS = 6;           // completed months compared: the last 3 against the 3 before
+const CREEP_WINDOW = 3;
+const CREEP_MIN_BASE = 50;        // a category spending at least $50 a month before …
+const CREEP_MIN_INCREASE = 50;    // … that rose by at least $50 a month …
+const CREEP_MARGIN = 0.15;        // … and 15 points faster than income
+const CREEP_MAX = 3;              // categories listed
+const CREEP_SKIP = new Set(["uncategorized"]);
 
 // The plan needs these; without one it isn't worked out at all (a missing debt
 // or transfer read would otherwise say "invest" over a 24% card).
@@ -57,6 +78,8 @@ const SOURCE_ERRORS = {
   activity: "Recent card activity couldn't be read.",
   transfers: "Your recurring savings transfers couldn't be read.",
   goals: "Your goals couldn't be read.",
+  deposits: "Recent paychecks couldn't be read.",
+  categories: "Spending by category couldn't be read.",
 };
 const PLAN_ERROR = "Your plan couldn't be worked out — part of your data couldn't be read.";
 
@@ -105,6 +128,25 @@ const GOALS_SQL = `
   WHERE g.is_active = true
   ORDER BY g.target_date NULLS LAST, g.id`;
 
+// Roadmap T4.1 A6: income deposits (the canonical predicate, at your share —
+// INV-110) for raise / bonus detection, and net spending per category for the
+// completed months the creep check compares (spend_lines — INV-122).
+const DEPOSITS_SQL = `
+  SELECT t.date::text AS date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS source,
+         ROUND(${INCOME_AMOUNT}, 2) AS amount
+  FROM transactions t
+  LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+  WHERE t.amount < 0 AND t.pending = false
+    AND t.date >= $1::date - ${DEPOSIT_LOOKBACK_DAYS} AND t.date <= $1::date
+    AND ${incomePredicate("t")}
+  ORDER BY t.date, t.transaction_id`;
+const CATEGORY_MONTHS_SQL = `
+  WITH ${spendLinesCTE("t.date >= $1::date AND t.date < $2::date")},
+  ${NET_CATEGORY_MONTHS}
+  SELECT month, category, ROUND(spent, 2) AS spent
+  FROM net_category_months
+  ORDER BY month, category`;
+
 // Whole days from a to b ('YYYY-MM-DD').
 const dayGap = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
 const money = (x) => Math.round((Number(x) || 0) * 100) / 100;
@@ -121,7 +163,8 @@ async function getAdviceInputs(pool, { today = todayStr(), deps = {} } = {}) {
   const fq = require("./financial-queries");
   const cf = require("./cash-flow");
   const readers = {
-    months: () => fq.getMonthlyIncomeAndSpending(pool, SURPLUS_MONTHS + 1),
+    // One extra month for the month to date; A6's creep check compares 6 completed months.
+    months: () => fq.getMonthlyIncomeAndSpending(pool, Math.max(SURPLUS_MONTHS, CREEP_MONTHS) + 1),
     streams: () => fq.getLiveIncomeStreams(pool, today),
     cash: async () => {
       const f = await cf.getCashFlowForecast(pool, { days: CASH_LOOKAHEAD_DAYS, today });
@@ -142,6 +185,14 @@ async function getAdviceInputs(pool, { today = todayStr(), deps = {} } = {}) {
         target_date: g.target_date ? String(g.target_date).slice(0, 10) : null,
         interest_rate: num(g.interest_rate) || 0,
       }));
+    },
+    deposits: async () => (await pool.query(DEPOSITS_SQL, [today])).rows
+      .map((r) => ({ date: String(r.date).slice(0, 10), source: r.source, amount: num(r.amount) || 0 }))
+      .filter((r) => r.source && r.amount > 0),
+    categories: async () => {
+      const keys = completedMonthKeys(today, CREEP_MONTHS);
+      return (await pool.query(CATEGORY_MONTHS_SQL, [keys[0] + "-01", today.slice(0, 7) + "-01"])).rows
+        .map((r) => ({ month: r.month, category: r.category, spent: num(r.spent) || 0 }));
     },
     ...deps,
   };
@@ -417,6 +468,174 @@ function goalCatchUps(goals, today, { unit, perPeriod }) {
   });
 }
 
+// ---------------------------------------------------------------- A6
+
+// Deposits grouped by payer (case-insensitive), each list oldest first.
+function depositsBySource(deposits) {
+  const by = new Map();
+  for (const d of deposits || []) {
+    if (!d || !d.source || !(Number(d.amount) > 0)) continue;
+    const key = String(d.source).toLowerCase();
+    if (!by.has(key)) by.set(key, []);
+    by.get(key).push({ date: String(d.date).slice(0, 10), source: d.source, amount: money(d.amount) });
+  }
+  for (const list of by.values()) list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return by;
+}
+
+// Deposits a year from a payer: its live stream's cadence (the one nearest the
+// amount), else the median gap between its deposits.
+function depositsPerYear(key, list, streams, amount) {
+  const matches = (streams || []).filter((s) => s && String(s.source || "").toLowerCase() === key && PAYCHECKS_PER_YEAR[s.cadence]);
+  if (matches.length) {
+    matches.sort((a, b) => Math.abs((Number(a.amount) || 0) - amount) - Math.abs((Number(b.amount) || 0) - amount));
+    return PAYCHECKS_PER_YEAR[matches[0].cadence];
+  }
+  const gaps = [];
+  for (let i = 1; i < list.length; i++) gaps.push(dayGap(list[i - 1].date, list[i].date));
+  const g = median(gaps.filter((x) => x > 0));
+  if (!g) return null;
+  return g <= 10 ? 52 : g <= 17 ? 26 : g <= 45 ? 12 : null;
+}
+
+const within = (x, center, share) => Math.abs(x - center) <= share * center;
+
+// Pure: a payer whose deposits stepped up to a new, steady level — the last
+// RAISE_MIN_AFTER+ deposits each above every one of the RAISE_MIN_BEFORE steady
+// deposits before them, at least RAISE_MIN_SHARE and RAISE_MIN_MONTHLY a month
+// more, first seen within RAISE_RECENT_DAYS.
+function detectRaises(deposits, today, streams) {
+  const out = [];
+  for (const [key, all] of depositsBySource(deposits)) {
+    const list = all.filter((_, i) => !standsAlone(all, i)); // a bonus isn't a pay level
+    const n = list.length;
+    for (let s = RAISE_MIN_BEFORE; s <= n - RAISE_MIN_AFTER; s++) {
+      const run = list.slice(s);
+      const before = list.slice(0, s).slice(-RAISE_MIN_BEFORE);
+      const from = median(list.slice(0, s).slice(-2 * RAISE_MIN_BEFORE).map((d) => d.amount));
+      const to = median(run.map((d) => d.amount));
+      if (!before.every((d) => within(d.amount, from, RAISE_CLUSTER))) continue;
+      if (!run.every((d) => within(d.amount, to, RAISE_CLUSTER))) continue;
+      if (Math.min(...run.map((d) => d.amount)) <= Math.max(...before.map((d) => d.amount))) continue;
+      if (to < from * (1 + RAISE_MIN_SHARE)) continue;
+      if (dayGap(run[0].date, today) > RAISE_RECENT_DAYS || dayGap(run[run.length - 1].date, today) > RAISE_LIVE_DAYS) continue;
+      const ppy = depositsPerYear(key, list, streams, to);
+      if (!ppy) continue;
+      const perDeposit = money(to - from);
+      const monthly = money((perDeposit * ppy) / 12);
+      if (monthly < RAISE_MIN_MONTHLY) continue;
+      out.push({ source: list[n - 1].source, from: money(from), to: money(to), raise_per_deposit: perDeposit, deposits_per_year: ppy, raise_monthly: monthly, since: run[0].date });
+      break; // the earliest step that fits is this payer's raise
+    }
+  }
+  return out.sort((a, b) => b.raise_monthly - a.raise_monthly);
+}
+
+// Pure: a deposit that landed within BONUS_RECENT_DAYS and stands alone — at
+// least BONUS_MIN and BONUS_MULTIPLE× the payer's usual deposit (no other
+// deposit near its size), or BONUS_ONE_OFF_MIN from a payer seen only once.
+// A deposit at least BONUS_MIN and BONUS_MULTIPLE× the payer's usual deposit
+// with no other deposit near its size (a level, not a one-off).
+function standsAlone(list, i) {
+  const d = list[i];
+  const others = list.filter((_, j) => j !== i);
+  if (!others.length) return false;
+  if (d.amount < Math.max(BONUS_MIN, BONUS_MULTIPLE * median(others.map((o) => o.amount)))) return false;
+  return !others.some((o) => within(o.amount, d.amount, RAISE_CLUSTER));
+}
+
+function detectBonuses(deposits, today) {
+  const out = [];
+  for (const list of depositsBySource(deposits).values()) {
+    list.forEach((d, i) => {
+      if (dayGap(d.date, today) > BONUS_RECENT_DAYS || dayGap(d.date, today) < 0) return;
+      if (list.length === 1) {
+        if (d.amount >= BONUS_ONE_OFF_MIN) out.push({ date: d.date, source: d.source, amount: d.amount, typical: null, one_off: true });
+        return;
+      }
+      if (!standsAlone(list, i)) return;
+      const typical = money(median(list.filter((_, j) => j !== i).map((o) => o.amount)));
+      out.push({ date: d.date, source: d.source, amount: d.amount, typical, one_off: false });
+    });
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+// Pure: split a lump sum in the plan's order (decision 2) — the starter buffer,
+// high-interest debt (avalanche), the emergency fund, medium-interest debt
+// shared 50/50 with investing, then investing. `state` is updated so a second
+// lump fills what the first left.
+function splitWindfall(amount, state) {
+  let rest = money(amount);
+  const lines = [];
+  const add = (key, name, x) => {
+    const v = money(Math.min(rest, Math.max(0, x)));
+    if (v <= 0) return 0;
+    rest = money(rest - v);
+    const prev = lines.find((l) => l.key === key && l.name === name);
+    if (prev) prev.amount = money(prev.amount + v); else lines.push({ key, name, amount: v });
+    return v;
+  };
+  state.buffer_gap = money(state.buffer_gap - add("buffer", "your starter cash buffer", state.buffer_gap));
+  for (const d of state.high) d.balance = money(d.balance - add("debt", d.name, d.balance));
+  state.emergency_gap = money(state.emergency_gap - add("emergency", "your emergency fund", state.emergency_gap));
+  if (rest > 0 && state.medium.some((d) => d.balance > 0)) {
+    let half = money(rest * MEDIUM_DEBT_SHARE);
+    for (const d of state.medium) {
+      const v = add("debt", d.name, Math.min(d.balance, half));
+      d.balance = money(d.balance - v);
+      half = money(half - v);
+    }
+  }
+  add("invest", "investing", rest);
+  return lines;
+}
+
+// Pure: categories whose last-3-month average grew at least CREEP_MARGIN faster
+// than income's over the CREEP_MONTHS completed months (both from the shared
+// spending / income definitions). Needs every one of those months on record.
+function spendingCreep(categoryRows, monthRows, today) {
+  const keys = completedMonthKeys(today, CREEP_MONTHS);
+  const priorKeys = new Set(keys.slice(0, CREEP_WINDOW));
+  const recentKeys = new Set(keys.slice(CREEP_WINDOW));
+  const byMonth = new Map((monthRows || []).map((r) => [r.month, r]));
+  if (!keys.every((k) => byMonth.has(k))) return [];
+  const avg = (set, f) => [...set].reduce((t, k) => t + f(k), 0) / set.size;
+  const incomePrior = avg(priorKeys, (k) => num(byMonth.get(k).income) || 0);
+  const incomeRecent = avg(recentKeys, (k) => num(byMonth.get(k).income) || 0);
+  const incomeGrowth = incomePrior > 0 ? (incomeRecent - incomePrior) / incomePrior : 0;
+  const cats = new Map();
+  for (const r of categoryRows || []) {
+    if (!r || !r.category || CREEP_SKIP.has(String(r.category).toLowerCase())) continue;
+    if (!cats.has(r.category)) cats.set(r.category, new Map());
+    cats.get(r.category).set(r.month, (cats.get(r.category).get(r.month) || 0) + (num(r.spent) || 0));
+  }
+  const out = [];
+  for (const [category, m] of cats) {
+    const prior = money(avg(priorKeys, (k) => m.get(k) || 0));
+    const recent = money(avg(recentKeys, (k) => m.get(k) || 0));
+    const increase = money(recent - prior);
+    if (prior < CREEP_MIN_BASE || increase < CREEP_MIN_INCREASE) continue;
+    const growth = increase / prior;
+    if (growth - incomeGrowth < CREEP_MARGIN) continue;
+    out.push({ category, prior_monthly: prior, recent_monthly: recent, increase_monthly: increase,
+      growth_pct: Math.round(growth * 100), income_growth_pct: Math.round(incomeGrowth * 100) });
+  }
+  return out.sort((a, b) => b.increase_monthly - a.increase_monthly).slice(0, CREEP_MAX);
+}
+
+// Where the plan's current step sends money, in words.
+function stepTarget(stepKey, debtName) {
+  switch (stepKey) {
+    case "minimums": return "your minimum payments";
+    case "starter_buffer": return "your starter cash buffer";
+    case "high_interest_debt": return debtName || "your highest-interest debt";
+    case "medium_interest_debt": return (debtName || "your debt") + " and investing";
+    case "emergency_fund": return "your emergency fund";
+    default: return "investing";
+  }
+}
+
 // Decision 6: the main pay stream sets "per paycheck"; without one, per month.
 function payPeriod(streams) {
   let best = null;
@@ -597,6 +816,46 @@ function buildAdvicePlan(inputs) {
   }
   const goals = inputs.goals == null ? null : goalCatchUps(inputs.goals, today, { unit, perPeriod });
 
+  // Roadmap T4.1 A6: a raise, a bonus and spending creep, each pointed at the
+  // plan's current step (decision 2's order).
+  const stepKey = minimumsShort ? "minimums" : current.key;
+  const topOf = (list) => [...list].sort(AVALANCHE)[0];
+  const targetDebt = current.key === "high_interest_debt" ? topOf(high) : current.key === "medium_interest_debt" ? topOf(medium) : null;
+  const target = stepTarget(stepKey, targetDebt && targetDebt.name);
+  const raises = inputs.deposits == null ? null : detectRaises(inputs.deposits, today, inputs.streams).map((r) => {
+    // From the yearly raise (per deposit × deposits a year), so a rounded monthly figure can't cost a step.
+    const suggestPer = Math.floor(((r.raise_per_deposit * r.deposits_per_year * RAISE_SHARE) / ppy) / ROUND_TO) * ROUND_TO;
+    let text = `Your pay from ${r.source} went up from ${fmt(r.from)} to ${fmt(r.to)} a deposit in ${monthLabel(r.since.slice(0, 7))} (about ${fmt(r.raise_monthly)} a month more).`;
+    if (suggestPer > 0) text += ` Put ${fmt(suggestPer)} per ${unit} of it toward ${target}.`;
+    return { ...r, toward: stepKey, suggest_monthly: money((suggestPer * ppy) / 12), suggest_per_period: suggestPer, text };
+  });
+  let bonuses = null;
+  if (inputs.deposits != null) {
+    const found = detectBonuses(inputs.deposits, today);
+    // The bonus is likely in spendable cash already, so the gaps are measured without it.
+    const baseCash = money(spendable - found.reduce((t, b) => t + b.amount, 0));
+    const state = {
+      buffer_gap: money(Math.max(0, starterTarget - baseCash)),
+      emergency_gap: money(Math.max(0, emergencyTarget - Math.max(baseCash, starterTarget))),
+      high: [...high].sort(AVALANCHE).map((d) => ({ name: d.name, balance: d.balance })),
+      medium: [...medium].sort(AVALANCHE).map((d) => ({ name: d.name, balance: d.balance })),
+    };
+    bonuses = found.map((b) => {
+      const split = splitWindfall(b.amount, state);
+      const kind = b.one_off ? "a one-off deposit" : `a bonus (your usual deposit from them is ${fmt(b.typical)})`;
+      const text = `${fmt(b.amount)} from ${b.source} on ${b.date} looks like ${kind}. Your plan would split it: ` +
+        split.map((l) => `${fmt(l.amount)} to ${l.name}`).join(", ") + ".";
+      return { ...b, split, text };
+    });
+  }
+  const creep = inputs.categories == null ? null : spendingCreep(inputs.categories, inputs.months, today).map((c) => {
+    const inc = c.income_growth_pct;
+    const incomeText = inc > 0 ? `rose ${inc}%` : inc < 0 ? `fell ${-inc}%` : "stayed flat";
+    const freed = perPeriod(c.increase_monthly);
+    return { ...c, increase_per_period: freed,
+      text: `${c.category} spending rose from ${fmt(c.prior_monthly)} to ${fmt(c.recent_monthly)} a month (+${c.growth_pct}%) over the last 3 months, while your income ${incomeText}. Bringing it back would free ${fmt(freed)} per ${unit}.` };
+  });
+
   if (minimumsShort) {
     headline = `Your recent months don't cover your ${fmt(required)} of monthly minimum payments.`;
     reason = reason || `Your recent months netted ${fmt(medianNet)} a month — less than your minimum payments.`;
@@ -644,6 +903,9 @@ function buildAdvicePlan(inputs) {
     },
     emergency,
     goals,
+    raises,
+    bonuses,
+    spending_creep: creep,
     notes,
   };
 }
@@ -666,6 +928,31 @@ module.exports = {
   payPeriod,
   goalCatchUps,
   requiredMonthly,
+  detectRaises,
+  detectBonuses,
+  splitWindfall,
+  spendingCreep,
+  DEPOSITS_SQL,
+  CATEGORY_MONTHS_SQL,
+  DEPOSIT_LOOKBACK_DAYS,
+  RAISE_MIN_BEFORE,
+  RAISE_MIN_AFTER,
+  RAISE_CLUSTER,
+  RAISE_MIN_SHARE,
+  RAISE_MIN_MONTHLY,
+  RAISE_RECENT_DAYS,
+  RAISE_LIVE_DAYS,
+  RAISE_SHARE,
+  BONUS_RECENT_DAYS,
+  BONUS_MIN,
+  BONUS_MULTIPLE,
+  BONUS_ONE_OFF_MIN,
+  CREEP_MONTHS,
+  CREEP_WINDOW,
+  CREEP_MIN_BASE,
+  CREEP_MIN_INCREASE,
+  CREEP_MARGIN,
+  CREEP_MAX,
   monthsUntil,
   INTEREST_CHARGE_SQL,
   GOALS_SQL,

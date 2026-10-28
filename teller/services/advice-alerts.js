@@ -18,9 +18,14 @@
 //   4. The signature advances only when the notification was LOGGED; an
 //      unlogged one leaves the day unchecked so the next tick retries.
 //
+//   5. Roadmap T4.1 A6: a raise or a bonus the plan hasn't announced yet is
+//      pushed once (its text — the bonus's split in the plan's order), with
+//      the plan change when there is one. Its key is kept in windfalls_seen;
+//      the baseline records the ones already there without notifying.
+//
 // State (user_settings.advice_state JSONB):
 //   { signature: { step, target, unit, amount, amount_monthly, at } | null,
-//     checked_on, notified_at?, last_check: { at, outcome } }
+//     windfalls_seen: [key], checked_on, notified_at?, last_check: { at, outcome } }
 // ============================================================================
 const { todayStr } = require("./financial-queries");
 
@@ -28,6 +33,8 @@ const AMOUNT_SHARE = 0.2;
 const AMOUNT_MIN = 50;
 const TAG = "advice-plan";
 const DEBT_STEPS = new Set(["high_interest_debt", "medium_interest_debt"]);
+const WINDFALLS_KEPT = 30;   // windfall keys remembered
+const WINDFALLS_PER_PUSH = 2; // new raises / bonuses named in one push
 
 // Off → no settings read for the rest of the local day; checked today → no
 // read either. A Settings change to advice_alerts_enabled clears both.
@@ -110,6 +117,18 @@ function changeText(prev, sig, plan, change) {
   return `Your plan changed — it now ${phrase}.`;
 }
 
+// Pure: the plan's raises and bonuses as [{ key, text }] — a bonus by payer,
+// day and amount, a raise by payer and its new level.
+function windfallsOf(plan) {
+  const out = [];
+  for (const b of plan.bonuses || []) if (b && b.text) out.push({ key: `bonus:${String(b.source).toLowerCase()}:${b.date}:${b.amount}`, text: b.text });
+  for (const r of plan.raises || []) if (r && r.text) out.push({ key: `raise:${String(r.source).toLowerCase()}:${r.to}`, text: r.text });
+  return out;
+}
+function mergeSeen(seen, keys) {
+  return [...new Set([...(Array.isArray(seen) ? seen : []), ...keys])].slice(-WINDFALLS_KEPT);
+}
+
 async function runAdviceAlerts(pool, { now = new Date(), today = todayStr(), deps = {} } = {}) {
   if (_disabledDay === today || _doneDay === today) return { status: _disabledDay === today ? "disabled" : "checked", ran: false };
   const getPlan = deps.getPlan || (() => require("./advice").getAdvicePlan(pool, { today }));
@@ -132,32 +151,45 @@ async function runAdviceAlerts(pool, { now = new Date(), today = todayStr(), dep
 
   const sig = signatureOf(plan, at);
   const prev = state.signature || null;
+  const windfalls = windfallsOf(plan);
+  const seen = Array.isArray(state.windfalls_seen) ? state.windfalls_seen : [];
   if (!prev) {
-    await save({ ...state, signature: sig, checked_on: today, last_check: { at, outcome: "baseline" } });
+    await save({ ...state, signature: sig, windfalls_seen: mergeSeen(seen, windfalls.map((w) => w.key)), checked_on: today, last_check: { at, outcome: "baseline" } });
     _doneDay = today;
     return { status: "baseline", ran: true, signature: sig };
   }
   const change = planChange(prev, sig);
-  if (!change) {
+  const fresh = windfalls.filter((w) => !seen.includes(w.key));
+  if (!change && !fresh.length) {
     await save({ ...state, checked_on: today, last_check: { at, outcome: "unchanged" } });
     _doneDay = today;
     return { status: "unchanged", ran: true, signature: prev };
   }
 
-  const body = changeText(prev, sig, plan, change);
-  const r = await sendToAll({ title: "Your plan changed", body, tag: TAG, data: { url: "/dashboard" } });
+  const parts = [];
+  if (change) parts.push(changeText(prev, sig, plan, change));
+  for (const w of fresh.slice(0, WINDFALLS_PER_PUSH)) parts.push(w.text);
+  const body = parts.join(" ");
+  const title = change ? "Your plan changed" : "New money for your plan";
+  const r = await sendToAll({ title, body, tag: TAG, data: { url: "/dashboard" } });
   if (!(r && r.logged)) {
     // Not deduped → the day stays unchecked and the next tick retries.
     console.error("Plan alert: notification not logged — will retry on the next tick.");
     return { status: "unlogged", ran: true, change };
   }
-  await save({ signature: sig, checked_on: today, notified_at: at, last_check: { at, outcome: "notified", kind: change.kind } });
+  await save({
+    signature: change ? sig : prev,
+    windfalls_seen: mergeSeen(seen, fresh.map((w) => w.key)),
+    checked_on: today,
+    notified_at: at,
+    last_check: { at, outcome: "notified", kind: change ? change.kind : "windfall" },
+  });
   _doneDay = today;
-  return { status: "notified", ran: true, change, body };
+  return { status: "notified", ran: true, change, windfalls: fresh.length, body };
 }
 
 module.exports = {
-  runAdviceAlerts, planChange, changeText, signatureOf, planTarget, invalidate,
-  AMOUNT_SHARE, AMOUNT_MIN, TAG,
+  runAdviceAlerts, planChange, changeText, signatureOf, planTarget, windfallsOf, invalidate,
+  AMOUNT_SHARE, AMOUNT_MIN, TAG, WINDFALLS_KEPT, WINDFALLS_PER_PUSH,
   _reset() { _disabledDay = null; _doneDay = null; },
 };

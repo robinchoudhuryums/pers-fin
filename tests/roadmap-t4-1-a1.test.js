@@ -351,6 +351,8 @@ describe("T4.1 A1 — reads are fail-soft; a missing critical source is no plan"
     activity: async () => [],
     transfers: async () => [],
     goals: async () => [],
+    deposits: async () => [],
+    categories: async () => [],
   };
   const quietly = async (fn) => {
     const err = console.error; console.error = () => {};
@@ -362,7 +364,8 @@ describe("T4.1 A1 — reads are fail-soft; a missing critical source is no plan"
     const deps = Object.fromEntries(Object.entries(ok).map(([k, f]) => [k, (...x) => { calls[k] = (calls[k] || 0) + 1; return f(...x); }]));
     deps.streams = () => { calls.streams = (calls.streams || 0) + 1; throw new Error("boom: secret detail"); };
     const inp = await quietly(() => a.getAdviceInputs({}, { today: TODAY, deps }));
-    assert.deepEqual(Object.values(calls), [1, 1, 1, 1, 1, 1, 1, 1]);
+    assert.deepEqual(Object.keys(calls).sort(), Object.keys(a.SOURCE_ERRORS).sort());
+    assert.ok(Object.values(calls).every((n) => n === 1));
     assert.equal(inp.streams, null);
     assert.deepEqual(inp.errors, [{ source: "streams", error: "Your pay schedule couldn't be read." }]);
     const p = a.buildAdvicePlan(inp);

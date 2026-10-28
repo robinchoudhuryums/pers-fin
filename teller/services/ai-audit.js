@@ -328,7 +328,10 @@ function planFigures(plan) {
     a.buffer_per_period, a.emergency_per_period, a.invest_per_period, a.debt_extra_per_period,
     ...Object.values(debts).flatMap((d) => d.per_period),
     // A goal's catch-up amount (roadmap T4.1 A5) is a plan figure too.
-    ...(plan.goals || []).map((g) => g && g.add_per_period)].filter((v) => v > 0);
+    ...(plan.goals || []).map((g) => g && g.add_per_period),
+    // Roadmap T4.1 A6: a raise's share and what trimming a creeping category frees.
+    ...(plan.raises || []).flatMap((r) => (r ? [r.suggest_per_period, r.raise_per_deposit] : [])),
+    ...(plan.spending_creep || []).map((c) => c && c.increase_per_period)].filter((v) => v > 0);
   return { unit: plan.period && plan.period.unit, perPeriod, debts };
 }
 // The finding for one plan claim, or null when it matches (or isn't a plan claim).

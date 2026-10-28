@@ -170,4 +170,42 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     const res = await supertest(perfinApp()).get("/api/advice").expect(200);
     assert.deepEqual(res.body.goals, JSON.parse(JSON.stringify(plan.goals)));
   });
+
+  it("A6: a raise, a bonus on a joint account at your share, and creeping spending from real rows", async () => {
+    const { addDaysStr } = require("../../teller/services/cadence");
+    const daysAgo = (n) => addDaysStr(today, -n);
+    const ins = (id, account, amount, date, name, extra = {}) => q(
+      `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, pending, category)
+       VALUES ($1,$2,$3,$4,$5,$5,$6,$7)`,
+      [account, id, amount, date, name, !!extra.pending, extra.category ? [extra.category] : null]);
+    await q(`INSERT INTO linked_accounts (account_id, name, type, subtype, is_manual, is_shared, spending_split_pct)
+             VALUES ('joint', 'Joint', 'depository', 'checking', true, true, 50)`);
+    // BETA pays every two weeks: $1,800 until 70 days ago, then $2,000.
+    for (let d = 196; d >= 14; d -= 14) await ins("beta-" + d, "chk", d > 70 ? -1800 : -2000, daysAgo(d), "BETA CORP PAYROLL");
+    // A $6,000 bonus into the joint account (yours: half); a pending one never counts.
+    await ins("beta-bonus", "joint", -6000, daysAgo(10), "BETA CORP PAYROLL");
+    await ins("beta-pending", "chk", -9000, daysAgo(1), "BETA CORP PAYROLL", { pending: true });
+    // Dining: $100 a month for three months, then $650 with a $150 refund in one month.
+    const six = advice.completedMonthKeys(today, advice.CREEP_MONTHS);
+    for (const [i, m] of six.entries()) await ins("bistro-" + m, "chk", i < 3 ? 100 : 650, m + "-05", "BISTRO", { category: "Dining" });
+    await ins("bistro-refund", "chk", -150, six[5] + "-20", "BISTRO");
+
+    const plan = await advice.getAdvicePlan(pool);
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.errors, []);
+    const [r] = plan.raises;
+    assert.equal(r.source, "BETA CORP PAYROLL");
+    assert.equal(r.from, 1800);
+    assert.equal(r.to, 2000);
+    assert.equal(r.since, daysAgo(70));
+    assert.equal(r.deposits_per_year, 26);
+    assert.deepEqual(plan.bonuses.map((b) => [b.source, b.date, b.amount]), [["BETA CORP PAYROLL", daysAgo(10), 3000]]);
+    assert.ok(plan.bonuses[0].split.length > 0);
+    const dining = plan.spending_creep.find((c) => c.category === "Dining");
+    assert.equal(dining.prior_monthly, 100);
+    assert.equal(dining.recent_monthly, 600);
+    const res = await supertest(perfinApp()).get("/api/advice").expect(200);
+    assert.deepEqual(res.body.raises, JSON.parse(JSON.stringify(plan.raises)));
+    assert.deepEqual(res.body.spending_creep, JSON.parse(JSON.stringify(plan.spending_creep)));
+  });
 });

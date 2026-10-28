@@ -99,6 +99,11 @@ function cashPlanPromptBlock(plan) {
   }
   const late = (plan.goals || []).filter((g) => g.text && ["behind", "overdue", "due"].includes(g.status));
   if (late.length) out += "Goals behind their target dates:\n" + late.map((g) => "- " + sanitizeForPrompt(g.text)).join("\n") + "\n";
+  // Roadmap T4.1 A6: a raise, a bonus's split and spending growing faster than income.
+  for (const [key, label] of [["raises", "Raises"], ["bonuses", "Bonuses / one-off deposits"], ["spending_creep", "Spending growing faster than income"]]) {
+    const lines = (plan[key] || []).filter((x) => x && x.text);
+    if (lines.length) out += label + ":\n" + lines.map((x) => "- " + sanitizeForPrompt(x.text)).join("\n") + "\n";
+  }
   const tips = (plan.debts || []).filter((d) => d.utilization_tip && d.utilization_tip.text).map((d) => sanitizeForPrompt(d.utilization_tip.text));
   if (tips.length) out += "Utilization tips:\n" + tips.map((t) => "- " + t).join("\n") + "\n";
   if (plan.notes && plan.notes.length) out += "Notes:\n" + plan.notes.map((n) => "- " + sanitizeForPrompt(n)).join("\n") + "\n";

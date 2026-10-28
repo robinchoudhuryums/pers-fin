@@ -18,6 +18,16 @@ Updated: 2026-10-28
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A6 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a6-broad-implement.md`.
+  - **Shipped:** raise detection (a payer's deposits step up to a new steady level → half of it, rounded down to $25 per
+    paycheck, toward the plan's current step), bonus detection (a stand-alone deposit ≥ $500 and 1.5× usual, or a
+    $1,000+ one-off → split in the plan's order, gaps measured without it) and spending creep (a category's 3-month
+    average up ≥ $50 and 15 points faster than income over 6 completed months, top 3) — two non-critical sources
+    (deposits at your share, net category months); on the card, in the cash_plan block, in Ask; the audit counts a
+    raise's share / the raise / the freed amount; the plan-change push names a new raise or bonus once.
+  - **Verified:** npm test 2852/2852 (27 new); contract 278/279 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A6 committed and pushed. Next: `/sync-docs` for A6, then `/broad-implement A7`.
 - **Roadmap T4.1 A5 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a5-broad-implement.md`.
   - **Shipped:** the emergency-fund tracker (`plan.emergency`: months covered, progress, the date at the plan's pace or
     after the high-interest debt) and the goal catch-up (`plan.goals`: a non-critical goals source through
