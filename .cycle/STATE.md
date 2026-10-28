@@ -27,7 +27,7 @@ implement and reflect sessions only set Phase.)
     — on the card, in the cash_plan block, in Ask; the audit counts the loan's extra $100.
   - **Verified:** npm test 2883/2883 (13 new); contract 280/281 (1 new passes; the failure is the known date-dependent
     cash-alerts-l2 test). Mutation checks turn tests red.
-  - **Where I left off:** A8 committed and pushed. Next: `/sync-docs` for A8, then `/broad-implement A9`.
+  - **Where I left off:** A8 committed and pushed; docs synced (CLAUDE.md: advice.js's A8 statement read / tip / carried test / loan_extra, the Plaid liabilities sync, the two linked_accounts columns in Database, the audit / cash_plan block / Ask additions, Known Open Issues (A1–A8 done + A8 follow-ons) + Priority Next Features (A9 next), INV-150, counts 2883 / 153 / Perfin 2162 / contract 281 + the new test entry; README counts + clause). Next: `/broad-implement A9`.
 - **Roadmap T4.1 A7 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a7-broad-implement.md`.
   - **Shipped:** idle cash (checking above the starter buffer for 60 days → moved in the plan's order — the card first,
     the emergency fund to a savings account, investing to a non-tax-advantaged brokerage — only to accounts that exist,
