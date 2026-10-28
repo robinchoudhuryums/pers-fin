@@ -26,7 +26,7 @@ implement and reflect sessions only set Phase.)
     "Plan Changes" checkbox in Settings → Cash Alerts. reset-fresh needed no change.
   - **Verified:** npm test 2808/2808 (24 new); contract 276/277 (1 new passes; the 1 failure is the pre-existing,
     date-dependent cash-alerts-l2 seed — follow-on); mutation 6/6.
-  - **Where I left off:** A4 committed and pushed. Next: `/sync-docs`, then `/broad-implement A5`.
+  - **Where I left off:** A4 committed and pushed; docs synced (CLAUDE.md: services/advice-alerts.js in the tree + the Financial Analytics subsystem list, the Plan-change alert feature, the advice-plan scheduled task + the away-channel list, the PATCH field, the two user_settings columns, Known Open Issues (A4 follow-ons + the date-dependent cash-alerts-l2 contract test) + Priority Next Features, INV-59 / INV-77 / INV-150, counts 2808 / 149 / contract 277; README counts + clause). Next: `/broad-implement A5`.
 - **Roadmap T4.1 A3 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a3-broad-implement.md`.
   - **Shipped:** the `cash_plan` insight module (13 modules): the engine's plan in the prompt (cashPlanPromptBlock),
     the debt optimizer pointed at the plan's order, the plan's current step kept as one "Plan (...)" pending action

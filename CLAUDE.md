@@ -350,6 +350,22 @@ teller/
                            payment, payoff month and interest saved, plus a snowball
                            line; a 30%-utilization tip; every threshold a named constant;
                            the disclaimer on every plan; no security or fund named
+    advice-alerts.js     — "Tell me when my plan changes" (roadmap T4.1 A4, plan
+                           decision 8): runAdviceAlerts(pool, { now, today, deps }), run
+                           hourly by the "advice-plan" away job. Off by default
+                           (advice_alerts_enabled; then one settings read a local day —
+                           invalidate() from PATCH /api/settings); at most one evaluation
+                           a local day (advice_state.checked_on + a memo); the first run
+                           records a baseline without notifying; planChange (pure) →
+                           a new headline step, a debt step's new target debt, or the
+                           amount per period (per paycheck, else per month — a unit
+                           change compared monthly) moving ≥ 20% AND ≥ $50, always
+                           against the LAST NOTIFIED signature; changeText (pure) →
+                           "<card> is paid off — your plan now puts $X per paycheck
+                           toward …" when the old target is no longer a carried balance;
+                           "Your plan changed" (tag advice-plan, /dashboard), push only,
+                           never email; the signature advances only when the push was
+                           logged (an unlogged one leaves the day unchecked → retried)
     tax-investments.js   — Investment tax figures (roadmap T3.3 K1), from
                            investment_transactions: realizedGains (FIFO lots per
                            account + security; cost = the buy's |amount|, fees in;
@@ -1194,9 +1210,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2784 tests as of latest); use
+  Perfin and Per-sistant test files (2808 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2784 tests across 148 test files (incl.
+  Current count: 2808 tests across 149 test files (incl.
+  `tests/roadmap-t4-1-a4.test.js` — roadmap T4.1 A4: planChange (no change without a baseline or when nothing moved, a
+  new step, a debt step's new target, the amount needing both 20% and $50, a paycheck/month unit change compared
+  monthly), signatureOf / changeText over real buildAdvicePlan plans ("Visa is paid off — your plan now puts $450 per
+  paycheck toward the emergency fund.", the next debt taking over, a card now paid in full counting as paid off, a
+  still-owed target, an amount move with what it was, a $0 amount or the minimums step using the plan's headline),
+  runAdviceAlerts over a fake pool (off → one settings read a day until invalidate(), the silent baseline, at most one
+  evaluation a local day, unchanged, one push with tag advice-plan and no email, an unlogged push retried, no plan, a
+  slow drift compared with the last notified plan), the advice-plan job's outcome and wiring, and Settings (400s, the
+  baseline reset on switch-on, the memo cleared, GET's default, the migration, the labelled checkbox);
   `tests/roadmap-t4-1-a3.test.js` — roadmap T4.1 A3: the cash_plan module, cashPlanPromptBlock over a real
   buildAdvicePlan (headline, steps, per-debt amounts per paycheck, the assumed APR, surplus, snowball, tips,
   notes, disclaimer, sanitizeForPrompt, "none sustained", a plan that couldn't be worked out),
@@ -2108,7 +2133,8 @@ shell/
   completed months over the bar, the savings transfer and minimums off, $1,000 a paycheck to the 24.99%
   card, a paid-in-full card not debt, a PFC-only card at an assumed 22%; since A2 GET /api/advice through the
   production mount order answering the same plan; since A3 the insight prompt's CASH PLAN block and the
-  audit's plan figures from the same rows). 276 tests, run
+  audit's plan figures from the same rows; since A4 the plan-change alert switched on through PATCH, a silent
+  baseline, then one notification_log row when Visa is paid off and a fresh baseline after off / on). 277 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3177,6 +3203,12 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   Switching them on doesn't announce deposits from before (`services/payday-alerts.js`).
   Each check re-reads the last 24 hours and skips a paycheck already announced, so one a
   long CSV import committed after a check is still announced, once (cycle-8 F51).
+- **Plan-change alert** (roadmap T4.1 A4, opt-in — Settings → Cash Alerts → Plan Changes):
+  "Your plan changed" when the dashboard's "Your plan" moves to a new step, moves on to
+  another debt, or its amount per paycheck moves by 20% and at least $50 — e.g. "Visa is
+  paid off — your plan now puts $450 per paycheck toward the emergency fund." Checked once
+  a local day; the first check (and the first after switching it back on) only records the
+  plan; push only, never email (`services/advice-alerts.js`).
 - **Per-sistant tasks** (roadmap T2.4 X2, opt-in — Settings → Alerts & Notifications →
   Per-sistant Tasks; unified shell only — standalone the section says so and hides its
   controls): Perfin opens a Per-sistant To-Do for rent & utilities due, a utility amount to
@@ -4256,7 +4288,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2784 tests passing across 148 test files (Perfin 2063 + Per-sistant 721), plus the real-Postgres route contract suite (276 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2808 tests passing across 149 test files (Perfin 2087 + Per-sistant 721), plus the real-Postgres route contract suite (277 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4610,6 +4642,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # (integer 7-60) — T2.2 L2, payday_alerts_enabled
                            # (strict boolean; switching on moves
                            # last_income_alert_at to now) — T2.2 L3,
+                           # advice_alerts_enabled (strict boolean;
+                           # switching on clears advice_state, so the
+                           # first check is a fresh baseline) — T4.1 A4,
                            # linked_tasks_enabled (strict boolean),
                            # linked_tasks_sources (an object of still_charging /
                            # housing / utility_amount / bills / tax_documents →
@@ -5365,6 +5400,11 @@ standalone-mode fallback if either app is run on its own Render service.
   `last_income_alert_at TIMESTAMPTZ` (roadmap T2.2 L3): the payday alerts' switch and
   the "Paycheck landed" watermark over `transactions.created_at` (set to now when the
   switch goes on, so older deposits aren't announced). Auto-migrated.
+- `user_settings.advice_alerts_enabled BOOLEAN NOT NULL DEFAULT false` and `advice_state JSONB`
+  (roadmap T4.1 A4): the plan-change alert's switch and its state — `{ signature: { step, target,
+  unit, amount, amount_monthly, at } | null, checked_on, notified_at?, last_check: { at, outcome,
+  kind? } }` (the signature is the plan last notified, or the first baseline). Auto-migrated; reset
+  by `npm run reset:fresh` (the user_settings row is re-created).
 - `user_settings.linked_tasks_enabled BOOLEAN NOT NULL DEFAULT false`,
   `linked_tasks_sources JSONB NOT NULL DEFAULT '{"still_charging": true, "housing": true,
   "utility_amount": true, "bills": false}'`, `linked_tasks_bill_lead_days INT NOT NULL
@@ -5863,7 +5903,7 @@ embedded mode).
 recent Perfin activity (`isUserActive()`, 15 min) so Neon can auto-suspend
 while the user is away. The channels whose whole point is to reach the user
 WHILE away — budget alerts (+ critical-alert email), the weekly digest, the
-daily digest, the CSV reminder, the Rent & Utilities reminders (F15), the low cash and missed-payday alerts (T2.2 L2 / L3) and the linked tasks (T2.4 X2b) — are NOT activity-gated (before, they fired
+daily digest, the CSV reminder, the Rent & Utilities reminders (F15), the low cash and missed-payday alerts (T2.2 L2 / L3), the linked tasks (T2.4 X2b) and the plan-change alert (T4.1 A4) — are NOT activity-gated (before, they fired
 only if the user had touched Perfin in the last 15 min, so an email-only user
 got no digest; Per-sistant traffic never counted). They are driven by their
 own watermarks plus a per-local-day (APP_TIMEZONE) in-memory "settled" memo,
@@ -5947,6 +5987,11 @@ second one (which re-sent the same uncategorized rows to Claude).
   (T2.2 L4) are checked in the same evaluation. The same tick runs
   the "Payday missed?" check (`services/payday-alerts.runPaydayMissed`, T2.2 L3), each
   check isolated so one failing doesn't skip the other.
+- **Plan-change alert** (roadmap T4.1 A4): every 1 hour, NOT activity-gated
+  (`runAdvicePlanTick` → `services/advice-alerts.runAdviceAlerts`). Evaluates at most once a
+  local day — while off, or once it has checked, an in-memory memo skips even the settings
+  read until the next local day (a Settings change clears it). Records an outcome only when
+  it evaluated (an unlogged notification is a failed run).
 - **Linked tasks** (roadmap T2.4 X2b): every 1 hour, NOT activity-gated
   (`runLinkedTasksTick` → `services/linked-tasks.runLinkedTasks`). Does nothing in a
   standalone Perfin (no Per-sistant pool) or while the switch is off (one settings read a
@@ -6782,7 +6827,7 @@ aren't re-checked; Per-sistant's calendar projection starts its window at UTC mi
 east of UTC — cosmetic); DATE values Per-sistant reads through perfinPool (finance search, the
 Perfin widget, housingDue) are still Perfin's Dates; a landing line can be up to 30 s stale.
 
-**Roadmap T4.1 (in progress — A1, A2 and A3 done):** `services/advice.js` computes the plan; since A2 it is
+**Roadmap T4.1 (in progress — A1–A4 done):** `services/advice.js` computes the plan; since A2 it is
 served by GET /api/advice, shown in the dashboard's "Your plan" card (widget key `advice`, on by default)
 and read by Ask's get_cash_plan; since A3 it is the `cash_plan` insight module (the model words the plan,
 the audit checks its figures, its current step is one "Plan (…)" pending action). The A1 choices stand
@@ -6795,13 +6840,21 @@ the 60% (conservative — part of a carried card's minimum pays purchases alread
 the medium step's 50/50 halves aren't rounded to $25. A1 follow-ons: the emergency fund is all
 spendable cash, not a named account or goal (A5); the avalanche assumes no new card purchases and a
 fixed minimum, so payoff months are estimates. A2 follow-ons: the plan has no "tell me when my plan
-changes" option yet (A4); the card fetches its own request, whose 60-day cash
+changes" option yet (A4 — done since); the card fetches its own request, whose 60-day cash
 forecast can differ from the Summary card's 30-day lowest day; the Settings toggle reads "Your Plan" (Title
 Case, like the other widget labels). A3 follow-ons: every insight run reads the plan's seven sources (a
 few more queries and a longer prompt); the audit checks a plan amount only when it is stated per paycheck
 or as a named debt's monthly figure ("$750 toward your cards" isn't checked); a "Plan (…)" pending action
 an earlier run wrote stays when cash_plan is switched off or the plan can't be worked out (the model may
-carry it forward); the insight email and the AI Memory widget show it like any other pending action.
+carry it forward); the insight email and the AI Memory widget show it like any other pending action. Since A4
+the "tell me when my plan changes" checkbox exists (Settings → Cash Alerts → Plan Changes). A4 follow-ons: a
+step change caused by a source dropping out for a month (a pay stream, a card's interest line) notifies, and its
+return notifies again (no hysteresis beyond the once-a-day check); a move from one debt to the next inside a debt
+step notifies too (read as a headline change — the headline names the card); the push opens /dashboard, not
+the "Your plan" card; Settings shows no "last checked" line for it (advice_state.last_check has it). Test
+follow-on: tests/contract/cash-alerts-l2's "a dip below the floor" is date-dependent — its seed puts the last
+charge 27 days back and expects the bill in 3, but the forecast steps by calendar month (INV-70), so it fails
+when that month has 31 days.
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
@@ -7179,7 +7232,7 @@ perfin_url) and its contract-coverage gap were fixed by the follow-on batch
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
 2. **Roadmap T4.1 — "Where should my extra money go?"** (in progress — A1, the engine
    `services/advice.js`, A2, GET /api/advice + the dashboard card + Ask's get_cash_plan, and A3, the cash_plan insight
-   module, are done; A4 next; plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
+   module, and A4, the "tell me when my plan changes" checkbox, are done; A5 next; plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
    high-APR card debt first with a per-card avalanche split, a 3-month emergency fund, then
    "invest $X more per paycheck" from a sustained surplus — on the dashboard, in AI insights and
    in Ask, with one opt-in "tell me when my plan changes" checkbox; then (A5–A10) emergency-fund
@@ -7268,7 +7321,8 @@ Detection & Categorization:
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
   teller/services/cash-flow.js, teller/services/cash-alerts.js,
-  teller/services/payday-alerts.js, teller/services/advice.js, teller/services/tax-investments.js,
+  teller/services/payday-alerts.js, teller/services/advice.js, teller/services/advice-alerts.js,
+  teller/services/tax-investments.js,
   teller/services/tax-documents.js, teller/services/tax-package.js,
   teller/routes/tax.js, teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
@@ -7400,7 +7454,7 @@ INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — 
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
 INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
-INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean; since T2.2 L2 cash_alert_enabled (strict boolean), cash_alert_threshold and cash_alert_horizon_days; since T2.2 L3 payday_alerts_enabled (strict boolean); since T2.4 X2a linked_tasks_enabled (strict boolean), linked_tasks_sources (known sources → booleans) and linked_tasks_bill_lead_days (0-14)) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean; since T2.2 L2 cash_alert_enabled (strict boolean), cash_alert_threshold and cash_alert_horizon_days; since T2.2 L3 payday_alerts_enabled (strict boolean); since T4.1 A4 advice_alerts_enabled (strict boolean); since T2.4 X2a linked_tasks_enabled (strict boolean), linked_tasks_sources (known sources → booleans) and linked_tasks_bill_lead_days (0-14)) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
@@ -7417,7 +7471,7 @@ INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trai
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
-INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state; the linked tasks: a clean run's local day, with every write that can change a task kicking its own refresh — cycle-8 F21) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day; every scheduled job also runs once shortly after boot (scheduleBootRuns, cycle-8 F27), so a host that sleeps between requests still reaches them | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
+INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b, the plan-change alert — T4.1 A4) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state; advice_state.checked_on + signature; the linked tasks: a clean run's local day, with every write that can change a task kicking its own refresh — cycle-8 F21) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day; every scheduled job also runs once shortly after boot (scheduleBootRuns, cycle-8 F27), so a host that sleeps between requests still reaches them | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
 INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with at most one sendToAll alert per 6h — makeLockoutNotifier); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET; no login input can crash the process (and so reset the in-memory counter) — see INV-104 | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks) + tests/scan-oct-batch1.test.js (F1 / F7 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)
@@ -7485,7 +7539,7 @@ INV-147 | The dashboard summary has one definition per figure, each the helper i
 INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only. Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
 INV-149 | A linked task follows its source without ever overriding the user: one sync at a time (a transaction under pg_advisory_xact_lock(727274010), creations announced only after COMMIT); a key deleted for good is never inserted again (linked_task_tombstones, db/031's BEFORE DELETE trigger on every delete path); a task is closed only when its source says the item is resolved — a still-open item past the creation window is retained, not closed; an auto-close is not a completion (no todo_completed event, and analytics / the weekly review / Ask / stats leave it out); a task completed, reopened, edited or trashed by hand is never touched (source_detached, per-field snapshot) | Subsystem: Per-sistant Backend / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x1a + x1b + broad-scan-c8-batch5 + tests/broad-scan-c8-batch5 + tests/contract/linked-tasks / linked-tasks-crossapp / c8-batch5
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
-INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount, and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 + tests/contract/advice-a1
+INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount, and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans from those same figures, at most once a local day, push only, and advances its signature only when the push was logged | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 + tests/contract/advice-a1
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
