@@ -27,7 +27,7 @@ implement and reflect sessions only set Phase.)
     raise's share / the raise / the freed amount; the plan-change push names a new raise or bonus once.
   - **Verified:** npm test 2852/2852 (27 new); contract 278/279 (1 new passes; the failure is the known date-dependent
     cash-alerts-l2 test). Mutation checks turn tests red.
-  - **Where I left off:** A6 committed and pushed. Next: `/sync-docs` for A6, then `/broad-implement A7`.
+  - **Where I left off:** A6 committed and pushed; docs synced (CLAUDE.md: advice.js's two new sources + the A6 advisors, advice-alerts' windfall push + advice_state.windfalls_seen, the audit / prompt / Ask additions, Known Open Issues (A6 follow-ons) + Priority Next Features, INV-150, counts 2852 / 151 / Perfin 2131 / contract 279 + the new test entry; README counts + clause). Next: `/broad-implement A7`.
 - **Roadmap T4.1 A5 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a5-broad-implement.md`.
   - **Shipped:** the emergency-fund tracker (`plan.emergency`: months covered, progress, the date at the plan's pace or
     after the high-interest debt) and the goal catch-up (`plan.goals`: a non-critical goals source through
