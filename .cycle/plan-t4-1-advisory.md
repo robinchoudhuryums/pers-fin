@@ -1,7 +1,7 @@
 # Roadmap T4.1 — "Where should my extra money go?" (plan, 2026-10-27)
 
-Status: QUEUED. Starts after the cycle-8 batches (Batches 5–8, then the cycle-8
-`/reflect`). Not started; nothing below is built yet.
+Status: DONE (2026-10-28) — A1–A10 shipped; each batch's block is in
+`.cycle/blocks/8-t4-1-<batch>-broad-implement.md`.
 
 Scope: the debt-first surplus plan (A1–A4) plus twelve further advisors (A5–A10).
 

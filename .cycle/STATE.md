@@ -27,7 +27,7 @@ implement and reflect sessions only set Phase.)
     on changed inputs and return a before / after comparison). That completes T4.1's planned batches (A1–A10).
   - **Verified:** npm test 2917/2917 (21 new); contract 282/283 (1 new passes; the failure is the known date-dependent
     cash-alerts-l2 test). Mutation checks turn tests red.
-  - **Where I left off:** A10 committed and pushed. Next: `/sync-docs` for A10, then T4.1 is done (a `/reflect` or the next roadmap item).
+  - **Where I left off:** A10 committed and pushed; docs synced (CLAUDE.md: advice.js's contributions source + contributionRoom + applyWhatIf / whatIfPlan, Ask's get_cash_plan overrides, the cash_plan block, the Target Allocation limits row, PATCH contribution_limits + the Database entry, INV-59 / INV-150, Known Open Issues (T4.1 done, fourteen sources, A10 follow-ons) + Priority Next Features (T4.1 done), counts 2917 / 155 / Perfin 2196 / contract 283 + the new test entry; README counts + clause; the plan's status line). T4.1 is complete. Next: the cycle-8 `/reflect`, or the next roadmap item.
 - **Roadmap T4.1 A9 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a9-broad-implement.md`.
   - **Shipped:** sinking funds (each quarterly / yearly bill of $100+ — a detected subscription billed every 90+ days or
     a manual quarterly / yearly bill — with its next date from cadence.js, "set aside $X a month until then, then $Y",
