@@ -10,6 +10,10 @@ module.exports = defineConfig({
   use: {
     baseURL: "http://localhost:3000",
     screenshot: "only-on-failure",
+    // PW_CHROMIUM_PATH points at a preinstalled Chromium when the pinned
+    // Playwright build isn't installed (e.g. /opt/pw-browsers/chromium in a
+    // Claude Code cloud container). Unset in CI.
+    ...(process.env.PW_CHROMIUM_PATH ? { launchOptions: { executablePath: process.env.PW_CHROMIUM_PATH } } : {}),
   },
   webServer: {
     command: "node e2e/boot-server.js",

@@ -165,7 +165,8 @@ describe("GET /api/deleted-transactions — batch ids and batches", () => {
     };
     const res = await supertest(mount()).get("/api/deleted-transactions").expect(200);
     assert.equal(res.body.items[0].batch_id, BATCH);
-    assert.deepEqual(res.body.batches, [{ batch_id: BATCH, count: 3, deleted_at: "2026-10-20T12:00:00.000Z" }]);
+    // An older reply without `restorable` reads as all of them (E1 follow-on).
+    assert.deepEqual(res.body.batches, [{ batch_id: BATCH, count: 3, deleted_at: "2026-10-20T12:00:00.000Z", restorable: 3 }]);
     const b = seen.find((x) => /GROUP BY batch_id/.test(x));
     assert.match(b, /WHERE batch_id IS NOT NULL/);
     assert.match(b, /ORDER BY MAX\(deleted_at\) DESC LIMIT 20/);

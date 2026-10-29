@@ -199,6 +199,12 @@ test.describe("every page loads cleanly", () => {
 
   test("the Cash Flow section lists what the forecast holds and saves a setting (cycle-8 E1b)", async ({ page }) => {
     const problems = watch(page);
+    // The Subscriptions page's click sweep presses Dismiss on the seeded
+    // subscription earlier in the run; bring it back so it is a projected bill.
+    const subs = (await (await page.request.get("/perfin/api/subscriptions?filter=all")).json()).subscriptions || [];
+    const sf = subs.find((x) => x.display_name === "Streamflix");
+    expect(sf, "the seeded subscription").toBeTruthy();
+    if (sf.is_dismissed) expect((await page.request.patch(`/perfin/api/subscriptions/${sf.id}/undismiss`, { headers: { "X-Requested-With": "XMLHttpRequest" } })).ok()).toBe(true);
     await page.goto("/perfin/dashboard");
     const wrap = page.locator("#cashflow-items-wrap");
     await expect(wrap).toBeVisible();

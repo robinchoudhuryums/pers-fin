@@ -258,6 +258,19 @@ async function runMigrationsOnce() {
     // Resolve; NULL for a single delete), so the whole batch can be restored.
     await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS batch_id TEXT");
     await client.query("CREATE INDEX IF NOT EXISTS idx_deleted_transactions_batch ON deleted_transactions (batch_id) WHERE batch_id IS NOT NULL");
+    // A CSV-overlap Resolve before E1c tombstoned its rows (with snapshots,
+    // cycle-8 F4) in one transaction but without a batch id: give each such
+    // group — 2+ csv snapshot tombstones sharing one deleted_at (now() of that
+    // transaction) — a deterministic id, so it can be restored at once too.
+    // Only NULL rows are touched, so a re-run changes nothing.
+    await client.query(
+      `UPDATE deleted_transactions d SET batch_id = g.batch_id
+       FROM (SELECT deleted_at, 'resolve_' || substr(md5(deleted_at::text), 1, 12) || '_legacy' AS batch_id
+             FROM deleted_transactions
+             WHERE batch_id IS NULL AND snapshot IS NOT NULL AND source = 'csv'
+             GROUP BY deleted_at HAVING COUNT(*) >= 2) g
+       WHERE d.batch_id IS NULL AND d.snapshot IS NOT NULL AND d.source = 'csv' AND d.deleted_at = g.deleted_at`
+    );
     await client.query(`CREATE TABLE IF NOT EXISTS detected_subscriptions (
       id             SERIAL PRIMARY KEY,
       merchant_key   TEXT NOT NULL,

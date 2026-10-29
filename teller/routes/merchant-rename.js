@@ -64,7 +64,9 @@ async function applyRenameRules(db = pool) {
 
 // Detection rows keyed on the old merchant keys move to the new name, keeping
 // their user state; a row whose (new key, cadence[, direction]) already exists
-// is deactivated instead (the existing row wins).
+// is deactivated instead (the existing row wins). A forecast correction on the
+// deactivated row is carried to that existing row while it is still on the
+// default (cycle-8 E1 follow-on — it used to be lost with the old row).
 async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
   const keys = oldKeys.filter((k) => k && k !== newKey);
   if (!keys.length) return { subscriptions: 0, transfers: 0 };
@@ -74,6 +76,13 @@ async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
        AND NOT EXISTS (SELECT 1 FROM detected_subscriptions o WHERE o.merchant_key = $2 AND o.cadence_days = ds.cadence_days)`,
     [keys, newKey, displayName]);
   await db.query(
+    `UPDATE detected_subscriptions o SET forecast_ignore = true, updated_at = now()
+     WHERE o.merchant_key = $2 AND NOT o.forecast_ignore
+       AND EXISTS (SELECT 1 FROM detected_subscriptions ds
+                   WHERE ds.merchant_key = ANY($1::text[]) AND ds.cadence_days = o.cadence_days
+                     AND ds.is_active AND ds.source != 'manual' AND ds.forecast_ignore)`,
+    [keys, newKey]);
+  await db.query(
     "UPDATE detected_subscriptions SET is_active = false, updated_at = now() WHERE merchant_key = ANY($1::text[]) AND is_active AND source != 'manual'",
     [keys]);
   const transfers = await db.query(
@@ -82,6 +91,15 @@ async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
        AND NOT EXISTS (SELECT 1 FROM recurring_transfers o
                        WHERE o.merchant_key = $2 AND o.cadence_days = rt.cadence_days AND o.direction = rt.direction)`,
     [keys, newKey, displayName]);
+  await db.query(
+    `UPDATE recurring_transfers o SET forecast_treatment = old.forecast_treatment, updated_at = now()
+     FROM (SELECT DISTINCT ON (cadence_days, direction) cadence_days, direction, forecast_treatment
+           FROM recurring_transfers
+           WHERE merchant_key = ANY($1::text[]) AND is_active AND forecast_treatment <> 'auto'
+           ORDER BY cadence_days, direction, updated_at DESC) old
+     WHERE o.merchant_key = $2 AND o.cadence_days = old.cadence_days AND o.direction = old.direction
+       AND o.forecast_treatment = 'auto'`,
+    [keys, newKey]);
   await db.query(
     "UPDATE recurring_transfers SET is_active = false, updated_at = now() WHERE merchant_key = ANY($1::text[]) AND is_active",
     [keys]);

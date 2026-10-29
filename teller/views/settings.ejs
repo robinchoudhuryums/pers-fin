@@ -2049,9 +2049,16 @@
     function deletedBatchHtml(b) {
       var when = b.deleted_at ? new Date(b.deleted_at).toLocaleString() : '';
       var n = Number(b.count) || 0;
+      // `restorable` leaves out rows whose account is gone or that the bank
+      // removed (E1 follow-on); an older server sends none — all of them.
+      var r = b.restorable === undefined || b.restorable === null ? n : (Number(b.restorable) || 0);
+      var rest = n - r;
+      var note = rest > 0 ? ' \u00b7 ' + esc(String(rest)) + ' can\u2019t come back (account gone or removed by the bank)' : '';
+      var button = r > 0
+        ? '<button class="btn" data-restore-batch="' + esc(b.batch_id) + '" aria-label="Restore all ' + esc(String(r)) + ' rows removed by the CSV overlap resolve' + (when ? ' on ' + esc(when) : '') + '" style="margin-left:8px;">Restore all ' + esc(String(r)) + '</button>'
+        : '';
       return '<li style="margin:8px 0;"><strong>Removed by a CSV overlap resolve</strong> \u2014 ' + esc(String(n)) + ' row' + (n === 1 ? '' : 's')
-        + (when ? ' \u00b7 ' + esc(when) : '')
-        + '<button class="btn" data-restore-batch="' + esc(b.batch_id) + '" aria-label="Restore all ' + esc(String(n)) + ' rows removed by the CSV overlap resolve' + (when ? ' on ' + esc(when) : '') + '" style="margin-left:8px;">Restore all ' + esc(String(n)) + '</button></li>';
+        + (when ? ' \u00b7 ' + esc(when) : '') + note + button + '</li>';
     }
     function deletedRowHtml(d) {
       var id = d.transaction_id;
@@ -2130,6 +2137,7 @@
       var skipped = (r.skipped || []).length;
       if (skipped) msg += ' ' + skipped + ' couldn\u2019t be restored (their account is gone or the bank removed them) and stay deleted.';
       if (r.stale) msg += ' ' + r.stale + ' changed at the bank while deleted \u2014 run Reconcile Now to refresh them.';
+      if (r.cleared) msg += ' ' + r.cleared + ' had no saved copy and will return with the next Reconcile Now or CSV re-import.';
       return msg;
     }
     async function restoreDeletedBatch(btn) {

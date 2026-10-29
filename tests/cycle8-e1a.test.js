@@ -247,8 +247,15 @@ describe("schema and the detectors", () => {
     assert.ok(src.indexOf("forecast_treatment TEXT NOT NULL") < src.indexOf("const checksChanged = await syncInListChecks(client);"));
   });
   it("neither detector writes the user's forecast setting", () => {
-    for (const f of ["scripts/detect-transfers.js", "scripts/detect-subscriptions.js", "teller/routes/merchant-rename.js"]) {
+    for (const f of ["scripts/detect-transfers.js", "scripts/detect-subscriptions.js"]) {
       assert.doesNotMatch(read(f), /forecast_treatment|forecast_ignore/, f);
     }
+    // A rename re-key only carries the user's own setting from the row it
+    // deactivates onto the surviving row still on the default (E1 follow-on).
+    const mr = read("teller/routes/merchant-rename.js");
+    const writes = mr.match(/SET forecast_(treatment|ignore) = [^,]+/g);
+    assert.deepEqual(writes, ["SET forecast_ignore = true", "SET forecast_treatment = old.forecast_treatment"]);
+    assert.match(mr, /o\.merchant_key = \$2 AND NOT o\.forecast_ignore/);
+    assert.match(mr, /AND o\.forecast_treatment = 'auto'/);
   });
 });

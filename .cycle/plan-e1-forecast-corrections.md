@@ -1,6 +1,8 @@
 # Cycle 8 E1 — forecast and data corrections (plan, 2026-10-28)
 
 Status: DONE (2026-10-29) — E1a, E1b, E1c shipped; blocks in `.cycle/blocks/8-e1{a,b,c}-broad-implement.md`.
+Follow-ons done the same day (`.cycle/blocks/8-e1-followons-broad-implement.md`): a rename re-key keeps the forecast
+setting, an incoming transfer's setting is a 400, batches report what can be restored, legacy Resolves get batch ids.
 
 Scope: G1 and G5 from the cycle-8 expansion plan (`.cycle/plan-cycle8-expansion.md`).
 

@@ -1315,11 +1315,17 @@ router.patch("/api/recurring-transfers/:id/forecast", async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `UPDATE recurring_transfers SET forecast_treatment = $1, updated_at = now() WHERE id = $2
+      `UPDATE recurring_transfers SET forecast_treatment = $1, updated_at = now()
+       WHERE id = $2 AND direction = 'outgoing'
        RETURNING id, display_name, direction, forecast_treatment`,
       [treatment, id]
     );
-    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    if (!result.rows.length) {
+      // Only outgoing transfers are billed; an incoming one has nothing to correct.
+      const found = await pool.query("SELECT direction FROM recurring_transfers WHERE id = $1", [id]);
+      if (found.rows.length) return res.status(400).json({ error: "Only an outgoing transfer is in the forecast" });
+      return res.status(404).json({ error: "Not found" });
+    }
     forecastChanged();
     res.json(result.rows[0]);
   } catch (err) {

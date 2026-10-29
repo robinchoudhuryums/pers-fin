@@ -52,7 +52,11 @@ describe("Cash-flow forecast service (T2.2 L1) on real Postgres", { skip: SKIP }
       `INSERT INTO recurring_transfers (merchant_key, display_name, amount, cadence_days, first_seen, last_transferred, next_expected, is_active, transfer_type, direction)
        VALUES ($1,$2,$3,30,$4,$5,$6,true,$7,'outgoing')`, [key, name, amt, add(-90), monthBefore(add(next)), add(next), type]);
     await xfer("loan", "AUTO LOAN PAYMENT", 400, loanIn, "bill_payment");
-    await xfer("autopay", "CHASE CARD AUTOPAY", 1500, 2, "bill_payment");
+    // Left out of the forecast either way; its last payment still needs a day
+    // the previous month has (on Oct 29, "Sep 31" was NULL and the INSERT failed).
+    let autopayIn = 2;
+    while (!monthBefore(add(autopayIn))) autopayIn++;
+    await xfer("autopay", "CHASE CARD AUTOPAY", 1500, autopayIn, "bill_payment");
   });
   after(async () => { if (pool) await pool.end(); });
 

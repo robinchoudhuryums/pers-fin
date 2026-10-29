@@ -18,6 +18,18 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E1 follow-ons (DONE, 2026-10-29) + E2 planned:** block `.cycle/blocks/8-e1-followons-broad-implement.md`.
+  - **Shipped:** a rename rule's re-key carries the forecast setting onto the surviving row; PATCH …/forecast on an
+    incoming transfer is a 400; GET /api/deleted-transactions' batches carry `restorable` and Settings' "Restore all R"
+    notes the rows that can't come back; the batch restore counts a lifted legacy tombstone as `cleared` (and a legacy
+    manual entry as `unrestorable`); the migration batches pre-E1c Resolves (`resolve_<md5>_legacy`); `PW_CHROMIUM_PATH`
+    for `npm run test:e2e`; cash-flow-l1's seed fixed; the E1b e2e check no longer depends on the click sweep's order.
+  - **Verified:** npm test 2972/2972 (11 new); contract 295/296 (4 new; cash-alerts-l2 date-dependent, pre-existing);
+    e2e E2E_RESULT. Mutation check red.
+  - **E2 planned:** `.cycle/plan-e2-scheduler-watermarks.md` — E2a the job runner (registry, in-memory due checks, the
+    job_runs claim), E2b wiring startup.js onto it, E2c id watermarks + overlap rescan for the anomaly and payday checks,
+    E2d the same for "Since you last looked". Decisions proposed there, to confirm at E2a.
+  - **Where I left off:** committed and pushed. Next: `/sync-docs` for the follow-ons, then `/broad-implement E2a`.
 - **Cycle-8 E1c (DONE, 2026-10-29) — E1 complete:** block `.cycle/blocks/8-e1c-broad-implement.md`.
   - **Shipped (G5):** deleted_transactions.batch_id; CSV-overlap Resolve tags its tombstones with one id and returns it;
     POST /api/deleted-transactions/batches/:batch_id/restore restores the batch in one transaction (refused rows listed and

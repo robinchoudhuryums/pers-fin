@@ -749,15 +749,23 @@ router.get("/api/deleted-transactions", async (req, res) => {
     const last = page[page.length - 1];
     // Every Resolve batch still holding a tombstone, newest first (E1c) — the
     // page's "Restore all" headers, whatever page their rows fall on.
+    // `restorable` counts the rows restoreDeleted would bring back — not one
+    // the bank removed, not one whose account is gone (E1 follow-on).
     const b = await pool.query(
-      `SELECT batch_id, COUNT(*)::int AS count, MAX(deleted_at) AS deleted_at
+      `SELECT batch_id, COUNT(*)::int AS count, MAX(deleted_at) AS deleted_at,
+              (COUNT(*) FILTER (WHERE bank_removed_at IS NULL AND snapshot IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM linked_accounts la
+                             WHERE la.account_id = deleted_transactions.snapshot->'row'->>'account_id')))::int AS restorable
        FROM deleted_transactions WHERE batch_id IS NOT NULL
        GROUP BY batch_id ORDER BY MAX(deleted_at) DESC LIMIT ${BATCH_LIST_MAX}`
     );
     res.json({
       items,
       next: r.rows.length > limit && last ? `${last.cursor_at}|${last.transaction_id}` : null,
-      batches: b.rows.map((x) => ({ batch_id: x.batch_id, count: x.count, deleted_at: x.deleted_at })),
+      batches: b.rows.map((x) => ({
+        batch_id: x.batch_id, count: x.count, deleted_at: x.deleted_at,
+        restorable: x.restorable === undefined ? x.count : x.restorable,
+      })),
     });
   } catch (err) {
     console.error("deleted transactions list error:", err.message);
@@ -896,14 +904,19 @@ router.post("/api/deleted-transactions/batches/:batch_id/restore", async (req, r
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Nothing from that resolve is still deleted." });
     }
-    let restored = 0, alreadyPresent = 0, splits = 0, stale = 0;
+    let restored = 0, alreadyPresent = 0, splits = 0, stale = 0, cleared = 0;
     const skipped = [];
     for (const { transaction_id: id } of ids.rows) {
       const out = await restoreDeleted(client, id, { applyRules: false });
       if (out.status !== 200) {
-        skipped.push({ transaction_id: id, reason: out.body.reason || (out.status === 409 ? "account_gone" : "not_found"), error: out.body.error });
+        const reason = out.body.reason || (out.body.returns_on === "never" ? "unrestorable"
+          : out.status === 409 ? "account_gone" : "not_found");
+        skipped.push({ transaction_id: id, reason, error: out.body.error });
         continue;
       }
+      // A tombstone with no snapshot is only lifted — the row returns on the
+      // next reconcile / re-import, so it isn't counted as restored.
+      if (out.body.cleared) { cleared++; continue; }
       if (out.body.already_present) alreadyPresent++;
       else restored++;
       splits += out.body.splits || 0;
@@ -911,7 +924,7 @@ router.post("/api/deleted-transactions/batches/:batch_id/restore", async (req, r
     }
     if (restored) await require("./merchant-rename").applyRenameRules(client);
     await client.query("COMMIT");
-    res.json({ batch_id: batchId, restored, already_present: alreadyPresent, splits, ...(stale ? { stale } : {}), skipped });
+    res.json({ batch_id: batchId, restored, already_present: alreadyPresent, splits, ...(stale ? { stale } : {}), ...(cleared ? { cleared } : {}), skipped });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("restore batch error:", err.message);
