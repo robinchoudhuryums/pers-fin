@@ -25,8 +25,11 @@ implement and reflect sessions only set Phase.)
     "Restore all N" per batch.
   - **Verified:** npm test 2961/2961 (13 new); contract resolve-undo-e1c 4/4 (cash-alerts-l2 / cash-flow-l1 date-dependent,
     pre-existing); e2e 73/73. Mutation checks red.
-  - **Where I left off:** E1c committed and pushed — E1 (E1a–E1c) is done. Next: `/sync-docs` for E1, then plan E2 (ST1 due-based
-    job runner + ST3 id-based watermarks).
+  - **Where I left off:** E1 (E1a–E1c) done and docs synced (CLAUDE.md: cash-flow.js + subscriptions.js entries, the Cash flow
+    forecast corrections, Resolve batches + Restore all, Commands, Database (forecast_treatment / forecast_ignore / batch_id,
+    CHECK_LISTS), INV-145 + new INV-151, Known Open Issues (E1 + follow-ons, cash-flow-l1's date-dependent seed, the e2e-in-
+    container note corrected), counts 2961 / 158 / Perfin 2240 / contract 292 / e2e 73 + the new test entries; README counts +
+    clauses). Next: plan E2 (ST1 due-based job runner + ST3 id-based watermarks).
 - **Cycle-8 E1b (DONE, 2026-10-29):** block `.cycle/blocks/8-e1b-broad-implement.md`.
   - **Shipped (G1 UI):** a collapsed "What's in this forecast" list in the dashboard's Cash Flow section — each projected
     bill (count and total in the window, next date) and each item left out (the reason in words), with a labelled setting

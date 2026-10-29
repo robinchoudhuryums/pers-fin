@@ -224,7 +224,19 @@ teller/
                            `projection` + `lowest` { date, balance }), firstBelow
                            (projection, threshold) and getCashFlowForecast. "Today"
                            is todayStr() (APP_TIMEZONE — the route used the UTC
-                           date). Charge-level (no refund netting, F35)
+                           date). Charge-level (no refund netting, F35).
+                           Cycle-8 E1a (G1): the user's corrections win —
+                           transferTreatment(tr) reads recurring_transfers.
+                           forecast_treatment (bill → billed whatever the
+                           heuristics say; internal / ignore → never), else
+                           isCardAutopay / isInternalMove; a subscription's
+                           forecast_ignore leaves it out. classifyBills splits the
+                           candidates into `bills` (source / id / treatment / why
+                           auto | user) and `left_out` (reason card_autopay |
+                           internal | user_internal | user_ignored);
+                           projectCashFlow bills only `bills` and returns both as
+                           `forecast_items` (each bill's occurrences, projected
+                           total and next date in the window)
     cash-alerts.js       — The low projected cash alert (roadmap T2.2 L2):
                            runCashAlerts(pool, { now, today, deps }), run hourly
                            by the "cash-alerts" away job. Off by default (and then
@@ -664,7 +676,8 @@ teller/
                            the scheduled bank-auto-sync task in `server.js` (in-process,
                            no HTTP self-fetch).
     subscriptions.js     — GET/POST /api/subscriptions, PATCH dismiss/undismiss/cancel/
-                           uncancel/category, POST /api/detect, CSV import,
+                           uncancel/category/forecast (+ PATCH /api/recurring-
+                           transfers/:id/forecast — cycle-8 E1a), POST /api/detect, CSV import,
                            recurring transfers, manual bills, bill payments,
                            bill-calendar (+ICS builder), settlement. Mounts
                            transactions.js (route-file split). Also the
@@ -1343,9 +1356,22 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2917 tests as of latest); use
+  Perfin and Per-sistant test files (2961 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2917 tests across 155 test files (incl.
+  Current count: 2961 tests across 158 test files (incl.
+  `tests/cycle8-e1c.test.js` — cycle-8 E1c (G5): the batch id's format, Resolve tagging its tombstones and a single
+  delete clearing it, the batch restore over a fake client (400 before connecting, 404 + rollback, restored / already
+  present / account gone / removed by the bank with only the restored tombstones lifted and the rules once, a throw
+  rolled back), the list's batch_id + batches and Settings' "Restore all N" in a vm (labelled, escaped, the message,
+  the reload, a refusal / network failure re-enabling it);
+  `tests/cycle8-e1b.test.js` — cycle-8 E1b (G1): "What's in this forecast" run in a vm from dashboard.ejs (both lists'
+  text, each reason in words, the labelled selects per transfer / subscription, escaping, the empty states, the PATCH
+  per source through writeOk, the section + summary reloaded on success only, a refused / failed save reverting, focus
+  kept, the delegated listener, the collapsed markup);
+  `tests/cycle8-e1a.test.js` — cycle-8 E1a (G1): the treatment matrix over the card-autopay / internal-move / plain
+  shapes, classifyBills' tags, getCashFlowInputs' SQL + bills / left_out, the totals moving with the settings, GET
+  /api/cash-flow's forecast_items, both PATCH routes' 400s / writes / 404s / invalidate, the CHECK_LISTS migration and
+  no detector writing the columns;
   `tests/roadmap-t4-1-a10.test.js` — roadmap T4.1 A10: normalizeLimits / periodsLeftInYear, contributionRoom (a
   limit against this year's contributions, the per-paycheck amount rounded up, reached, a Plaid account whose flows
   haven't synced, a gone account or $0 limit left out, the investing-step pointer), applyWhatIf / whatIfPlan (an extra
@@ -2320,8 +2346,14 @@ shell/
   quarterly manual bill and a yearly membership as sinking funds on the cadence helpers' dates — a monthly bill and a
   cancelled service left out — a Netflix + Hulu overlap and an Amazon Prime with no other purchase, through GET /api/advice;
   since A10 limits set through PATCH and contributions logged through POST /api/investment-flows — last year's and a
-  withdrawal left out — as contribution room through GET /api/advice, and a what-if on the real inputs).
-  283 tests, run
+  withdrawal left out — as contribution room through GET /api/advice, and a what-if on the real inputs). Since
+  cycle-8 E1a, forecast-e1a (detector-found rows: a card autopay and a savings move left out with their reasons until
+  set to "bill", a rent transfer ignored and a subscription left out through the PATCH routes, the totals equal to the
+  items', the dashboard summary's lowest day following, re-detection keeping the settings, the CHECK refusing another
+  value). Since E1c, resolve-undo-e1c (a real Resolve's batch id on every tombstone and in the list; the batch restored
+  with notes and splits while a bank-removed row stays; a second restore duplicating nothing; an emptied batch a 404; a
+  later single delete in no batch).
+  292 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2479,8 +2511,8 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 72 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
-a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 73 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
+a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -2681,7 +2713,12 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   row takes its rename rule's CURRENT name, or loses the rename of a rule deleted or switched off
   while it was gone, then every rule applies (F5). CSV-overlap **Resolve** tombstones (with a
   snapshot and source) the rows it deletes, in the same transaction (F4), so they can be restored
-  and a CSV re-import skips them. **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
+  and a CSV re-import skips them. **One Resolve is one batch (cycle-8 E1c, G5):** its tombstones
+  share a `batch_id` (returned by Resolve), and Settings → Sync Health → Deleted transactions shows
+  "Removed by a CSV overlap resolve — N rows" with **Restore all N** (`POST
+  /api/deleted-transactions/batches/:batch_id/restore`): every row back in one transaction with its
+  notes and splits, the rename rules run once; a row whose account is gone or that the bank removed
+  stays deleted and is named in the message. **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
   when the merchants look alike (a shared word of 3+ letters, or a ≥4-letter prefix, noise words
   ignored; the synced row's raw description is tried too), closest date first — amount + date
   alone matched two different $4.50 coffees and let one synced row claim every same-amount CSV
@@ -3369,6 +3406,17 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   west of UTC an evening forecast started a day late) and reports the lowest projected
   day (`lowest_balance` / `lowest_balance_date`), which the weekly table hides; the
   dashboard Cash Flow line shows "Lowest projected: $X on <date>" (red below $0).
+  **Corrections (cycle-8 E1a / E1b, G1):** the card-autopay and internal-move rules are
+  guesses, so each recurring transfer has a forecast setting — Automatic (the rules),
+  Always a bill, Between my accounts or Leave out — and each subscription can be left
+  out of the forecast (still a subscription everywhere else). Forecast-only: the cash
+  plan's savings transfers, goals, insights, Sheets and the detectors don't read them,
+  and re-detection keeps them. The dashboard's Cash Flow section has a collapsed
+  "What's in this forecast" list: each projected bill (how many times in the window,
+  the total, the next date) and each item left out with the reason in words, with a
+  labelled setting per item; a change saves (PATCH …/forecast) and reloads the section
+  and the summary card, and the next hourly cash-alert check re-evaluates. The low-cash
+  alert, the dashboard summary's lowest day and the cash plan all follow it.
 - **Low cash alert** (roadmap T2.2 L2, opt-in — Settings → Cash Alerts): a push
   ("Low cash ahead", tag `cash-low`, opens the dashboard) when the forecast's
   spendable cash is projected to fall below a floor (`cash_alert_threshold`, default
@@ -4493,7 +4541,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2917 tests passing across 155 test files (Perfin 2196 + Per-sistant 721), plus the real-Postgres route contract suite (283 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2961 tests passing across 158 test files (Perfin 2240 + Per-sistant 721), plus the real-Postgres route contract suite (292 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4616,6 +4664,12 @@ GET  /api/recurring-transfers # list recurring transfers (query: filter=active|d
 PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
 PATCH /api/recurring-transfers/:id/undismiss # restore a dismissed transfer
 PATCH /api/recurring-transfers/:id/type      # reclassify transfer type
+PATCH /api/recurring-transfers/:id/forecast  # { treatment: auto | bill | internal | ignore } —
+                           # how the cash-flow forecast treats it (cycle-8 E1a); 400 on a
+                           # malformed id / value before any query, 404 unknown; then
+                           # cash-alerts invalidate()
+PATCH /api/subscriptions/:id/forecast # { ignore: true | false } (strict boolean) — leave a
+                           # subscription out of the forecast (E1a); same rules
 GET  /api/transactions     # list transactions (query: months, limit, offset)
 GET  /api/transactions/search # search/filter (query: q, category, account_id, min/max_amount, start/end_date);
                            # q is matched literally (LIKE \ % _ escaped) and a non-date
@@ -4642,7 +4696,9 @@ POST /api/transactions/csv-overlap/resolve # delete CSV-side rows paired one-to-
                                            # its hand entries deleted) and the synced
                                            # side is Teller or a non-CSV Plaid item.
                                            # The deleted rows are tombstoned with a
-                                           # snapshot in the same transaction (cycle-8 F4)
+                                           # snapshot in the same transaction (cycle-8 F4),
+                                           # all with one batch_id, returned as { deleted,
+                                           # batch_id } (cycle-8 E1c)
 PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimbursed
                             # (Phase B1/B2), personal_for ('self'|'partner'|null —
                             # shared-card settlement override; invalid values
@@ -4666,7 +4722,9 @@ GET  /api/deleted-transactions # deleted transactions, newest first (query: limi
                             # default 50, before = the previous page's `next`) →
                             # { items: [{ transaction_id, deleted_at, source, legacy,
                             # restorable, date, merchant, amount, account_name,
-                            # splits_count }], next } (roadmap T2.5 U1; Settings →
+                            # splits_count, batch_id }], next, batches: [{ batch_id, count,
+                            # deleted_at }] } — every Resolve batch still holding a row,
+                            # newest first, ≤20 (cycle-8 E1c) (roadmap T2.5 U1; Settings →
                             # Sync Health → Deleted transactions, U2)
 POST /api/deleted-transactions/:id/restore # put it back from its snapshot and lift the
                             # tombstone, one transaction → { restored: true,
@@ -4676,6 +4734,12 @@ POST /api/deleted-transactions/:id/restore # put it back from its snapshot and l
                             # a Plaid id the bank removed since → 409 { reason:
                             # "removed_by_bank" }; one it changed → stale: true (cycle-8 F6);
                             # the Settings Restore button and the Activity toast's Undo (U2)
+POST /api/deleted-transactions/batches/:batch_id/restore # undo a whole CSV-overlap Resolve
+                            # (cycle-8 E1c): each row through the same restore, in ONE
+                            # transaction → { batch_id, restored, already_present, splits,
+                            # stale?, skipped: [{ transaction_id, reason, error }] } (a refused
+                            # row stays deleted); 400 malformed id, 404 nothing left; Settings'
+                            # "Restore all N"
 GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
 DELETE /api/transactions/:id/splits # clear all splits, revert to parent-row aggregation
@@ -4780,7 +4844,8 @@ GET  /api/cash-flow        # rolling cash flow projection (query: days 30-180, d
                            # income from getLiveIncomeStreams (the bill calendar's
                            # streams — F34). services/cash-flow.js (T2.2 L1); starts
                            # the day after the APP_TIMEZONE date; adds lowest_balance /
-                           # lowest_balance_date (the lowest projected day)
+                           # lowest_balance_date (the lowest projected day) and
+                           # forecast_items { bills[], left_out[] } (cycle-8 E1a)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
 GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6).
                            # Window anchored on the APP_TIMEZONE month; avg_monthly_income
@@ -5387,8 +5452,9 @@ standalone-mode fallback if either app is run on its own Render service.
   (`runMigrations({ attempts = 5, sleep })`, 2s × attempt backoff); any other error, or
   running out of attempts (~45s of contention), is still fatal.
   **IN-list CHECKs (cycle-8 F31):** a CHECK written inside `CREATE TABLE IF NOT EXISTS`
-  never changes once the table exists. The value lists of `tax_documents.form` / `origin`
-  and `webhook_events.provider` / `status` live in `CHECK_LISTS` (services/database.js —
+  never changes once the table exists. The value lists of `tax_documents.form` / `origin`,
+  `webhook_events.provider` / `status` and `recurring_transfers.forecast_treatment` (E1a — its
+  ADD COLUMN interpolates the list) live in `CHECK_LISTS` (services/database.js —
   the CREATE TABLEs interpolate them); `syncInListChecks(client)` reads each
   `<table>_<column>_check` (`pg_get_constraintdef`) and, only when its values differ,
   drops it and re-adds it `NOT VALID` inside the migration transaction. Add a new value to
@@ -5513,7 +5579,9 @@ standalone-mode fallback if either app is run on its own Render service.
   `snapshot JSONB` (`{ row: to_jsonb(transaction), splits: [...] }`, written by the
   DELETE; NULL on an older tombstone) and `source TEXT` (teller / plaid / csv / manual).
   Cycle-8 F6 adds `bank_changed_at` / `bank_removed_at TIMESTAMPTZ` (stamped by Plaid's
-  modified / removed deliveries for a tombstoned id; read by restore). Restore deletes the row. In reset-fresh's WIPE_TABLES.
+  modified / removed deliveries for a tombstoned id; read by restore). Cycle-8 E1c adds `batch_id TEXT`
+  (the CSV-overlap Resolve that wrote it — one id per Resolve, NULL for a single delete; a partial
+  index). Restore deletes the row. In reset-fresh's WIPE_TABLES.
 - `transaction_splits` (Phase B3): subdivides a single Teller transaction into
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references
@@ -5755,6 +5823,11 @@ standalone-mode fallback if either app is run on its own Render service.
   detector's upsert keeps the stored `transfer_type` instead of the keyword
   classifier's. Idempotent ADD COLUMN — no backfill (pre-existing user edits
   stay unflagged until re-set once).
+- `recurring_transfers.forecast_treatment TEXT NOT NULL DEFAULT 'auto'` (CHECK auto / bill /
+  internal / ignore, its list in `CHECK_LISTS`) and `detected_subscriptions.forecast_ignore
+  BOOLEAN NOT NULL DEFAULT false` (cycle-8 E1a, G1): the user's correction of the cash-flow
+  forecast (services/cash-flow.js transferTreatment / classifyBills). Written only by the two
+  PATCH …/forecast routes — never by the detectors. Auto-migrated.
 - `bill_payments`: tracks which bills have been paid. Columns: `bill_source`
   (subscription or manual), `bill_id`, `paid_date`, `paid_amount`, `notes`.
   UNIQUE on (bill_source, bill_id, paid_date). Calendar shows paid state.
@@ -6994,8 +7067,10 @@ F31 F32 F33 F52 F45) are done — every cycle-8 fix batch is done.
 Batch 1 follow-ons: the weekly / daily digest, CSV reminder and housing ledger settle for
 the day once they find themselves off and a Settings change doesn't drop that memo
 (switching one on takes effect the next local day); the watchdog's boot timeout isn't
-cleared by stopBackgroundJobs; e2e can't run in the cloud container as configured (the
-project's Playwright pins a browser build that isn't preinstalled).
+cleared by stopBackgroundJobs; `npm run test:e2e` doesn't find a browser in the cloud container
+as configured (the project's Playwright pins a build that isn't preinstalled) — it does run with
+a scratch config that sets `use.launchOptions.executablePath` to `/opt/pw-browsers/chromium`
+(cycle-8 E1b; an env-gated option in e2e/playwright.config.js would make the script work as is).
 Batch 2 follow-ons: a linked card paid by an autopay whose name has no card phrase and whose
 credit posts more than 5 days later is billed on top of the card spending (F8); a debit that
 happens to match an unrelated same-amount credit on another spendable account within 5 days
@@ -7036,12 +7111,22 @@ V2); a switch whose save reached the server but whose reply was lost shows the o
 reload; a Tax-page note the server normalized on save shows what was typed until the next reload;
 Per-sistant's standalone login ignores return_to; the heatmap day keys assume DATE columns arrive as
 UTC midnight (a server not on UTC shifts them, as before).
-Batch 8 follow-ons: only the four IN-list CHECKs in `CHECK_LISTS` (tax_documents form / origin,
-webhook_events provider / status) are kept in step — the rest of the schema's IN-list CHECKs are
+Batch 8 follow-ons: only the IN-list CHECKs in `CHECK_LISTS` (tax_documents form / origin,
+webhook_events provider / status, and since E1a recurring_transfers forecast_treatment) are kept in step — the rest of the schema's IN-list CHECKs are
 still frozen at first creation; a replaced CHECK is added NOT VALID, so rows written before it
 aren't re-checked; Per-sistant's calendar projection starts its window at UTC midnight (a day early
 east of UTC — cosmetic); DATE values Per-sistant reads through perfinPool (finance search, the
 Perfin widget, housingDue) are still Perfin's Dates; a landing line can be up to 30 s stale.
+
+**Cycle-8 expansion E1 (done — E1a–E1c, `.cycle/plan-e1-forecast-corrections.md`; E2–E5 queued in
+`.cycle/plan-cycle8-expansion.md`):** forecast corrections (G1) and undoing a whole CSV-overlap Resolve (G5).
+Follow-ons: the forecast list covers recurring transfers and subscriptions only (manual bills and income
+streams aren't listed or correctable); a rename rule's re-key that deactivates the old transfer / subscription
+row loses its forecast setting (like its other user state); a setting on an incoming transfer has no effect;
+Resolves run before E1c have no batch id (their rows restore one at a time) and Resolve still has no page (API
+only); a batch's count includes rows that can't come back. Test follow-on: tests/contract/cash-flow-l1's seed is
+date-dependent like cash-alerts-l2's — its card-autopay row is due in 2 days with its last payment the same day a
+month earlier, NULL when that day doesn't exist (e.g. run on Oct 29: no Sep 31).
 
 **Roadmap T4.1 (done — A1–A10):** `services/advice.js` computes the plan; since A2 it is
 served by GET /api/advice, shown in the dashboard's "Your plan" card (widget key `advice`, on by default)
@@ -7802,13 +7887,14 @@ INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs o
 INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit — the landed check's tag looked up in notification_log across its 24 h overlap, cycle-8 F51) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4 + tests/contract/c8-batch4
 INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included — and a routes/ai.js feature then answers 422 { ai_refusal }, never an empty 200, cycle-8 F24); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4 + apps/per-sistant/tests/broad-scan-c8-batch6 (F24)
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
-INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3
+INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4), all under one batch_id, and a batch restore runs each row through the same restore in one transaction — a refused row stays deleted (cycle-8 E1c); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3 + tests/cycle8-e1c.test.js + tests/contract/resolve-undo-e1c
 INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js
 INV-147 | The dashboard summary has one definition per figure, each the helper its own screen uses — net worth = the latest net_worth_snapshots row (written only through getNetWorth); spending = getBudgetStatus (GET /api/budgets); lowest cash = getCashFlowForecast (GET /api/cash-flow); bills due = getBillsDue (the /api/forecast charges via forecastCharges + the bill calendar's manualBillOccurrences, less bill_payments); rent owed = getHousingOwed (the ledger's ledgerTotals, payee-scoped); uncategorized = countUncategorized (/api/categorize/status); Sync Health = gatherDataHealth (/api/data-health) — no figure is re-derived in routes/dashboard-summary.js; every part is fail-soft with a fixed sentence and the page still loads when the whole request fails; attention links are same-app paths joined with withBase; the shell landing page's Perfin line reads the same gatherDashboardSummary in-process (its parts option — rent / bills / uncategorized only), never an HTTP self-fetch | Subsystem: Financial Analytics / Web UI | Verify: tests/design-d3.test.js + tests/design-d7.test.js + tests/contract/dashboard-summary.contract.test.js + e2e/pages.spec.js
 INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only. Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
 INV-149 | A linked task follows its source without ever overriding the user: one sync at a time (a transaction under pg_advisory_xact_lock(727274010), creations announced only after COMMIT); a key deleted for good is never inserted again (linked_task_tombstones, db/031's BEFORE DELETE trigger on every delete path); a task is closed only when its source says the item is resolved — a still-open item past the creation window is retained, not closed; an auto-close is not a completion (no todo_completed event, and analytics / the weekly review / Ask / stats leave it out); a task completed, reopened, edited or trashed by hand is never touched (source_detached, per-field snapshot) | Subsystem: Per-sistant Backend / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x1a + x1b + broad-scan-c8-batch5 + tests/broad-scan-c8-batch5 + tests/contract/linked-tasks / linked-tasks-crossapp / c8-batch5
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — and the sinking funds and subscription review — A9, the dates from cadence.js — and the contribution room — A10, from contributions recorded in investment_flows against limits the user entered — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged ; a what-if in Ask (A10) is whatIfPlan — buildAdvicePlan on inputs changed by applyWhatIf, never the model's arithmetic | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 / a9 / a10 + tests/contract/advice-a1
+INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes writes those columns (never the detectors or a rename re-key) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/contract/forecast-e1a
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
