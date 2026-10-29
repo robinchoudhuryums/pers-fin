@@ -1,6 +1,6 @@
 # Cycle 8 E2 — scheduler and watermark groundwork (plan, 2026-10-29)
 
-Status: E2a, E2b done (2026-10-29); E2c / E2d next (either order).
+Status: E2a, E2b, E2c done (2026-10-29); E2d next.
 
 Scope: ST1 and ST3 from the cycle-8 expansion plan (`.cycle/plan-cycle8-expansion.md`).
 
@@ -87,7 +87,8 @@ whether the process just woke, restarted or has been up for days (ST1); and the 
    - **Anomaly**: `user_settings.last_anomaly_txn_id BIGINT` (migration: set from
      `MAX(id) WHERE created_at <= last_anomaly_check_at`); each push also records
      `data.transaction_id`, and an overlap row whose transaction_id is already in
-     notification_log (type anomaly, 30 days) is skipped. The tag stays per merchant (push
+     notification_log (type anomaly, 30 days) is skipped. (E2c: the helper became a SQL-fragment
+     builder — `windowSql` — and the overlap is measured from the previous check's time, not now().) The tag stays per merchant (push
      collapsing). `last_anomaly_check_at` stays, written for display only.
    - **Payday landed**: `last_income_alert_txn_id BIGINT` beside the existing
      `last_income_alert_at`; candidates through the helper; the existing per-deposit tag
@@ -110,7 +111,7 @@ whether the process just woke, restarted or has been up for days (ST1); and the 
 |-------|-------|------|--------|
 | E2a | The runner (`services/job-runner.js`): registry, the one `job_runs` read at start, in-memory due checks every 5 min, one job at a time oldest-due first, the claim (decision 4) incl. its fail-open path, `{ skipped: 'away' }` keeping a job due and releasing its claim, stop(); the `job_runs.last_ran_at` migration; unit tests under node:test mock timers over a fake pool (nothing due → no query after start; due at start → runs once; a second process's claim → not run, time refreshed; a failed read → all due, staggered; an away skip → runs on the next check once active; stop). Not wired yet | 5h | done (2026-10-29) |
 | E2b | Wire startup.js onto the runner: the 16 jobs + the watchdog registered with today's cadences, `scheduleBootRuns` / the intervals removed, `JOB_INTERVALS_MS` derived from the registry, the activity-gated bodies returning `{ skipped: 'away' }`, `stopBackgroundJobs` stopping it; rework `tests/broad-scan-c8-batch1.test.js` (every job runs once after boot when due; a restart right after a run runs nothing; none after stop) and the other startup pins; a contract test (two runners on one real database → each due job runs once; a job that ran 10 minutes ago isn't re-run by a new process) | 5h | done (2026-10-29) |
-| E2c | ST3 for the anomaly and payday checks: `services/txn-watermark.js`, the two BIGINT columns + their backfill, runAnomalyCheck on it (pg_stat_activity read removed, `data.transaction_id`, the overlap dedup), runPaydayLanded on it (the tag dedup kept); unit tests over a fake pool and a contract test (an open transaction commits an anomaly charge and a paycheck with lower ids after a check ran — each announced once by the next run, never twice; replaces `tests/contract/c8-batch4`'s pg_stat_activity case) | 4h | queued |
+| E2c | ST3 for the anomaly and payday checks: `services/txn-watermark.js`, the two BIGINT columns + their backfill, runAnomalyCheck on it (pg_stat_activity read removed, `data.transaction_id`, the overlap dedup), runPaydayLanded on it (the tag dedup kept); unit tests over a fake pool and a contract test (an open transaction commits an anomaly charge and a paycheck with lower ids after a check ran — each announced once by the next run, never twice; replaces `tests/contract/c8-batch4`'s pg_stat_activity case) | 4h | done (2026-10-29) |
 | E2d | ST3 for "Since you last looked": the `seen_token` on GET, /seen storing it (GREATEST; the token-less fallback), new transactions by id, the dashboard posting the token back; vm test of the widget's POST, unit tests of the route, a contract test (a row committed between the GET and /seen shows on the next visit), the e2e dashboard still clean | 2–3h | queued |
 
 Order: E2a → E2b; E2c / E2d are independent of the runner and of each other (either can run

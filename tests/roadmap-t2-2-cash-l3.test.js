@@ -54,43 +54,48 @@ describe("overduePayday (pure)", () => {
 
 // ---------------------------------------------------------------------------
 describe("runPaydayLanded", () => {
+  // The id watermark (cycle-8 E2c): the mark read before the candidates is
+  // MARK; the stored id / time are the settings row's.
+  const MARK = { mark_id: "500", mark_at: "2026-03-19 10:00:00.111111+00" };
   function landedPool({ settings, candidates = [] }) {
-    const calls = { updates: [], candidateParams: null, candidateSql: null };
+    const calls = { updates: [], candidateParams: null, candidateSql: null, order: [] };
     return {
       calls,
       query: async (sql, params) => {
-        if (/SELECT payday_alerts_enabled, last_income_alert_at/.test(sql)) return { rows: [settings] };
-        if (/UPDATE user_settings SET last_income_alert_at/.test(sql)) { calls.updates.push(params ? params[0] : "now()"); return { rows: [] }; }
-        if (/created_at > \$1::timestamptz/.test(sql)) { calls.candidateSql = sql; calls.candidateParams = params; return { rows: candidates }; }
+        if (/SELECT payday_alerts_enabled, last_income_alert_txn_id/.test(sql)) { calls.order.push("settings"); return { rows: [settings] }; }
+        if (/AS mark_id/.test(sql)) { calls.order.push("mark"); return { rows: [MARK] }; }
+        if (/UPDATE user_settings SET last_income_alert_txn_id/.test(sql)) { calls.updates.push(params); return { rows: [] }; }
+        if (/AS in_overlap/.test(sql)) { calls.order.push("candidates"); calls.candidateSql = sql; calls.candidateParams = params; return { rows: candidates }; }
         if (/INTERVAL '4 months'/.test(sql)) return { rows: PAY_ROWS.concat([{ source: "ACME PAYROLL", date: "2026-03-15", amount: "2100" }]) };
         throw new Error("unexpected query: " + sql.slice(0, 60));
       },
     };
   }
-  const cand = (id, source, amount, date, created) => ({ transaction_id: id, source, amount: String(amount), date, created_at: created });
+  const cand = (id, source, amount, date, rowId) => ({ id: String(rowId), transaction_id: id, source, amount: String(amount), date, in_overlap: false });
 
   it("off: one settings read, nothing else", async () => {
     const pool = landedPool({ settings: { payday_alerts_enabled: false } });
     assert.equal((await pa.runPaydayLanded(pool, { today: TODAY })).status, "disabled");
-    assert.equal(pool.calls.candidateSql, null);
+    assert.deepEqual(pool.calls.order, ["settings"]);
   });
 
-  it("first run after switching on sets the watermark and announces nothing older", async () => {
+  it("first run after switching on sets the watermark to the newest id and announces nothing older", async () => {
     const sent = [];
-    const pool = landedPool({ settings: { payday_alerts_enabled: true, last_income_alert_at: null } });
+    const pool = landedPool({ settings: { payday_alerts_enabled: true, last_income_alert_txn_id: null, last_income_alert_at: null } });
     assert.equal((await pa.runPaydayLanded(pool, { today: TODAY, deps: { sendToAll: async (p) => sent.push(p) } })).status, "initialized");
-    assert.deepEqual(pool.calls.updates, ["now()"]);
+    assert.deepEqual(pool.calls.updates, [["500", "2026-03-19 10:00:00.111111+00"]]);
+    assert.equal(pool.calls.candidateSql, null);
     assert.equal(sent.length, 0);
   });
 
-  it("announces a deposit that matches a live stream, not a one-off; the watermark moves to the newest processed (as text)", async () => {
+  it("announces a deposit that matches a live stream, not a one-off; the watermark moves to the mark read before the candidates", async () => {
     const sent = [];
     const pool = landedPool({
-      settings: { payday_alerts_enabled: true, last_income_alert_at: "2026-03-14 08:00:00.123456+00" },
+      settings: { payday_alerts_enabled: true, last_income_alert_txn_id: "400", last_income_alert_at: "2026-03-14 08:00:00.123456+00" },
       candidates: [
-        cand("t1", "ACME PAYROLL", 2080, "2026-03-15", "2026-03-15 09:00:00.654321+00"),
-        cand("t2", "IRS TREAS 310 TAX REF", 412, "2026-03-15", "2026-03-15 09:00:01.000001+00"),
-        cand("t3", "ACME PAYROLL", 900, "2026-03-15", "2026-03-15 09:00:02.5+00"),
+        cand("t1", "ACME PAYROLL", 2080, "2026-03-15", 401),
+        cand("t2", "IRS TREAS 310 TAX REF", 412, "2026-03-15", 402),
+        cand("t3", "ACME PAYROLL", 900, "2026-03-15", 403),
       ],
     });
     const r = await pa.runPaydayLanded(pool, { today: TODAY, deps: { sendToAll: async (p) => { sent.push(p); return { logged: true }; } } });
@@ -98,20 +103,28 @@ describe("runPaydayLanded", () => {
     assert.equal(sent[0].title, "Paycheck landed");
     assert.equal(sent[0].body, "$2,080.00 from ACME PAYROLL (biweekly) on Sun, Mar 15.");
     assert.match(sent[0].tag, /^payday-[0-9a-f]{12}$/);
-    assert.deepEqual(pool.calls.updates, ["2026-03-15 09:00:02.5+00"], "the exact text, microseconds kept");
-    assert.deepEqual(pool.calls.candidateParams, ["2026-03-14 08:00:00.123456+00", "2026-03-14"], "deposits dated within 5 days");
+    assert.deepEqual(pool.calls.order, ["settings", "mark", "candidates"], "the mark is read before the candidates");
+    assert.deepEqual(pool.calls.updates, [["500", "2026-03-19 10:00:00.111111+00"]], "the mark's id and time, as text");
+    assert.deepEqual(pool.calls.candidateParams, ["400", "2026-03-14 08:00:00.123456+00", "500", "2026-03-14"], "deposits dated within 5 days");
     assert.match(pool.calls.candidateSql, /amount < 0 AND pending = false/);
+    assert.match(pool.calls.candidateSql, /ORDER BY id/);
     assert.ok(pool.calls.candidateSql.includes(require("../teller/services/financial-queries").INCOME_PREDICATE));
+  });
+
+  it("nothing new: the watermark still moves to the mark", async () => {
+    const pool = landedPool({ settings: { payday_alerts_enabled: true, last_income_alert_txn_id: "400", last_income_alert_at: "2026-03-14 08:00:00+00" } });
+    assert.equal((await pa.runPaydayLanded(pool, { today: TODAY })).status, "none");
+    assert.deepEqual(pool.calls.updates, [["500", "2026-03-19 10:00:00.111111+00"]]);
   });
 
   it("a send that throws stops the run with the watermark just before that deposit", async () => {
     let n = 0;
     const pool = landedPool({
-      settings: { payday_alerts_enabled: true, last_income_alert_at: "2026-03-01 00:00:00+00" },
+      settings: { payday_alerts_enabled: true, last_income_alert_txn_id: "400", last_income_alert_at: "2026-03-01 00:00:00+00" },
       candidates: [
-        cand("a", "IRS REFUND", 50, "2026-03-15", "2026-03-15 09:00:00+00"),
-        cand("b", "ACME PAYROLL", 2100, "2026-03-15", "2026-03-15 09:00:01+00"),
-        cand("c", "ACME PAYROLL", 2100, "2026-03-16", "2026-03-16 09:00:00+00"),
+        cand("a", "IRS REFUND", 50, "2026-03-15", 410),
+        cand("b", "ACME PAYROLL", 2100, "2026-03-15", 420),
+        cand("c", "ACME PAYROLL", 2100, "2026-03-16", 430),
       ],
     });
     const quiet = console.error; console.error = () => {};
@@ -120,7 +133,7 @@ describe("runPaydayLanded", () => {
     finally { console.error = quiet; }
     assert.equal(r.status, "held_back");
     assert.equal(n, 1);
-    assert.deepEqual(pool.calls.updates, ["2026-03-15 09:00:00+00"], "only the unmatched row before the failure is past the watermark");
+    assert.deepEqual(pool.calls.updates, [["419", "2026-03-01 00:00:00+00"]], "the id just before the failed deposit; the time unchanged");
   });
 
   it("runs as the third post-sync step, after the anomaly check; its failure never rejects", async () => {
@@ -277,7 +290,9 @@ describe("Settings — payday_alerts_enabled", () => {
     await supertest(app()).patch("/api/settings").send({ payday_alerts_enabled: true }).expect(200);
     await supertest(app()).patch("/api/settings").send({ payday_alerts_enabled: false }).expect(200);
     assert.match(sqls[0], /payday_alerts_enabled = \$1, last_income_alert_at = CASE WHEN payday_alerts_enabled THEN last_income_alert_at ELSE now\(\) END/);
-    assert.doesNotMatch(sqls[1], /last_income_alert_at/);
+    assert.match(sqls[0], /last_income_alert_txn_id = CASE WHEN payday_alerts_enabled THEN last_income_alert_txn_id ELSE \(SELECT COALESCE\(MAX\(id\), 0\) FROM transactions\) END/,
+      "and the id watermark to the newest transaction (cycle-8 E2c)");
+    assert.doesNotMatch(sqls[1], /last_income_alert/);
   });
 
   it("a change clears the missed check's off-for-today memo", async () => {

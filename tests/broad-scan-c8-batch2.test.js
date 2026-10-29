@@ -150,21 +150,22 @@ describe("F10 — a Paycheck landed alert that wasn't logged is retried", () => 
     return {
       calls,
       query: async (sql, params) => {
-        if (/SELECT payday_alerts_enabled, last_income_alert_at/.test(sql)) return { rows: [{ payday_alerts_enabled: true, last_income_alert_at: "2026-03-01 00:00:00+00" }] };
-        if (/UPDATE user_settings SET last_income_alert_at/.test(sql)) { calls.updates.push(params[0]); return { rows: [] }; }
-        if (/created_at > \$1::timestamptz/.test(sql)) return { rows: candidates };
+        if (/SELECT payday_alerts_enabled, last_income_alert_txn_id/.test(sql)) return { rows: [{ payday_alerts_enabled: true, last_income_alert_txn_id: "400", last_income_alert_at: "2026-03-01 00:00:00+00" }] };
+        if (/AS mark_id/.test(sql)) return { rows: [{ mark_id: "500", mark_at: "2026-03-19 10:00:00+00" }] };
+        if (/UPDATE user_settings SET last_income_alert_txn_id/.test(sql)) { calls.updates.push(params); return { rows: [] }; }
+        if (/AS in_overlap/.test(sql)) return { rows: candidates };
         if (/INTERVAL '4 months'/.test(sql)) return { rows: PAY };
         throw new Error("unexpected query: " + sql.slice(0, 60));
       },
     };
   }
-  const cand = (id, source, amount, date, created) => ({ transaction_id: id, source, amount: String(amount), date, created_at: created });
+  const cand = (id, source, amount, date, rowId) => ({ id: String(rowId), transaction_id: id, source, amount: String(amount), date, in_overlap: false });
 
   it("{ logged: false } holds the watermark just before that deposit", async () => {
     const pool = landedPool([
-      cand("a", "IRS REFUND", 50, "2026-03-15", "2026-03-15 09:00:00+00"),
-      cand("b", "ACME PAYROLL", 2100, "2026-03-15", "2026-03-15 09:00:01+00"),
-      cand("c", "ACME PAYROLL", 2100, "2026-03-16", "2026-03-16 09:00:00+00"),
+      cand("a", "IRS REFUND", 50, "2026-03-15", 410),
+      cand("b", "ACME PAYROLL", 2100, "2026-03-15", 420),
+      cand("c", "ACME PAYROLL", 2100, "2026-03-16", 430),
     ]);
     const quiet = console.error; console.error = () => {};
     let r, n = 0;
@@ -173,7 +174,7 @@ describe("F10 — a Paycheck landed alert that wasn't logged is retried", () => 
     assert.equal(r.status, "held_back");
     assert.equal(r.notified, 0, "an unlogged alert isn't counted as sent");
     assert.equal(n, 1, "the run stops at the first unlogged alert");
-    assert.deepEqual(pool.calls.updates, ["2026-03-15 09:00:00+00"]);
+    assert.deepEqual(pool.calls.updates, [["419", "2026-03-01 00:00:00+00"]]);
   });
 });
 

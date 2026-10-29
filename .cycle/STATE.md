@@ -18,6 +18,16 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E2c (DONE, 2026-10-29) — ST3 part 1:** block `.cycle/blocks/8-e2c-broad-implement.md`.
+  - **Shipped:** `teller/services/txn-watermark.js` (mark / window / never-backwards advance); runAnomalyCheck and
+    runPaydayLanded on an id watermark with a 24 h overlap rescan measured from the previous check, deduped against
+    notification_log (the anomaly push now carries data.transaction_id); the pg_stat_activity read is gone; two BIGINT
+    columns backfilled once from the time watermarks; the payday switch-on sets the id.
+  - **Decision detail:** the helper is a SQL-fragment builder (windowSql) rather than plan decision 7's `newRows(db, …)`
+    — both callers keep their own queries; the overlap is measured from the previous check's time, not now().
+  - **Verified:** npm test 3004/3004 (15 new, 8 F1 / F51 tests moved out of c8-batch4); contract 305/306 (4 new;
+    cash-alerts-l2 date-dependent, pre-existing). Mutation check red.
+  - **Where I left off:** E2c committed and pushed. Next: `/sync-docs`, then `/broad-implement E2d`.
 - **Cycle-8 E2b (DONE, 2026-10-29) — ST1 complete:** block `.cycle/blocks/8-e2b-broad-implement.md`.
   - **Shipped (ST1, part 2):** teller/startup.js schedules every job through the job runner — the setIntervals, the
     watchdog's timers and the F27 boot runs are gone; the watchdog + 15 jobs registered lightest first at their unchanged

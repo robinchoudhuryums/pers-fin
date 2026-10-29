@@ -218,8 +218,8 @@ describe("W3 — runPostSyncSteps", () => {
     anomalySelects = 0;
     return async (sql) => {
       if (sql.includes("last_anomaly_check_at FROM user_settings")) { anomalySelects++; return { rows: [{ last_anomaly_check_at: null }] }; }
-      // The high-water mark the check reads before its candidates (cycle-8 F1).
-      if (sql.includes(")::text AS hw")) return { rows: [{ hw: "2026-10-27 10:00:00.123456+00" }] };
+      // The mark the check reads before its candidates (cycle-8 F1 / E2c).
+      if (sql.includes("AS mark_id")) return { rows: [{ mark_id: "42", mark_at: "2026-10-27 10:00:00.123456+00" }] };
     };
   }
 
@@ -253,7 +253,7 @@ describe("W3 — runPostSyncSteps", () => {
     const real = dbModule.pool.query;
     dbModule.pool.query = async (sql, p) => {
       if (sql.includes("last_anomaly_check_at FROM")) order.push("check");
-      if (sql.includes("UPDATE user_settings SET last_anomaly_check_at")) order.push("advance");
+      if (sql.includes("UPDATE user_settings SET last_anomaly_txn_id")) order.push("advance");
       return real(sql, p);
     };
     const a = enr.runPostSyncSteps(1);

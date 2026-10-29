@@ -667,6 +667,15 @@ async function runMigrationsOnce() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_enabled BOOLEAN NOT NULL DEFAULT false");
     // Anomaly notification dedupe — only fire on transactions inserted after this watermark
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_anomaly_check_at TIMESTAMPTZ");
+    // Cycle-8 E2c (ST3): the anomaly check's id watermark (services/
+    // txn-watermark.js). Backfilled once from the time watermark — the newest
+    // id stamped at or before it — so the switch from time to id doesn't
+    // re-check history; last_anomaly_check_at stays as the previous check's
+    // time (the overlap rescan is measured from it).
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_anomaly_txn_id BIGINT");
+    await client.query(`UPDATE user_settings
+         SET last_anomaly_txn_id = (SELECT MAX(id) FROM transactions WHERE created_at <= user_settings.last_anomaly_check_at)
+       WHERE last_anomaly_txn_id IS NULL AND last_anomaly_check_at IS NOT NULL`);
     // Encrypt-at-rest for the Per-sistant webhook HMAC secret. Older deployments
     // stored it as plain TEXT in `persistent_webhook_secret`; we add a BYTEA
     // column, copy any existing plaintext into it (encrypted), then drop the old
@@ -936,6 +945,12 @@ async function runMigrationsOnce() {
     // default; the "Paycheck landed" watermark over transactions.created_at.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS payday_alerts_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_income_alert_at TIMESTAMPTZ");
+    // Cycle-8 E2c (ST3): "Paycheck landed"'s id watermark, backfilled the same
+    // way from last_income_alert_at.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_income_alert_txn_id BIGINT");
+    await client.query(`UPDATE user_settings
+         SET last_income_alert_txn_id = (SELECT MAX(id) FROM transactions WHERE created_at <= user_settings.last_income_alert_at)
+       WHERE last_income_alert_txn_id IS NULL AND last_income_alert_at IS NOT NULL`);
     // Roadmap T4.1 A4: "tell me when my plan changes" (services/advice-alerts.js)
     // — off by default; the last notified plan signature + the day last checked.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS advice_alerts_enabled BOOLEAN NOT NULL DEFAULT false");

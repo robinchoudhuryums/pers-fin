@@ -12,16 +12,18 @@
 //   - Only a deposit that matches a LIVE income stream (getLiveIncomeStreams —
 //     same source, amount within ±10%) notifies: one-off income, refunds and a
 //     first paycheck from a new job (a stream needs two deposits) don't.
-//   - One push per deposit (tag payday-<hash of its id>). The watermark
-//     advances to the newest created_at processed (never backwards); a send
+//   - One push per deposit (tag payday-<hash of its id>). New = an id
+//     watermark with an overlap rescan (services/txn-watermark.js, cycle-8
+//     E2c): rows above last_income_alert_txn_id, plus rows at or below it
+//     created within LANDED_OVERLAP_HOURS of the previous check
+//     (last_income_alert_at) — a CSV import commits all its rows at once with
+//     ids taken before a check that ran mid-import (F51). An overlap deposit
+//     whose tag is already in notification_log is skipped. The watermark
+//     moves to the mark read before the candidates (never backwards); a send
 //     that isn't logged stops the run with the watermark just before that
 //     deposit, so the next sync retries it (the anomaly-watermark rule). With
-//     no watermark yet (just switched on) it is set to now and nothing older
-//     is announced.
-//   - Each run re-reads LANDED_OVERLAP_HOURS behind the watermark and skips a
-//     deposit there whose tag is already in notification_log (cycle-8 F51 — a
-//     CSV import's rows carry the import's start time, so a check that ran
-//     mid-import could otherwise step past them for good).
+//     no watermark yet (just switched on) it is set to the newest id and
+//     nothing older is announced.
 //
 // runPaydayMissed(pool, { now, today, deps }) — "Payday missed?". Run by the
 // hourly "cash-alerts" away job (startup.js) next to the low cash alert.
@@ -44,15 +46,16 @@
 const crypto = require("crypto");
 const { INCOME_PREDICATE, getLiveIncomeStreams, todayStr, APP_TIMEZONE } = require("./financial-queries");
 const { addDaysStr, incomeEventsBetween, parseYmd } = require("./cadence");
+const { readMark, windowSql, advanceSql } = require("./txn-watermark");
 
 const LANDED_MAX_AGE_DAYS = 5;
 const GRACE_DAYS = 3;
 const MISSED_LOOKBACK_DAYS = 14;
 const AMOUNT_TOLERANCE = 0.10;
-// The landed check re-reads this far behind its watermark (cycle-8 F51): a
-// CSV import commits all its rows at once, stamped with the import's START
-// time, so a check that ran mid-import could move the watermark past them.
-// A deposit in the overlap that was already announced (its tag in
+// The landed check re-reads rows at or below its id watermark created this
+// long before the previous check (cycle-8 F51 / E2c): a CSV import commits
+// all its rows at once, with ids allocated before a check that ran
+// mid-import. A deposit in the overlap that was already announced (its tag in
 // notification_log) is skipped.
 const LANDED_OVERLAP_HOURS = 24;
 const LANDED_DEDUPE_DAYS = 30;
@@ -77,27 +80,34 @@ const defaultSend = (p) => require("../routes/notifications").sendToAll(p);
 // ---------------------------------------------------------------------------
 async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
   const sendToAll = deps.sendToAll || defaultSend;
-  const s = (await pool.query("SELECT payday_alerts_enabled, last_income_alert_at::text AS last_income_alert_at FROM user_settings WHERE id = 1")).rows[0];
+  const s = (await pool.query("SELECT payday_alerts_enabled, last_income_alert_txn_id::text AS last_income_alert_txn_id, last_income_alert_at::text AS last_income_alert_at FROM user_settings WHERE id = 1")).rows[0];
   if (!s || !s.payday_alerts_enabled) return { status: "disabled", notified: 0 };
+  // The mark comes before the candidates, which stop at it: a deposit
+  // committed after it waits for the next check.
+  const mark = await readMark(pool);
   if (!s.last_income_alert_at) {
-    await pool.query("UPDATE user_settings SET last_income_alert_at = now() WHERE id = 1");
+    await pool.query(advanceSql("last_income_alert_txn_id", "last_income_alert_at"), [mark.id, mark.at]);
     return { status: "initialized", notified: 0 };
   }
+  // No id yet (the backfill found no row before the stored time) → nothing
+  // was announced before it, so every row counts as new.
+  const watermark = s.last_income_alert_txn_id || "0";
+  const win = windowSql({ alias: "", watermark: "$1", since: "$2", mark: "$3", overlapHours: LANDED_OVERLAP_HOURS });
   const { rows } = await pool.query(`
-    SELECT transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS source,
+    SELECT id::text AS id, transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS source,
            ABS(amount) AS amount, to_char(date, 'YYYY-MM-DD') AS date,
-           created_at::text AS created_at,
-           created_at <= $1::timestamptz AS in_overlap
+           ${win.inOverlap} AS in_overlap
       FROM transactions
      WHERE amount < 0 AND pending = false
-       AND created_at > $1::timestamptz - make_interval(hours => ${LANDED_OVERLAP_HOURS})
-       AND date >= $2::date
+       AND ${win.where}
+       AND date >= $4::date
        AND ${INCOME_PREDICATE}
-     ORDER BY created_at, transaction_id`,
-    [s.last_income_alert_at, addDaysStr(today, -LANDED_MAX_AGE_DAYS)]);
-  // created_at travels as text both ways: a JS Date drops the microseconds, and
-  // `created_at > <truncated>` would announce the last deposit again.
-  if (!rows.length) return { status: "none", notified: 0 };
+     ORDER BY id`,
+    [watermark, s.last_income_alert_at, mark.id, addDaysStr(today, -LANDED_MAX_AGE_DAYS)]);
+  if (!rows.length) {
+    await pool.query(advanceSql("last_income_alert_txn_id", "last_income_alert_at"), [mark.id, mark.at]);
+    return { status: "none", notified: 0 };
+  }
 
   const streams = await getLiveIncomeStreams(pool, today);
   const tagOf = (r) => "payday-" + hash(r.transaction_id);
@@ -112,7 +122,7 @@ async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
       [overlapTags]);
     for (const x of seen.rows) announced.add(x.type);
   }
-  let watermark = null, notified = 0, held = false;
+  let notified = 0, heldAt = null;
   for (const r of rows) {
     const amount = parseFloat(r.amount);
     const stream = matchStream(streams, r.source, amount);
@@ -136,16 +146,21 @@ async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
       }
       if (!sent || !sent.logged) {
         console.error("Payday alert not logged — will retry after the next sync:", (sent && sent.error) || "notification_log write failed");
-        held = true;
+        heldAt = r;
         break;
       }
       notified++;
     }
-    watermark = r.created_at;
   }
-  // Never backwards: the overlap rows sit below the stored watermark.
-  if (watermark) await pool.query("UPDATE user_settings SET last_income_alert_at = GREATEST(last_income_alert_at, $1::timestamptz) WHERE id = 1", [watermark]);
-  return { status: held ? "held_back" : "done", notified, considered: rows.length };
+  // Never backwards (GREATEST): the overlap rows sit below the stored id. Held
+  // at a deposit → the id just before it (its own row is retried; the rows
+  // before it in id order were all handled), and the time stays where it was.
+  if (heldAt) {
+    await pool.query(advanceSql("last_income_alert_txn_id", "last_income_alert_at"), [String(BigInt(heldAt.id) - 1n), s.last_income_alert_at]);
+  } else {
+    await pool.query(advanceSql("last_income_alert_txn_id", "last_income_alert_at"), [mark.id, mark.at]);
+  }
+  return { status: heldAt ? "held_back" : "done", notified, considered: rows.length };
 }
 
 // ---------------------------------------------------------------------------

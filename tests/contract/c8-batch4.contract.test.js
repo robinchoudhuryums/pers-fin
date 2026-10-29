@@ -2,6 +2,9 @@
 // that commits AFTER a check has run (an overlapping sync, a long CSV import):
 //  - F1: the anomaly check still sees it on the next run, and only once
 //  - F51: "Paycheck landed" still announces it on the next run, and only once
+// Since cycle-8 E2c both run on an id watermark with an overlap rescan (the row
+// committed late carries an id below the mark); the id-specific cases are in
+// tests/contract/txn-watermark-e2c.contract.test.js.
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { SKIP, perfinDb } = require("./_setup");

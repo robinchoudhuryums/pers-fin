@@ -259,12 +259,16 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("cash_alert_horizon_days = $" + idx++); values.push(d);
     }
     // Payday alerts (roadmap T2.2 L3). Switching them ON moves the "landed"
-    // watermark to now (the CASE reads the row's old switch), so deposits that
-    // arrived while they were off aren't announced.
+    // watermark — the time and, since cycle-8 E2c, the newest transaction id —
+    // to now (the CASE reads the row's old switch), so deposits that arrived
+    // while they were off aren't announced.
     if (req.body.payday_alerts_enabled !== undefined) {
       if (typeof req.body.payday_alerts_enabled !== "boolean") return res.status(400).json({ error: "payday_alerts_enabled must be true or false" });
       updates.push("payday_alerts_enabled = $" + idx++); values.push(req.body.payday_alerts_enabled);
-      if (req.body.payday_alerts_enabled) updates.push("last_income_alert_at = CASE WHEN payday_alerts_enabled THEN last_income_alert_at ELSE now() END");
+      if (req.body.payday_alerts_enabled) {
+        updates.push("last_income_alert_at = CASE WHEN payday_alerts_enabled THEN last_income_alert_at ELSE now() END");
+        updates.push("last_income_alert_txn_id = CASE WHEN payday_alerts_enabled THEN last_income_alert_txn_id ELSE (SELECT COALESCE(MAX(id), 0) FROM transactions) END");
+      }
     }
     // Roadmap T4.1 A4: "tell me when my plan changes". Switching it on drops
     // the stored signature, so the first check records a fresh baseline

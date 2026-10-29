@@ -1,6 +1,7 @@
 // Real-Postgres contract test for roadmap T2.2 L3 — payday alerts through the
 // real income streams, post-sync chain, notification log and settings route:
-//  - PATCH /api/settings switches them on and moves the landed watermark to now
+//  - PATCH /api/settings switches them on and moves the landed watermark (time
+//    and, since cycle-8 E2c, id) to now
 //  - a biweekly paycheck 4 days overdue on a Plaid connection that synced cleanly
 //    today → one "Payday missed?" notification; again → unchanged / deduped;
 //    the same stream on a connection that hasn't synced since → nothing
@@ -44,9 +45,10 @@ describe("Payday alerts (T2.2 L3) on real Postgres", { skip: SKIP }, () => {
   it("PATCH switches them on and moves the landed watermark to now", async () => {
     await supertest(app).patch("/api/settings").send({ payday_alerts_enabled: "on" }).expect(400);
     await supertest(app).patch("/api/settings").send({ payday_alerts_enabled: true }).expect(200);
-    const s = (await q("SELECT payday_alerts_enabled, last_income_alert_at FROM user_settings WHERE id = 1")).rows[0];
+    const s = (await q("SELECT payday_alerts_enabled, last_income_alert_at, last_income_alert_txn_id::int AS txn_id, (SELECT MAX(id) FROM transactions) AS max_id FROM user_settings WHERE id = 1")).rows[0];
     assert.equal(s.payday_alerts_enabled, true);
     assert.ok(Date.now() - new Date(s.last_income_alert_at).getTime() < 60000);
+    assert.equal(s.txn_id, s.max_id, "and the id watermark to the newest transaction (cycle-8 E2c)");
   });
 
   it("a missed payday on a freshly synced connection notifies once; a stale connection doesn't", async () => {
