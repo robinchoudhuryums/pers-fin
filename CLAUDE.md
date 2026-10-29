@@ -1025,7 +1025,13 @@ teller/
                            ("since you last looked" dashboard widget feed —
                            new transactions, balance deltas, new subscriptions,
                            and recent notifications since last_dashboard_view_at).
-                           Also exports gatherWhatsNew(since) — the shared
+                           Since cycle-8 E2d (ST3) the GET reads txn-watermark's mark
+                           first and returns it as seen_token ("<id>|<time>"); /seen
+                           stores it (SEEN_SQL — forward only, capped at the newest id /
+                           now(); a malformed token a 400; none → SEEN_NOW_SQL, "now");
+                           with a stored last_dashboard_view_txn_id new transactions
+                           are id > it AND id <= the mark, else created_at.
+                           Also exports gatherWhatsNew(since, opts?) — the shared
                            aggregator used by both the HTTP route and the
                            daily-digest runner in insights.js so the dashboard
                            widget and email digest see the same data shape.
@@ -1392,9 +1398,13 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3004 tests as of latest); use
+  Perfin and Per-sistant test files (3016 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3004 tests across 162 test files (incl.
+  Current count: 3016 tests across 163 test files (incl.
+  `tests/cycle8-e2d.test.js` — cycle-8 E2d (ST3): parseSeenToken's accepted / refused shapes; GET /api/whats-new reading
+  the mark first and returning seen_token, by id with a stored id, by created_at without one and for the daily digest;
+  /seen storing the token (capped, forward only), a malformed token a 400 with no write, the token-less fallback; the
+  migration; the widget run in a vm from dashboard.ejs posting the token as JSON 4 s after rendering;
   `tests/cycle8-e2c.test.js` — cycle-8 E2c (ST3): services/txn-watermark.js's mark, window (and its overlap-hours guard)
   and never-backwards advance; runAnomalyCheck on it (the mark read before the candidates, the window's parameters, the
   transaction_id dedupe in the candidate SQL, data.transaction_id on the push, an unlogged or thrown push holding the
@@ -2419,8 +2429,10 @@ shell/
   nothing; a 2-hour-old run due again, a 10-minute-old one not). Since E2c, txn-watermark-e2c (a charge and a paycheck
   whose ids sit below a check's mark, committed after it, each announced by the next run once — the anomaly notification
   carrying transaction_id; a long-open transaction elsewhere no longer holding a new charge back; each id backfilled once
-  from its time watermark).
-  306 tests, run
+  from its time watermark). Since E2d, whats-new-e2d (a transaction and a notification arriving between the widget's GET
+  and /seen shown on the next visit and not again; an older token not moving the watermark back; a future / too-high
+  token capped and a malformed one a 400; a token-less /seen meaning "seen up to now").
+  310 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3346,7 +3358,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   new subscriptions, and recent notifications since `last_dashboard_view_at`.
   Backed by `GET /api/whats-new`; advances the watermark 4 s after first
   render via `POST /api/whats-new/seen` so a quick nav-away doesn't lose
-  the unseen state. Auto-hides when nothing's new. Toggleable
+  the unseen state — to what the GET read (its `seen_token`: the newest
+  transaction id and the time, cycle-8 E2d), not to the moment of the POST,
+  so a transaction or notification arriving in those 4 seconds shows on the
+  next visit; new transactions are counted by id once one is stored. Auto-hides when nothing's new. Toggleable
   (key: `whatsNew`, default on).
 - **Review Uncategorized widget** (engagement loop): Surfaces 5-8 transactions
   that would otherwise be sent to Claude on the next AI categorize call.
@@ -4614,7 +4629,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3004 tests passing across 162 test files (Perfin 2283 + Per-sistant 721), plus the real-Postgres route contract suite (306 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 3016 tests passing across 163 test files (Perfin 2295 + Per-sistant 721), plus the real-Postgres route contract suite (310 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5299,7 +5314,12 @@ DELETE /api/investment-flows/:id # delete a MANUAL flow (plaid rows 404 — they
                            # resurrect on the next sync)
 GET  /api/whats-new        # "since you last looked" feed — new transactions, balance deltas,
                            # new subscriptions, and recent notifications since last_dashboard_view_at
-POST /api/whats-new/seen   # advance last_dashboard_view_at to now (idempotent)
+                           # + seen_token "<id>|<time>" (the mark read before the
+                           # queries — cycle-8 E2d); by id once an id is stored
+POST /api/whats-new/seen   # body { seen_token? }: advance last_dashboard_view_txn_id /
+                           # last_dashboard_view_at to the token (forward only, capped
+                           # at the newest id / now()); malformed → 400; no token →
+                           # now (idempotent)
 GET  /api/notifications/vapid # get VAPID public key for push
 POST /api/notifications/subscribe # register push subscription
 DELETE /api/notifications/subscribe # unregister push subscription
@@ -5709,7 +5729,11 @@ standalone-mode fallback if either app is run on its own Render service.
   to scope the response (new txns / new subs / balance deltas /
   notifications since this timestamp). Bumped by `POST /api/whats-new/seen`,
   which the widget fires 4 s after first render so a quick nav-away
-  doesn't lose the unseen state. Defaults to "24 h ago" on first load
+  doesn't lose the unseen state — to the time in the GET's `seen_token`
+  (forward only, capped at now(); a token-less POST sets now()). Beside it
+  `last_dashboard_view_txn_id BIGINT` (cycle-8 E2d): the newest transaction
+  id that GET read; new transactions are `id >` it (NULL — no backfill —
+  reads by created_at until the first token). Defaults to "24 h ago" on first load
   so brand-new installations return one day of context rather than
   an empty card.
 - `user_settings.weekly_digest_enabled BOOLEAN NOT NULL DEFAULT false`,
@@ -6869,7 +6893,7 @@ SX3-pinned — the Sheets Income tab.
 - **"Since last X" watermarks live in `user_settings`, not in cookies.**
   The anomaly notifier (`last_anomaly_txn_id` + `last_anomaly_check_at`
   since cycle-8 E2c) and the "since you last looked" dashboard widget
-  (`last_dashboard_view_at`) keep their watermark in columns on the
+  (`last_dashboard_view_txn_id` + `last_dashboard_view_at` since E2d) keep their watermark in columns on the
   single-row `user_settings` table to scope their respective queries. Storing server-side keeps the dedup logic
   intact across devices and across PIN re-logins, and the single-user
   app design means we never need a per-user dimension. New "since last X"
@@ -7177,7 +7201,7 @@ E2c — an id watermark with an overlap rescan; a transaction open more than 24 
 can now commit rows the overlap doesn't reach); the Plaid verifier's miss cache and lookup cap are per process — a flood of forged kids can
 spend the cap, so after a restart a real webhook whose kid isn't cached fails until the hour
 rolls (two instances each get their own); a deposit up to 24 h old that only now matches a pay
-pattern is announced late; "Since you last looked" still advances its watermark to now().
+pattern is announced late. ("Since you last looked" advancing to now() was closed by E2d.)
 Batch 5 follow-ons: a linked task deleted for good can't be brought back (no way to clear its
 tombstone short of the database); a manual bill autopaid and never marked paid keeps its tasks
 open indefinitely; a failing statement rolls back the whole linked-task run, and a run waits
@@ -7218,11 +7242,14 @@ follow-ons: tests/contract/cash-alerts-l2's seed is still date-dependent (fails 
 sweep that changes seeded state (Dismiss on the Subscriptions page) can affect a later check — the E1b check
 undismisses its subscription first.
 
-**Cycle-8 expansion E2 (planned — `.cycle/plan-e2-scheduler-watermarks.md`, batches E2a–E2d):** a due-based job
+**Cycle-8 expansion E2 (done — `.cycle/plan-e2-scheduler-watermarks.md`, batches E2a–E2d):** a due-based job
 runner over job_runs (ST1) and id watermarks with an overlap rescan for the anomaly, payday and "Since you last
 looked" checks (ST3). E2a + E2b done (ST1): every Perfin background job runs through `services/job-runner.js` when it
 is due (`job_runs.last_ran_at`). E2c done (ST3, part 1): the anomaly check and "Paycheck landed" read new rows by
-transaction id with a 24 h overlap rescan (`services/txn-watermark.js`). E2d (ST3 for "Since you last looked") queued.
+transaction id with a 24 h overlap rescan (`services/txn-watermark.js`). E2d done (ST3, part 2): "Since you last looked"
+stores what its GET read (a seen_token posted back to /seen) and counts new transactions by id. E2d follow-ons: a
+transaction whose id was taken before the widget's GET but committed after it is never listed (no overlap rescan there —
+by plan); a pending row that settles later is still never listed (pending = false).
 E2c follow-ons: the anomaly check still announces at most 5 charges a run (LIMIT 5 — pre-existing); its
 transaction_id dedupe is a NOT EXISTS over notification_log per remaining candidate (no index on the JSON field);
 "Paycheck landed" now writes its watermark on a run that found nothing. Follow-ons: a failing job waits a full cadence before its next
@@ -7997,7 +8024,7 @@ INV-149 | A linked task follows its source without ever overriding the user: one
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — and the sinking funds and subscription review — A9, the dates from cadence.js — and the contribution room — A10, from contributions recorded in investment_flows against limits the user entered — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged ; a what-if in Ask (A10) is whatIfPlan — buildAdvicePlan on inputs changed by applyWhatIf, never the model's arithmetic | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 / a9 / a10 + tests/contract/advice-a1
 INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes sets those columns (never the detectors; a rename re-key only copies the user's own setting from the row it retires onto the surviving row still on the default — E1 follow-on) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/cycle8-e1-followons.test.js + tests/contract/forecast-e1a + e1-followons
-INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/contract/txn-watermark-e2c + tests/contract/c8-batch4
+INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read ; the dashboard's "Since you last looked" follows the mark-before-read and forward-only rules without the overlap — /seen stores the mark its GET read (seen_token, cycle-8 E2d), never now() | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/cycle8-e2d.test.js + tests/contract/txn-watermark-e2c + whats-new-e2d + c8-batch4
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
