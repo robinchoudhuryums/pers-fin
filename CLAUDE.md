@@ -1202,9 +1202,10 @@ teller/
     settings.ejs         — Settings template (theme, AI, keep-alive, sync, exports).
                            Design D5 (decision 8): the sections sit in seven
                            `<section class="settings-group">` groups — Appearance &
-                           Dashboard, Security, AI, Alerts & Notifications, Sync &
-                           Connections (Sync Health), Planning (Target Allocation,
-                           Watchlist), Data & Exports; every section keeps its id.
+                           Dashboard, Security, AI, Alerts & Notifications (Quiet
+                           Hours & Muting since cycle-8 E3c), Sync & Connections
+                           (Sync Health), Planning (Target Allocation, Watchlist),
+                           Data & Exports; every section keeps its id.
                            buildSettingsIndex fills the sticky index (≥961px, a left
                            column) and the "Jump to" select (narrower) from the group
                            headings; revealHashTarget lands a deep link
@@ -1431,9 +1432,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3058 tests as of latest); use
+  Perfin and Per-sistant test files (3075 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3058 tests across 165 test files (incl.
+  Current count: 3075 tests across 167 test files (incl.
+  `tests/cycle8-e3c.test.js` — cycle-8 E3c (G2): Settings → Quiet Hours & Muting run in a vm from settings.ejs (the
+  switch, times and zone filled from GET /api/settings, a box per mutable kind grouped by app — Per-sistant's only under
+  the shell, security / test never listed, escaped — every save through PATCH + writeOk with a refused or failed save put
+  back, an empty or equal pair of times refused before any request, the labelled markup in Alerts & Notifications before
+  Cash Alerts and its wiring) and the bell naming a held / expired / muted push (nav.ejs renderList in a vm) — with
+  `apps/per-sistant/tests/cycle8-e3c.test.js` (annotateNotify, perfinNotifyPrefs read-only and fail-soft, the check's
+  kind / notify / quiet, no browser notification for notify:false while the Reminders list keeps it, the Settings link);
   `tests/cycle8-e3b.test.js` — cycle-8 E3b (G2): sendToAll over a stateful fake notification_log + a stubbed web-push
   (outside quiet hours sent, inside held with the gate open at the end, a muted kind logged and never pushed, security /
   test never held or muted, a failed settings read holding nothing, a hold whose row didn't write pushed at once, push not
@@ -2638,8 +2646,8 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 73 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
-a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 74 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
+a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back, and Settings → Quiet Hours & Muting (cycle-8 E3c): quiet hours and a mute saved and read back, and Per-sistant's Settings link to it). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -4113,13 +4121,14 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   on Budgets it wrapped into three rows at a desktop width. Don't set a page's
   `.container` width — `tests/design-d1.test.js` fails on it.
 - **Settings layout (design pass D5, decision 8)**: one page, seven groups — Appearance &
-  Dashboard; Security; AI; Alerts & Notifications (push, Cash Alerts, Per-sistant Tasks, CSV
-  reminders); Sync & Connections (Sync Health, auto-sync, Sheets, keep-alive); Planning (Target
+  Dashboard; Security; AI; Alerts & Notifications (push, Quiet Hours & Muting, Cash Alerts,
+  Per-sistant Tasks, CSV reminders); Sync & Connections (Sync Health, auto-sync, Sheets, keep-alive); Planning (Target
   Allocation, Watchlist); Data & Exports. At ≥961px a sticky index of the groups sits in a left
   column; narrower, a "Jump to" select. Both are built from the group headings, so a new group
   lists itself — add a `<section class="settings-group" id="group-…">` with an `h3.settings-group-title`
   and keep each section's id (deep links: `#sync-health`, `#deleted-transactions`,
-  `#recent-errors`, `#cash-alerts-section`, `#linked-tasks-section`, `#ai-insights`).
+  `#recent-errors`, `#quiet-hours-section`, `#cash-alerts-section`, `#linked-tasks-section`,
+  `#ai-insights`).
   Every switch saved through `updateSetting` goes through `saveToggle(box, key)`: a save the server
   refused or that never reached it puts the switch back (cycle-8 F38 — it stayed flipped); the
   insight-module and dashboard-widget switches revert the same way.
@@ -4141,7 +4150,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   the browser alert. API: `GET /api/notifications`, `PATCH /api/notifications/:id/read`,
   `POST /api/notifications/read-all`. Activating a notification marks it read and, when
   its `data.url` is a same-app path (`/x`, never `//host`), opens it via `withBase`
-  (IF-7 — e.g. the missing-utility reminder lands on `/housing#pending`).
+  (IF-7 — e.g. the missing-utility reminder lands on `/housing#pending`). A row whose push
+  didn't go out says so after its time (`push_state`, cycle-8 E3c): "Held for quiet hours",
+  "Held for quiet hours — not pushed" (expired) or "Muted — not pushed".
 - **Data freshness API**: `GET /api/data-freshness` returns per-source timestamps
   (transactions, balances, auto-sync, insights) with `age_seconds`, a boolean
   `stale` flag (>24h), and an explicit `level` (`"fresh"` <6h / `"aging"` 6-24h /
@@ -4208,8 +4219,13 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   a muted kind (`notify_muted_types`) — the bell row is written either way, with its
   `push_state`. Held pushes go out once quiet hours end (the notify-release job — one
   summary for several); a hold not released within 12 hours stays in the bell only.
-  PIN lockout and the test notification are never held or muted. Set through `PATCH
-  /api/settings` (the Settings section is E3c).
+  PIN lockout and the test notification are never held or muted. Settings → Alerts &
+  Notifications → **Quiet Hours & Muting** (`#quiet-hours-section`, cycle-8 E3c) sets both: a
+  switch and two times (Save times; an empty or equal pair is refused before any request) on the
+  APP_TIMEZONE clock, and a checkbox per mutable kind grouped by app (Per-sistant's kinds only
+  under the shell); every save goes through `PATCH /api/settings` + `writeOk` and a refused one
+  puts the control back. Under the shell the settings cover Per-sistant too (see the Per-sistant
+  Integration section).
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
   styles, WCAG AA contrast-compliant text colors. Modals and the bell panel go through the
   shared `openDialog` / `watchDialog` (focus trap, Esc, focus restore — IF-1); form controls
@@ -4431,6 +4447,15 @@ shared session cookie. Cross-app surface area today:
   focused on load and by "/", the URL following the query, a refused query's message shown).
   Per-sistant's sidebar has a Search entry, and Perfin's nav a labelled search icon to
   `/per-sistant/search` — under the shell only (a standalone Perfin has nothing to search).
+- **Quiet hours and mutes for Per-sistant** (cycle-8 E3c, G2): Per-sistant's
+  `GET /api/notifications/check` reads Perfin's `notify_quiet_hours` /
+  `notify_muted_types` READ-ONLY through the wired `perfinPool`
+  (`perfinNotifyPrefs`, null standalone or on a failure — then nothing is held)
+  and marks every entry with its `kind` (`notify-prefs.kindOfCheckType`) and
+  `notify` (false inside quiet hours or for a muted kind), plus a top-level
+  `quiet`. The dashboard raises no browser notification for `notify: false`; the
+  Reminders widget still lists every entry. Per-sistant's Settings links to
+  Perfin's section under the shell.
 - **Productivity context** (`GET /api/persistent/productivity-context`):
   task/review stats from Per-sistant (embedded fast-path queries Per-sistant's
   pool via `queryPersistentStats` / `queryPersistentReview`; HTTP fetch is the
@@ -4685,7 +4710,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3058 tests passing across 165 test files (Perfin 2337 + Per-sistant 721), plus the real-Postgres route contract suite (316 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 3075 tests passing across 167 test files (Perfin 2344 + Per-sistant 731), plus the real-Postgres route contract suite (316 tests; CI `migrations` job, `npm run test:contract`) and 74 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -6043,8 +6068,8 @@ standalone-mode fallback if either app is run on its own Render service.
 - `user_settings.notify_quiet_hours JSONB NOT NULL DEFAULT '{"enabled": false, "start":
   "22:00", "end": "07:00"}'` and `notify_muted_types JSONB NOT NULL DEFAULT '[]'` (cycle-8
   E3a, G2): quiet hours on the APP_TIMEZONE clock and the muted notification kinds
-  (services/notify-prefs.js). Perfin owns them for both apps (Per-sistant will read them
-  through perfinPool, E3c). Auto-migrated; reset by `npm run reset:fresh`.
+  (services/notify-prefs.js). Perfin owns them for both apps (Per-sistant reads them
+  read-only through perfinPool since E3c). Auto-migrated; reset by `npm run reset:fresh`.
 - `ai_audit_log`: post-generation insight validation results. Columns: `insight_id`
   (FK to financial_insights), `module`, `severity` (critical/warning/info),
   `check_type` (tier1-4), `claim_text`, `expected_value`, `actual_value`.
@@ -7337,11 +7362,13 @@ mute per kind of alert in both apps (G2), and one alert per real-world item acro
 notifications and linked tasks (ST2). E3a done: the kind catalog and the decision (`services/notify-prefs.js`), the two
 settings with PATCH validation, and notification_log.push_state / item_key. E3b done: Perfin's pushes follow them —
 held during quiet hours and released after (one summary for several; the notify-release job), muted kinds logged but
-never pushed or emailed (E3c adds the Settings section and Per-sistant's side, E3d / E3e the one-alert rule). E3b
-follow-ons: a hold not released within 12 hours (the host asleep past the end of quiet hours) is never pushed — it stays
-in the bell; the release job runs once after every boot with nothing held (three short queries); a summary push carries
-one link (the newest's); no UI yet — the settings are set through PATCH /api/settings, and the bell doesn't show
-push_state (E3c). E3a follow-on: a kind is read from the tag's prefix, so a caller whose tag is built entirely at runtime isn't
+never pushed or emailed. E3c done (G2 complete): Settings → Quiet Hours & Muting, the bell naming a held / expired /
+muted push, and Per-sistant's notification check following the same settings (E3d / E3e — the one-alert rule, ST2 — are
+queued). E3c follow-ons: a standalone Per-sistant has no quiet hours or mutes (the settings are Perfin's); a Per-sistant
+reminder held by quiet hours is raised only at the next dashboard load after they end (no push or release); the times are
+read in APP_TIMEZONE, not the browser's zone (the section names the zone). E3b follow-ons: a hold not released within 12
+hours (the host asleep past the end of quiet hours) is never pushed — it stays in the bell; the release job runs once
+after every boot with nothing held (three short queries); a summary push carries one link (the newest's). E3a follow-on: a kind is read from the tag's prefix, so a caller whose tag is built entirely at runtime isn't
 covered by the scan test and lands in "other" until the catalog names it.
 
 **Roadmap T4.1 (done — A1–A10):** `services/advice.js` computes the plan; since A2 it is
@@ -8113,7 +8140,7 @@ INV-136 | WebAuthn credential ids are stored exactly as the authenticator report
 INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — and the sinking funds and subscription review — A9, the dates from cadence.js — and the contribution room — A10, from contributions recorded in investment_flows against limits the user entered — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged ; a what-if in Ask (A10) is whatIfPlan — buildAdvicePlan on inputs changed by applyWhatIf, never the model's arithmetic | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 / a9 / a10 + tests/contract/advice-a1
 INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes sets those columns (never the detectors; a rename re-key only copies the user's own setting from the row it retires onto the surviving row still on the default — E1 follow-on) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/cycle8-e1-followons.test.js + tests/contract/forecast-e1a + e1-followons
 INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read ; the dashboard's "Since you last looked" follows the mark-before-read and forward-only rules without the overlap — /seen stores the mark its GET read (seen_token, cycle-8 E2d), never now() | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/cycle8-e2d.test.js + tests/contract/txn-watermark-e2c + whats-new-e2d + c8-batch4
-INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push; a held push is released once quiet hours end — marked sent only after the push went out, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/contract/notify-e3b.contract.test.js
+INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push; a held push is released once quiet hours end — marked sent only after the push went out, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
