@@ -11,7 +11,7 @@ G2 (E3c) | apps/per-sistant/pages/dashboard-script.js | isImportantReminder retu
 G2 (E3c) | apps/per-sistant/pages/settings.js | Browser Notifications says where quiet hours and muting are set — a link to Perfin's section, under the shell only
 G2 (E3c) | e2e/pages.spec.js | the section saves new times and a Job Radar mute (read back through the API and after a reload, then put back), and Per-sistant's Settings links to it
 
-TEST RESULTS: npm test 3075/3075 (17 new — 7 in tests/cycle8-e3c.test.js, 10 in apps/per-sistant/tests/cycle8-e3c.test.js). Contract 315/316 (cash-alerts-l2, date-dependent, pre-existing). e2e: see STATE.
+TEST RESULTS: npm test 3075/3075 (17 new — 7 in tests/cycle8-e3c.test.js, 10 in apps/per-sistant/tests/cycle8-e3c.test.js). Contract 315/316 (cash-alerts-l2, date-dependent, pre-existing). e2e 74/74 (1 new).
 REGRESSION RISKS: Per-sistant's notification check makes one more perfinPool read per call under the shell (fail-soft); existing check tests' fake perfinPools answer it with no row (defaults — nothing held). The Settings page gains a section the e2e click sweep presses (Save times saves the current values).
 INVARIANTS AT RISK: INV-25 / INV-35 — kept (the prefs are read through the wired perfinPool, read-only, never an HTTP self-fetch). INV-89 — kept (every save through writeOk). INV-97 — no regex added to a Per-sistant template-literal module. INV-153 — extended to Per-sistant's browser notifications (the list keeps every entry).
 NET SCORE: 0 production fixes − 0 new failure modes = 0

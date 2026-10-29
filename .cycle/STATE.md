@@ -24,7 +24,7 @@ implement and reflect sessions only set Phase.)
     names a held / expired / muted push; Per-sistant's notification check gives each entry `kind` / `notify` from
     Perfin's prefs (read-only through perfinPool) and the dashboard raises no browser notification for notify:false;
     Per-sistant Settings links to the section.
-  - **Verified:** npm test 3075/3075 (17 new); contract 315/316 (cash-alerts-l2 pre-existing); e2e see below.
+  - **Verified:** npm test 3075/3075 (17 new); contract 315/316 (cash-alerts-l2 pre-existing); e2e 74/74 (1 new).
   - **Where I left off:** E3c committed and pushed. Next: `/sync-docs`, then `/broad-implement E3d`.
 - **Cycle-8 E3b (DONE, 2026-10-29) — G2 part 2:** block `.cycle/blocks/8-e3b-broad-implement.md`.
   - **Shipped:** sendToAll decides through notify-prefs (push_state sent / held / muted / none, `logged` unchanged, a
