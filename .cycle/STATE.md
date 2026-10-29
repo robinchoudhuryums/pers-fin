@@ -25,7 +25,7 @@ implement and reflect sessions only set Phase.)
     (openLinkedItems; housingDueUnlessTask generalised, also behind the briefing's rent line).
   - **Decision detail:** bills / tax-doc tasks have no Perfin push, so no keys were invented for them; the 12 h window
     counts from the row's created_at (a push released after quiet hours is dated by its hold).
-  - **Verified:** npm test 3095/3095 (9 new); contract 321/322 (3 new; cash-alerts-l2 pre-existing, 31-day month).
+  - **Verified:** npm test 3095/3095 (9 new); contract 321/322 (3 new; cash-alerts-l2 pre-existing, 31-day month); e2e 74/74.
   - **Where I left off:** E3e committed and pushed; the E3 plan is complete. Next: `/sync-docs`.
 - **Cycle-8 E3d (DONE, 2026-10-29) — ST2 core:** block `.cycle/blocks/8-e3d-broad-implement.md`.
   - **Shipped:** sendToAll({ item }) — an open Per-sistant linked task for the item (read through the wired pool,
