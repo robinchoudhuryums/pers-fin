@@ -106,26 +106,28 @@ async function housingDue(perfinPool, today = todayStr()) {
 // F23). While Perfin keeps an open Per-sistant task for it (a linked task
 // 'perfin:housing:<period>', roadmap T2.4) that task — with its due date and
 // overdue state — is the reminder here, so the notification check's
-// housing_due entry and the briefing's rent line step aside. Fail-soft: a
-// failed read keeps the line (false).
-async function housingTaskOpen(pool) {
-  if (!pool) return false;
-  try {
-    const r = await pool.query(
-      `SELECT 1 FROM todos WHERE source_key LIKE 'perfin:housing:%'
-          AND NOT completed AND deleted_at IS NULL LIMIT 1`);
-    return r.rows.length > 0;
-  } catch (e) {
-    console.error("housing task lookup failed:", e.message);
-    return false;
-  }
+// housing_due entry and the briefing's rent line step aside. Since cycle-8 E3e
+// (ST2) the line names its item — the month its due date belongs to (the
+// oldest unpaid month when that one is overdue, else this month), the key
+// Perfin's rent push and linked task use — and only THAT item's open task
+// hides it. Fail-soft: a failed read keeps the line (false).
+function housingItem(h, today = todayStr()) {
+  if (!h) return null;
+  return "housing:" + (h.due_date ? h.due_date.slice(0, 7) : today.slice(0, 7));
 }
 
-// housingDue, or null while a housing linked task is open.
+async function housingTaskOpen(pool, item) {
+  if (!pool || !item) return false;
+  const { openLinkedItems } = require("../services/linked-tasks");
+  return (await openLinkedItems(pool, [item])).has(item);
+}
+
+// housingDue with its `item`, or null while that item's linked task is open.
 async function housingDueUnlessTask(perfinPool, pool, today = todayStr()) {
   const h = await housingDue(perfinPool, today);
   if (!h) return h;
-  return (await housingTaskOpen(pool)) ? null : h;
+  const item = housingItem(h, today);
+  return (await housingTaskOpen(pool, item)) ? null : { ...h, item };
 }
 
-module.exports = { housingDue, housingDueUnlessTask, housingTaskOpen, computeHousingDue, housingDueSuffix };
+module.exports = { housingDue, housingDueUnlessTask, housingTaskOpen, housingItem, computeHousingDue, housingDueSuffix };

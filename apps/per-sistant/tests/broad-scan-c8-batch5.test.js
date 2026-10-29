@@ -156,7 +156,12 @@ describe("F23 — the open task is the rent reminder", () => {
   const { housingDueUnlessTask, housingTaskOpen } = require("../routes/housing-due");
   const CFG = { enabled: true, payee_name: "Sam", rent_due_day: 1, reminder_lead_days: 5 };
   const perfin = { query: async (sql) => (/housing_config/.test(sql) ? { rows: [{ housing_config: CFG }] } : { rows: [{ balance: "1500.00", n: 1 }] }) };
-  const ps = (open) => ({ query: async (sql) => { assert.match(sql, /source_key LIKE 'perfin:housing:%'/); return { rows: open ? [{}] : [] }; } });
+  // Since cycle-8 E3e only the line's own item (housing:<month of its due date>) hides it.
+  const ps = (open) => ({ query: async (sql, params) => {
+    assert.match(sql, /source_key = ANY\(\$1::text\[\]\) AND NOT completed AND deleted_at IS NULL/);
+    assert.deepEqual(params, [["perfin:housing:2026-10"]]);
+    return { rows: open ? [{ source_key: "perfin:housing:2026-10" }] : [] };
+  } });
 
   it("hides the rent line while a housing task is open, shows it otherwise", async () => {
     assert.equal(await housingDueUnlessTask(perfin, ps(true), "2026-10-01"), null);
@@ -165,9 +170,11 @@ describe("F23 — the open task is the rent reminder", () => {
 
   it("is fail-soft: a failed task lookup keeps the line, no pool reads as no task", async () => {
     const bad = { query: async () => { throw new Error("boom"); } };
-    assert.equal(await housingTaskOpen(bad), false);
-    assert.equal((await housingDueUnlessTask(perfin, bad, "2026-10-01")).status, "due_today");
-    assert.equal(await housingTaskOpen(null), false);
+    const ce = console.error; console.error = () => {};
+    try { assert.equal(await housingTaskOpen(bad, "housing:2026-10"), false); } finally { console.error = ce; }
+    const c2 = console.error; console.error = () => {};
+    try { assert.equal((await housingDueUnlessTask(perfin, bad, "2026-10-01")).status, "due_today"); } finally { console.error = c2; }
+    assert.equal(await housingTaskOpen(null, "housing:2026-10"), false);
   });
 
   it("both surfaces use it", () => {

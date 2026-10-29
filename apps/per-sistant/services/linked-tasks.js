@@ -214,4 +214,23 @@ async function ensureLinkedTask(pool, { app, task } = {}) {
   return { created: true, id: row.id };
 }
 
-module.exports = { syncLinkedTasks, ensureLinkedTask, checkTask, parseKey, LINKED_TASKS_LOCK_KEY };
+// Which of these items (a linked-task key without its "<app>:" prefix, e.g.
+// "housing:2026-11") have an OPEN, untrashed task — the surface for that item
+// (cycle-8 E3e, ST2). Read-only; a failed read is an empty set (fail-soft: the
+// other surface stays).
+async function openLinkedItems(pool, items, { app = "perfin" } = {}) {
+  const want = [...new Set((items || []).filter((i) => typeof i === "string" && i))];
+  if (!pool || !want.length) return new Set();
+  try {
+    const r = await pool.query(
+      `SELECT source_key FROM todos
+        WHERE source_key = ANY($1::text[]) AND NOT completed AND deleted_at IS NULL`,
+      [want.map((i) => app + ":" + i)]);
+    return new Set(r.rows.map((row) => String(row.source_key).slice(app.length + 1)));
+  } catch (e) {
+    console.error("linked task lookup failed:", e.message);
+    return new Set();
+  }
+}
+
+module.exports = { syncLinkedTasks, ensureLinkedTask, checkTask, parseKey, openLinkedItems, LINKED_TASKS_LOCK_KEY };

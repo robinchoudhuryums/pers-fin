@@ -75,14 +75,44 @@ async function perfinNotifyPrefs(perfinPool) {
     return null;
   }
 }
+// One real-world item, one alert (cycle-8 E3e, ST2): the items among these
+// entries that Perfin PUSHED in the last PUSHED_WINDOW_HOURS (its
+// notification_log rows with that item_key and push_state 'sent' — a push that
+// actually went out). Read-only through perfinPool; standalone or a failed
+// read → none, and the entries notify as before.
+const PUSHED_WINDOW_HOURS = 12;
+async function perfinPushedItems(perfinPool, items) {
+  const want = [...new Set((items || []).filter(Boolean))];
+  if (!perfinPool || !want.length) return new Set();
+  try {
+    const r = await perfinPool.query(
+      `SELECT DISTINCT item_key FROM notification_log
+        WHERE item_key = ANY($1::text[]) AND push_state = 'sent'
+          AND created_at > now() - make_interval(hours => $2)`,
+      [want, PUSHED_WINDOW_HOURS]);
+    return new Set(r.rows.map((row) => row.item_key));
+  } catch (err) {
+    console.error("notification check: Perfin push lookup failed:", err.message);
+    return new Set();
+  }
+}
+
+// A linked task's item: its source_key without "perfin:" (null otherwise).
+function itemOfTask(row) {
+  const k = row && row.source_key;
+  return typeof k === "string" && k.startsWith("perfin:") ? k.slice(7) : null;
+}
+
 // Each entry's kind and whether the dashboard may raise a browser notification
-// for it: false while quiet hours run (unless the kind bypasses them) or for a
-// muted kind. The list itself always carries every entry.
-function annotateNotify(list, prefs, now = new Date()) {
+// for it: false while quiet hours run (unless the kind bypasses them), for a
+// muted kind, or (E3e) for an item Perfin already pushed (`pushed`, a Set). The
+// list itself always carries every entry.
+function annotateNotify(list, prefs, now = new Date(), pushed = null) {
   const np = notifyPrefsModule();
   for (const n of list) {
     n.kind = np ? np.kindOfCheckType(n.type) : null;
     n.notify = !(prefs && np) || np.decide({ kind: n.kind, prefs, now, tz: APP_TIMEZONE }) === "sent";
+    if (n.notify && n.item && pushed && pushed.has(n.item)) n.notify = false;
   }
   return list;
 }
@@ -101,8 +131,8 @@ module.exports = function ({ pool }) {
       const today = todayStr();
       const perfinPool = req.app.get("perfinPool");
       const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar, vaultErr, failedMail, prefs] = await Promise.all([
-        pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
-        pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
+        pool.query("SELECT id, title, due_date, source_key FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
+        pool.query("SELECT id, title, due_date, source_key FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
         pool.query("SELECT id, title, streak_count, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND recurring = true AND streak_count >= 3 AND due_date = $1", [today]),
         // F115: the reminder's LOCAL (APP_TIMEZONE) day — DATE(reminder_at) is
         // the UTC day, so an evening reminder west of UTC showed a day late.
@@ -121,8 +151,11 @@ module.exports = function ({ pool }) {
         perfinNotifyPrefs(perfinPool),
       ]);
       const notifications = [];
-      dueSoon.rows.forEach(t => notifications.push({ type: "due_today", title: t.title, id: t.id, entity: "todo" }));
-      overdue.rows.forEach(t => notifications.push({ type: "overdue", title: t.title, id: t.id, entity: "todo" }));
+      // A linked task's entry carries its item (cycle-8 E3e) — it IS the surface
+      // for that item, so Perfin's push stands aside while it's open (E3d).
+      const withItem = (o, t) => { const item = itemOfTask(t); if (item) o.item = item; return o; };
+      dueSoon.rows.forEach(t => notifications.push(withItem({ type: "due_today", title: t.title, id: t.id, entity: "todo" }, t)));
+      overdue.rows.forEach(t => notifications.push(withItem({ type: "overdue", title: t.title, id: t.id, entity: "todo" }, t)));
       streaksAtRisk.rows.forEach(t => notifications.push({ type: "streak_at_risk", title: `${t.title} (${t.streak_count} streak)`, id: t.id, entity: "todo" }));
       reminders.rows.forEach(n => notifications.push({ type: "reminder", title: n.title, id: n.id, entity: "note" }));
       facts.forEach(f => {
@@ -157,6 +190,7 @@ module.exports = function ({ pool }) {
           id: null,
           entity: "housing",
           days_away: due,
+          item: housing.item, // housing:<month> — Perfin's rent push and linked task (E3e)
         });
       }
       // Job Radar: a single summary line when there are high-fit/high-trust leads.
@@ -188,8 +222,9 @@ module.exports = function ({ pool }) {
         });
       }
       const np = prefs && notifyPrefsModule();
+      const pushed = await perfinPushedItems(perfinPool, notifications.map((n) => n.item));
       res.json({
-        notifications: annotateNotify(notifications, prefs),
+        notifications: annotateNotify(notifications, prefs, new Date(), pushed),
         quiet: !!(np && np.isQuiet(new Date(), prefs.quiet, APP_TIMEZONE)),
         counts: {
           due_today: dueSoon.rows.length,
@@ -212,3 +247,5 @@ module.exports = function ({ pool }) {
 };
 module.exports.annotateNotify = annotateNotify;
 module.exports.perfinNotifyPrefs = perfinNotifyPrefs;
+module.exports.perfinPushedItems = perfinPushedItems;
+module.exports.PUSHED_WINDOW_HOURS = PUSHED_WINDOW_HOURS;
