@@ -1,6 +1,6 @@
 # Cycle 8 E1 — forecast and data corrections (plan, 2026-10-28)
 
-Status: E1a, E1b done (2026-10-29); E1c queued.
+Status: DONE (2026-10-29) — E1a, E1b, E1c shipped; blocks in `.cycle/blocks/8-e1{a,b,c}-broad-implement.md`.
 
 Scope: G1 and G5 from the cycle-8 expansion plan (`.cycle/plan-cycle8-expansion.md`).
 
@@ -82,7 +82,7 @@ Goal: the user can correct the cash-flow forecast where the code misreads a recu
 |-------|-------|--------|
 | E1a | G1 server: the two columns (+ CHECK_LISTS entry), getCashFlowInputs honoring them with `bills` / `left_out`, GET /api/cash-flow's `forecast_items`, the two PATCH routes + cash-alerts invalidate; unit tests over a fake pool (each treatment beating each heuristic, the reasons, the strict 400s) and a contract test on real rows (an autopay set to bill is billed, an internal-looking transfer set to bill is billed, a transfer set to ignore isn't, a subscription left out, re-detection keeping the setting, getCashFlowForecast / the dashboard summary moving with it) | done (2026-10-29) |
 | E1b | G1 UI: the "What's in this forecast" list in the Cash Flow section (vm tests: rendering, reasons in words, escaping, labels, each select's PATCH through writeOk, a refused save reverting, the reload); e2e: the list renders on the seeded dashboard | done (2026-10-29) |
-| E1c | G5: batch_id on deleted_transactions, Resolve writing + returning it, the batch restore route, GET's batch_id / batches, the Settings grouping + "Restore all"; unit tests over a fake client (all restored, a refused row skipped and reported, 404, the transaction), vm tests for the grouping, a contract test (Resolve → restore the batch → rows back with notes / splits, a second restore a no-op, a row the bank removed skipped) | queued |
+| E1c | G5: batch_id on deleted_transactions, Resolve writing + returning it, the batch restore route, GET's batch_id / batches, the Settings grouping + "Restore all"; unit tests over a fake client (all restored, a refused row skipped and reported, 404, the transaction), vm tests for the grouping, a contract test (Resolve → restore the batch → rows back with notes / splits, a second restore a no-op, a row the bank removed skipped) | done (2026-10-29) |
 
 Order: E1a → E1b → E1c (E1c is independent of the other two and can run first).
 

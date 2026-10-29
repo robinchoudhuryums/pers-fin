@@ -18,6 +18,15 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E1c (DONE, 2026-10-29) — E1 complete:** block `.cycle/blocks/8-e1c-broad-implement.md`.
+  - **Shipped (G5):** deleted_transactions.batch_id; CSV-overlap Resolve tags its tombstones with one id and returns it;
+    POST /api/deleted-transactions/batches/:batch_id/restore restores the batch in one transaction (refused rows listed and
+    left deleted, rename rules once); GET /api/deleted-transactions returns batch_id + `batches`; Settings shows a labelled
+    "Restore all N" per batch.
+  - **Verified:** npm test 2961/2961 (13 new); contract resolve-undo-e1c 4/4 (cash-alerts-l2 / cash-flow-l1 date-dependent,
+    pre-existing); e2e 73/73. Mutation checks red.
+  - **Where I left off:** E1c committed and pushed — E1 (E1a–E1c) is done. Next: `/sync-docs` for E1, then plan E2 (ST1 due-based
+    job runner + ST3 id-based watermarks).
 - **Cycle-8 E1b (DONE, 2026-10-29):** block `.cycle/blocks/8-e1b-broad-implement.md`.
   - **Shipped (G1 UI):** a collapsed "What's in this forecast" list in the dashboard's Cash Flow section — each projected
     bill (count and total in the window, next date) and each item left out (the reason in words), with a labelled setting
