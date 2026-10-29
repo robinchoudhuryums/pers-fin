@@ -50,8 +50,8 @@ function fakeDb() {
     }
     if (/^INSERT INTO notification_log/.test(sql)) {
       if (db.insertThrows) throw new Error("insert failed");
-      const [type, title, body, data, push_state] = params;
-      db.log.push({ id: db.nextId++, type, title, body, data: JSON.parse(data), push_state, created_at: new Date(db.clock) });
+      const [type, title, body, data, push_state, item_key = null, is_read = false] = params;
+      db.log.push({ id: db.nextId++, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
       return { rows: [] };
     }
     if (/SET push_state = 'expired'/.test(sql)) {
@@ -60,12 +60,12 @@ function fakeDb() {
       hit.forEach((r) => { r.push_state = "expired"; });
       return { rows: hit.map((r) => ({ id: r.id })) };
     }
-    if (/SELECT id, type, title, body, data FROM notification_log/.test(sql)) {
+    if (/SELECT id, type, title, body, data, item_key FROM notification_log/.test(sql)) {
       return { rows: db.log.filter((r) => r.push_state === "held").sort((a, b) => a.created_at - b.created_at || a.id - b.id).slice(0, params[0]) };
     }
     const m = /UPDATE notification_log SET push_state = '(\w+)' WHERE id = ANY/.exec(sql);
     if (m) {
-      db.log.filter((r) => params[0].includes(r.id) && r.push_state === "held").forEach((r) => { r.push_state = m[1]; });
+      db.log.filter((r) => params[0].includes(r.id) && r.push_state === "held").forEach((r) => { r.push_state = m[1]; if (/is_read = true/.test(sql)) r.is_read = true; });
       return { rows: [] };
     }
     if (/SELECT endpoint, keys FROM push_subscriptions/.test(sql)) return { rows: db.subs };

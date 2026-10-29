@@ -379,7 +379,8 @@ async function runHousingReminders(pool_, today = todayStr()) {
     }
     const dueNow = balance > 0 && rentReminderOpen(today.slice(0, 7), cfg, today);
     if (dueNow || upcoming > 0) {
-      const tag = "housing-due-" + (upcoming > 0 ? next.period : today.slice(0, 7));
+      const period = upcoming > 0 ? next.period : today.slice(0, 7);
+      const tag = "housing-due-" + period;
       if (!(await sentRecently(tag, 72))) {
         const total = (dueNow ? balance : 0) + upcoming;
         const items = (dueNow ? count : 0) + (upcoming > 0 ? 1 : 0);
@@ -389,6 +390,8 @@ async function runHousingReminders(pool_, today = todayStr()) {
             (upcoming > 0 ? " — " + periodLabel(next.period) + " rent is due " + next.due_date : "") +
             ". Send the transfer.",
           tag,
+          // The period's linked task (perfin:housing:<period>) covers it while open (cycle-8 E3d).
+          item: "housing:" + period,
           data: { url: "/housing" },
         });
         if (r && r.logged) sent++;
@@ -414,6 +417,7 @@ async function runHousingReminders(pool_, today = todayStr()) {
         title: "Enter " + o.label + " amount",
         body: periodLabel(o.period) + " " + o.label + " bill should have arrived — add the amount.",
         tag,
+        item: "utility-amount:" + o.id, // its linked task covers it while open (cycle-8 E3d)
         // Deep-link to the awaiting-bill input so entering the figure is one tap.
         data: { url: "/housing#pending" },
       });

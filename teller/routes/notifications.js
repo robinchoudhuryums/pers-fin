@@ -241,13 +241,45 @@ async function pushToSubscribers(payload) {
   }
 }
 
+// One real-world item, one alert (cycle-8 E3d, ST2). A notification about an
+// item Perfin also keeps as a Per-sistant linked task (payload.item — the task's
+// key without "perfin:", e.g. "housing:2026-11") is COVERED while that task is
+// open: the task is the surface, so the row is logged read and not pushed.
+// Read through the shell-wired Per-sistant pool; standalone (no pool) or a
+// failed read → not covered, so the push goes out.
+const ITEM_RE = /^[a-z][a-z-]*:[A-Za-z0-9._:-]{1,160}$/;
+function itemKey(item) {
+  // Without the "perfin:" prefix — the lookup adds it.
+  return typeof item === "string" && ITEM_RE.test(item) && !item.startsWith("perfin:") ? item : null;
+}
+async function itemCovered(item) {
+  if (!item) return false;
+  let pp = null;
+  try { pp = require("./persistent").getEmbeddedPersistentPool(); } catch { pp = null; } // no Per-sistant wiring → standalone
+  if (!pp) return false;
+  try {
+    const r = await pp.query(
+      `SELECT 1 FROM todos WHERE source_key = $1 AND NOT completed
+          AND deleted_at IS NULL AND NOT source_detached LIMIT 1`,
+      ["perfin:" + item]
+    );
+    return r.rows.length > 0;
+  } catch (err) {
+    console.error("linked task lookup for a notification failed:", err.message);
+    return false;
+  }
+}
+
 // Also logs to notification_log for in-app history. opts.now: the clock (tests).
+// payload.item (optional): the real-world item, see itemCovered.
 async function sendToAll(payload, opts = {}) {
   const now = opts.now instanceof Date ? opts.now : new Date();
   const kind = notifyPrefs.kindOf(payload.tag);
+  const item = itemKey(payload.item);
   const prefs = await readNotifyPrefs();
   let state = notifyPrefs.decide({ kind, prefs, now, tz: NOTIFY_TZ });
-  if (!pushConfigured() && state !== "muted") state = "none";
+  if (item && state !== "muted" && (await itemCovered(item))) state = "covered";
+  if (!pushConfigured() && state !== "muted" && state !== "covered") state = "none";
 
   // Always log to notification_log, even if push isn't configured. This row is
   // ALSO the dedup marker that sentRecently() reads, so the return value carries
@@ -257,9 +289,12 @@ async function sendToAll(payload, opts = {}) {
   // doesn't change that: the row is written the same way.
   let logged = false;
   try {
+    // A covered row is written read — the task is the surface, so the bell's
+    // unread count doesn't repeat it.
     await pool.query(
-      "INSERT INTO notification_log (type, title, body, data, push_state) VALUES ($1, $2, $3, $4, $5)",
-      [payload.tag || "general", payload.title || "", payload.body || "", JSON.stringify(payload.data || {}), state]
+      `INSERT INTO notification_log (type, title, body, data, push_state, item_key, is_read)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [payload.tag || "general", payload.title || "", payload.body || "", JSON.stringify(payload.data || {}), state, item, state === "covered"]
     );
     logged = true;
   } catch (err) {
@@ -267,7 +302,7 @@ async function sendToAll(payload, opts = {}) {
   }
   await pruneNotificationLog();
 
-  if (state === "muted" || state === "none") return { sent: 0, failed: 0, logged, push_state: state };
+  if (state === "muted" || state === "none" || state === "covered") return { sent: 0, failed: 0, logged, push_state: state };
   if (state === "held") {
     if (logged) {
       heldPending = true;
@@ -279,7 +314,8 @@ async function sendToAll(payload, opts = {}) {
     // No row to release later — deliver now rather than lose it.
     state = "sent";
   }
-  const r = await pushToSubscribers(payload);
+  const { item: _item, ...pushPayload } = payload;
+  const r = await pushToSubscribers(pushPayload);
   return { sent: r.sent, failed: r.failed, logged, push_state: state };
 }
 
@@ -310,7 +346,7 @@ async function releaseHeldNotifications({ now = new Date() } = {}) {
   );
   const expired = exp.rows.length;
   const held = (await pool.query(
-    `SELECT id, type, title, body, data FROM notification_log
+    `SELECT id, type, title, body, data, item_key FROM notification_log
       WHERE push_state = 'held' ORDER BY created_at, id LIMIT $1`,
     [RELEASE_BATCH]
   )).rows;
@@ -320,7 +356,15 @@ async function releaseHeldNotifications({ now = new Date() } = {}) {
   if (muted.length) {
     await pool.query("UPDATE notification_log SET push_state = 'muted' WHERE id = ANY($1::int[]) AND push_state = 'held'", [muted.map((h) => h.id)]);
   }
-  const rows = held.filter((h) => !muted.includes(h));
+  // An item whose linked task opened while its push was held is covered now (E3d).
+  const covered = [];
+  for (const h of held) {
+    if (h.item_key && !muted.includes(h) && (await itemCovered(h.item_key))) covered.push(h);
+  }
+  if (covered.length) {
+    await pool.query("UPDATE notification_log SET push_state = 'covered', is_read = true WHERE id = ANY($1::int[]) AND push_state = 'held'", [covered.map((h) => h.id)]);
+  }
+  const rows = held.filter((h) => !muted.includes(h) && !covered.includes(h));
   if (!rows.length) { done(); return { ok: true, outcome: expired ? "expired" : "none", released: 0, expired }; }
   const ids = rows.map((h) => h.id);
   if (!pushConfigured()) {
@@ -374,6 +418,7 @@ module.exports.invalidateNotifyPrefs = invalidateNotifyPrefs;
 module.exports.releaseDue = releaseDue;
 module.exports.releaseHeldNotifications = releaseHeldNotifications;
 module.exports.HOLD_MAX_HOURS = HOLD_MAX_HOURS;
+module.exports.itemCovered = itemCovered;
 // Tests: the in-memory release gate.
 module.exports._release = {
   state: () => ({ heldPending, releaseNotBefore, holdGeneration }),

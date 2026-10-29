@@ -18,6 +18,16 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E3d (DONE, 2026-10-29) — ST2 core:** block `.cycle/blocks/8-e3d-broad-implement.md`.
+  - **Shipped:** sendToAll({ item }) — an open Per-sistant linked task for the item (read through the wired pool,
+    fail-soft) makes the push `covered`: logged read with item_key, not pushed, `logged` unchanged; the release job
+    re-checks held rows; the housing reminders carry housing:<period> / utility-amount:<id> and the still-charging push
+    linked-tasks.stillChargingItem; the bell names a covered row.
+  - **Decision detail:** muted → covered → held → sent; covered beats "push not configured"; a detached task doesn't
+    cover; a malformed or "perfin:"-prefixed item is ignored; still-charging's first alert is always pushed (the task is
+    made after it, and has no due date).
+  - **Verified:** npm test 3086/3086 (11 new); contract 318/319 (3 new; cash-alerts-l2 pre-existing, 31-day month).
+  - **Where I left off:** E3d committed and pushed. Next: `/sync-docs`, then `/broad-implement E3e`.
 - **Cycle-8 E3c (DONE, 2026-10-29) — G2 complete:** block `.cycle/blocks/8-e3c-broad-implement.md`.
   - **Shipped:** Settings → Alerts & Notifications → Quiet Hours & Muting (switch, times, the zone, a box per mutable
     kind grouped by app — Per-sistant's under the shell only; every save through writeOk, reverted on refusal); the bell

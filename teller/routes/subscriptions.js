@@ -280,7 +280,10 @@ async function runSubscriptionWatchdog(db = pool) {
     const title = `${r.display_name} charged ${money(r.charged)} after you cancelled it`;
     const body = `A ${money(r.charged)} charge on ${r.charged_on} matches ${r.display_name}, which you marked cancelled. ` +
       "Check the merchant — the cancellation may not have gone through.";
-    const sent = await sendToAll({ title, body, tag: "sub-still-charging-" + r.id, data: { url: "/subscriptions" } });
+    // item (cycle-8 E3d): the charge's linked task, when one is already open,
+    // covers the push. The task is made just below, so the first alert per
+    // charge is always pushed (the task has no due date — it never interrupts).
+    const sent = await sendToAll({ title, body, tag: "sub-still-charging-" + r.id, item: linkedTasks.stillChargingItem(r), data: { url: "/subscriptions" } });
     if (!sent.logged) continue; // not recorded → retry on the next run
     await db.query(
       "UPDATE detected_subscriptions SET still_charging_txn = $2, still_charging_at = $3, still_charging_amount = $4, updated_at = now() WHERE id = $1",

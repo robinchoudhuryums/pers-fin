@@ -336,14 +336,20 @@ function kick(reason) {
 // The still-charging event (decision 2): one task per (subscription, charge),
 // created when the watchdog's alert was logged, never closed by a sync. No-op
 // unless the switch and the source are on and the shell wired Per-sistant.
+// The item a still-charging alert is about: its linked task's key without the
+// app prefix — also the watchdog push's item (cycle-8 E3d), one definition.
+function stillChargingItem(sub) {
+  const txn = String(sub.transaction_id || "").replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 120) || "charge";
+  return `still-charging:${sub.id}:${txn}`;
+}
+
 async function ensureStillChargingTask(pool, sub, { persistentPool = defaultPersistentPool(), deps = {} } = {}) {
   if (!persistentPool) return { status: "no_persistent", created: false };
   const cfg = await readSettings(pool);
   if (!cfg.enabled || !cfg.sources.still_charging) return { status: "disabled", created: false };
-  const txn = String(sub.transaction_id || "").replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 120) || "charge";
   const ensure = deps.ensure || ((p, args) => persistentLinkedTasks().ensureLinkedTask(p, args));
   const r = await ensure(persistentPool, { app: APP, task: {
-    key: `${APP}:still-charging:${sub.id}:${txn}`,
+    key: `${APP}:${stillChargingItem(sub)}`,
     title: clip(`Check ${sub.display_name} — charged ${money(sub.charged)} after you cancelled`, 300),
     description: `A ${money(sub.charged)} charge on ${sub.charged_on} matches ${sub.display_name}, which you marked cancelled. Check with the merchant — the cancellation may not have gone through.`,
     url: "/subscriptions",
@@ -355,6 +361,6 @@ async function ensureStillChargingTask(pool, sub, { persistentPool = defaultPers
 
 module.exports = {
   computeLinkedTasks, taxDocumentTasks, effectiveSources, SOURCES, SOURCE_KEYS, DEFAULT_SOURCES, APP,
-  runLinkedTasks, refreshSoon, kick, invalidate, isRunning, ensureStillChargingTask, SYNC_ERROR,
+  runLinkedTasks, refreshSoon, kick, invalidate, isRunning, ensureStillChargingTask, stillChargingItem, SYNC_ERROR,
   _reset() { _disabledDay = null; _freshDay = null; _running = null; _again = false; },
 };
