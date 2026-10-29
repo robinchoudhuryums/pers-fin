@@ -90,6 +90,20 @@ teller/
                            only jobs with a new tick or outcome; GET
                            /api/data-health flushes before it reads, so a user
                            back from time away doesn't see every job "stale"
+    job-runner.js        — Due-based job runner (cycle-8 E2a, ST1 — NOT yet wired
+                           into startup.js; E2b moves the jobs onto it):
+                           createJobRunner({ pool, … }) → register({ name, everyMs,
+                           run, when? }) / start / stop / check / list. The first
+                           check (1 min after start) reads the registered jobs'
+                           job_runs.last_ran_at once (a failed read → every job
+                           due); every 5-minute check after is in memory — no
+                           query unless a job is due. Due jobs run one at a time,
+                           oldest-due first, 20 s apart; checks never overlap. A
+                           run is claimed with a conditional UPSERT of last_ran_at
+                           (≥ 90% of the cadence old), so two processes run a due
+                           job once; a failed claim runs it anyway. A when() gate
+                           (e.g. isUserActive) is checked in memory before the
+                           claim — closed → no query, the job stays due
     github-ops.js        — Read-only GitHub Actions checks (cycle-7 G1):
                            runGithubChecks over GITHUB_OPS_TOKEN + GITHUB_OPS_REPO —
                            each backstop workflow's state + latest COMPLETED run
@@ -1356,9 +1370,14 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2972 tests as of latest); use
+  Perfin and Per-sistant test files (2990 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2972 tests across 159 test files (incl.
+  Current count: 2990 tests across 160 test files (incl.
+  `tests/cycle8-e2a.test.js` — cycle-8 E2a (ST1): the job runner over a fake job_runs with one clock — registration
+  checks, the one read at the first check and no query when nothing is due, due jobs run once oldest-due first with the
+  gap, a time loaded from job_runs respected, another process's claim (not run, its time taken), a failed read / claim,
+  a closed or throwing gate (no query, still due, run once open), a throwing run, no overlapping checks, onCheck,
+  start / stop incl. a stop mid-check, unref'd timers, the SQL and the migration;
   `tests/cycle8-e1-followons.test.js` — the cycle-8 E1 follow-ons: an incoming transfer's forecast setting a 400 apart
   from an unknown one's 404, the rename re-key copying a forecast setting onto the surviving row before the old row is
   deactivated, the batch restore counting a lifted legacy tombstone as `cleared` and a legacy manual entry as
@@ -2360,8 +2379,10 @@ shell/
   later single delete in no batch). Since the E1 follow-ons, e1-followons (the migration batching a pre-E1c Resolve's
   tombstones and leaving a single delete and a re-run alone; a batch's restorable count without a bank-removed row or one
   whose account is gone; a rename rule folding a transfer and a subscription into existing rows keeping their forecast
-  settings; an incoming transfer's setting a 400 that changes nothing).
-  296 tests, run
+  settings; an incoming transfer's setting a 400 that changes nothing). Since E2a, job-runner-e2a (two runners checking at
+  once run each due job once; a restart right after a run runs nothing and a 2-hour-old run is due again; the claim and
+  job-health's flush leave each other's columns alone).
+  299 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -4551,7 +4572,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2972 tests passing across 159 test files (Perfin 2251 + Per-sistant 721), plus the real-Postgres route contract suite (296 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2990 tests passing across 160 test files (Perfin 2269 + Per-sistant 721), plus the real-Postgres route contract suite (299 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5528,7 +5549,8 @@ standalone-mode fallback if either app is run on its own Render service.
   `job_runs` (scheduled-job heartbeats — one row per background job, UPSERTed by
   `services/job-health.js`; `last_status` / `last_error` hold the last run's
   outcome; the `_watchdog` row stores the last-notified
-  missed-job signature), `investment_flows` (external cash flows for
+  missed-job signature; `last_ran_at` (cycle-8 E2a) is when the job runner last
+  claimed the job — distinct from `last_run_at`, the heartbeat tick), `investment_flows` (external cash flows for
   TWR/XIRR — polymorphic (source, source_id) like account_balance_snapshots,
   signed amount (positive = into the portfolio), provenance 'plaid' (UNIQUE
   plaid_investment_transaction_id) or 'manual'), `investment_transactions` (roadmap T3.3
@@ -7145,7 +7167,8 @@ undismisses its subscription first.
 
 **Cycle-8 expansion E2 (planned — `.cycle/plan-e2-scheduler-watermarks.md`, batches E2a–E2d):** a due-based job
 runner over job_runs (ST1) and id watermarks with an overlap rescan for the anomaly, payday and "Since you last
-looked" checks (ST3). Not started.
+looked" checks (ST3). E2a done: `services/job-runner.js` + `job_runs.last_ran_at` (not wired into startup.js yet —
+E2b). E2b–E2d queued. E2a follow-on: a failing job waits a full cadence before its next run (as with setInterval).
 
 **Roadmap T4.1 (done — A1–A10):** `services/advice.js` computes the plan; since A2 it is
 served by GET /api/advice, shown in the dashboard's "Your plan" card (widget key `advice`, on by default)
@@ -7721,7 +7744,7 @@ Platform, Shell & Auth:
   shell/index.js, shell/landing-status.js, shell/boot-checks.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
   shell/middleware/error-handler.js,
   teller/server.js, teller/startup.js, teller/services/database.js,
-  teller/services/keep-alive.js, teller/services/job-health.js,
+  teller/services/keep-alive.js, teller/services/job-health.js, teller/services/job-runner.js,
   teller/services/github-ops.js, teller/services/operator-checks.js,
   teller/services/hosting.js, teller/services/error-log.js, teller/services/uptime.js,
   teller/services/webauthn-ids.js,
