@@ -84,6 +84,11 @@ const CHECK_LISTS = {
     provider: ["plaid", "teller"],
     status: ["received", "processing", "done", "failed", "ignored"],
   },
+  // Cycle-8 E1a (G1): how the cash-flow forecast treats a recurring transfer —
+  // auto (its heuristics), bill (always billed), internal / ignore (never).
+  recurring_transfers: {
+    forecast_treatment: ["auto", "bill", "internal", "ignore"],
+  },
 };
 const sqlLiteral = (v) => "'" + String(v).replace(/'/g, "''") + "'";
 const inList = (values) => values.map(sqlLiteral).join(", ");
@@ -633,6 +638,11 @@ async function runMigrationsOnce() {
     // DC-4: a transfer_type the user picked (PATCH /api/recurring-transfers/:id/type)
     // survives re-detection; the detector's upsert only overwrites auto types.
     await client.query("ALTER TABLE recurring_transfers ADD COLUMN IF NOT EXISTS transfer_type_user_set BOOLEAN NOT NULL DEFAULT false");
+    // Cycle-8 E1a (G1): the user's correction of how the cash-flow forecast reads
+    // a recurring transfer (services/cash-flow.js) and whether it bills a
+    // subscription. Forecast-only; the detectors' upserts never write either.
+    await client.query(`ALTER TABLE recurring_transfers ADD COLUMN IF NOT EXISTS forecast_treatment TEXT NOT NULL DEFAULT 'auto' CHECK (forecast_treatment IN (${inList(CHECK_LISTS.recurring_transfers.forecast_treatment)}))`);
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS forecast_ignore BOOLEAN NOT NULL DEFAULT false");
     // Per-sistant integration: webhook target + enabled flag.
     // (The webhook HMAC secret is added below as encrypted BYTEA — older DBs
     // may have a plaintext TEXT column from before; that path migrates it.)

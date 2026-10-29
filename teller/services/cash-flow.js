@@ -22,6 +22,15 @@
 // rolling windows — a few hours of skew is immaterial there).
 //
 // Charge-level on purpose (F35): refunds are not netted here.
+//
+// Cycle-8 E1a (G1): the user can correct the bill schedule. A recurring
+// transfer's forecast_treatment — 'auto' (the heuristics below), 'bill' (always
+// billed, whatever they say), 'internal' / 'ignore' (never billed) — and a
+// subscription's forecast_ignore. Forecast-only: nothing else reads them.
+// getCashFlowInputs returns every candidate as `bills` (each with source, id
+// and why: auto | user) or `left_out` (with a reason: card_autopay |
+// internal | user_internal | user_ignored); projectCashFlow bills only `bills`
+// and reports both lists as `forecast_items`.
 // ============================================================================
 const { seriesOccurrences, incomeEventsBetween, addDaysStr, parseYmd } = require("./cadence");
 const { NOT_TRANSFER, SPLIT_AMOUNT, INVESTMENT_ACCOUNT_TYPES, getLiveIncomeStreams, todayStr } = require("./financial-queries");
@@ -77,19 +86,49 @@ function mirroredCredit(destination) {
       )`;
 }
 
+// A recurring transfer's place in the forecast: { bill: true, why } or
+// { bill: false, reason }. The user's treatment wins over the heuristics.
+function transferTreatment(tr) {
+  const t = tr.forecast_treatment || "auto";
+  if (t === "bill") return { bill: true, why: "user" };
+  if (t === "internal") return { bill: false, reason: "user_internal" };
+  if (t === "ignore") return { bill: false, reason: "user_ignored" };
+  if (isCardAutopay(tr)) return { bill: false, reason: "card_autopay" };
+  if (isInternalMove(tr)) return { bill: false, reason: "internal" };
+  return { bill: true, why: "auto" };
+}
+
+// Split the candidate rows into the bills the forecast projects and the ones it
+// leaves out, each tagged with where it came from.
+function classifyBills(subs, transfers) {
+  const bills = [], left_out = [];
+  for (const s of subs || []) {
+    const row = { ...s, source: "subscription", treatment: s.forecast_ignore ? "ignore" : "auto" };
+    if (s.forecast_ignore) left_out.push({ ...row, reason: "user_ignored" });
+    else bills.push({ ...row, why: "auto" });
+  }
+  for (const tr of transfers || []) {
+    const row = { ...tr, source: "transfer", treatment: tr.forecast_treatment || "auto" };
+    const t = transferTreatment(tr);
+    if (t.bill) bills.push({ ...row, why: t.why });
+    else left_out.push({ ...row, reason: t.reason });
+  }
+  return { bills, left_out };
+}
+
 async function getCashFlowInputs(pool, { today = todayStr() } = {}) {
   const incomeStreams = await getLiveIncomeStreams(pool, today);
 
   const [subsResult, transfersResult] = await Promise.all([
     pool.query(`
-      SELECT display_name, amount, cadence_days, next_expected, last_charged AS last_date
+      SELECT id, display_name, amount, cadence_days, next_expected, last_charged AS last_date, forecast_ignore
       FROM detected_subscriptions
       WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
         AND next_expected IS NOT NULL
     `),
     pool.query(`
-      SELECT rt.display_name, rt.amount, rt.cadence_days, rt.next_expected, rt.last_transferred AS last_date,
-             rt.transfer_type, rt.direction,
+      SELECT rt.id, rt.display_name, rt.amount, rt.cadence_days, rt.next_expected, rt.last_transferred AS last_date,
+             rt.transfer_type, rt.direction, rt.forecast_treatment,
              ${mirroredCredit("la2.type = 'depository' AND NOT " + INVESTMENT_ACCOUNT_TYPES.replace(/\bla\./g, "la2."))} AS moved_between_cash_accounts,
              ${mirroredCredit("la2.type = 'credit'")} AS paid_linked_card
       FROM recurring_transfers rt
@@ -97,7 +136,7 @@ async function getCashFlowInputs(pool, { today = todayStr() } = {}) {
         AND rt.next_expected IS NOT NULL AND rt.direction = 'outgoing'
     `),
   ]);
-  const bills = [...subsResult.rows, ...transfersResult.rows.filter(tr => !isCardAutopay(tr) && !isInternalMove(tr))];
+  const { bills, left_out } = classifyBills(subsResult.rows, transfersResult.rows);
 
   // Spendable cash = DEPOSITORY accounts only (FAN-5). `type != 'credit'`
   // counted loans (+$18k for an $18k auto loan) and Teller-linked brokerage /
@@ -170,6 +209,7 @@ async function getCashFlowInputs(pool, { today = todayStr() } = {}) {
     today,
     incomeStreams,
     bills,
+    left_out,
     startingBalance: parseFloat((balResult.rows[0] && balResult.rows[0].cash) || 0),
     avgDailySpend: parseFloat((avgSpendResult.rows[0] && avgSpendResult.rows[0].avg_daily) || 0),
     dowSpend,
@@ -185,7 +225,7 @@ function weekdayOf(ymd) {
 const cents = (n) => Math.round(n * 100) / 100;
 
 function projectCashFlow(inputs, { days }) {
-  const { today, incomeStreams = [], bills = [], startingBalance = 0, avgDailySpend = 0, dowSpend = {} } = inputs;
+  const { today, incomeStreams = [], bills = [], left_out = [], startingBalance = 0, avgDailySpend = 0, dowSpend = {} } = inputs;
   const end = addDaysStr(today, days);
 
   const recurringIncome = incomeStreams.map((s) => ({
@@ -204,6 +244,25 @@ function projectCashFlow(inputs, { days }) {
     amount: parseFloat(b.amount),
     dates: new Set(seriesOccurrences(b.last_date, b.next_expected, b.cadence_days, today, end)),
   }));
+  // What the schedule held and what it left out (E1a) — the dashboard's
+  // "What's in this forecast" list.
+  const itemOf = (b) => ({
+    source: b.source || null,
+    id: b.id == null ? null : Number(b.id),
+    name: b.display_name,
+    amount: cents(parseFloat(b.amount) || 0),
+    cadence_days: b.cadence_days == null ? null : Number(b.cadence_days),
+    treatment: b.treatment || "auto",
+    ...(b.source === "transfer" ? { transfer_type: b.transfer_type || null } : {}),
+  });
+  const forecastItems = {
+    bills: bills.map((b, i) => {
+      const dates = [...billSchedule[i].dates].sort();
+      return { ...itemOf(b), why: b.why || "auto", next_date: dates[0] || null,
+        occurrences: dates.length, projected_total: cents(dates.length * billSchedule[i].amount) };
+    }),
+    left_out: left_out.map((b) => ({ ...itemOf(b), reason: b.reason })),
+  };
   const incomeByDate = new Map();
   for (const stream of incomeStreams) {
     for (const date of incomeEventsBetween(stream, today, end)) {
@@ -264,6 +323,7 @@ function projectCashFlow(inputs, { days }) {
     surplus_shortfall: cents(totalIncome - totalBills - totalDiscretionary),
     recurring_income: recurringIncome,
     by_week: byWeek,
+    forecast_items: forecastItems,
     projection,
     lowest,
   };
@@ -279,4 +339,4 @@ async function getCashFlowForecast(pool, { days, today = todayStr() } = {}) {
   return projectCashFlow(await getCashFlowInputs(pool, { today }), { days });
 }
 
-module.exports = { getCashFlowInputs, projectCashFlow, firstBelow, getCashFlowForecast, isCardAutopay, isInternalMove, CARD_PAYMENT_RE, CADENCE_DAYS };
+module.exports = { getCashFlowInputs, projectCashFlow, firstBelow, getCashFlowForecast, isCardAutopay, isInternalMove, transferTreatment, classifyBills, CARD_PAYMENT_RE, CADENCE_DAYS };

@@ -198,7 +198,7 @@ describe("GET /api/cash-flow — a thin wrapper over the service", () => {
     dbModule.pool.query = routePool();
     const res = await supertest(mountApp("../teller/routes/spending-analytics")).get("/api/cash-flow?days=30").expect(200);
     assert.deepEqual(Object.keys(res.body).sort(), [
-      "avg_daily_spend", "by_week", "ending_balance", "forecast_days", "lowest_balance", "lowest_balance_date",
+      "avg_daily_spend", "by_week", "ending_balance", "forecast_days", "forecast_items", "lowest_balance", "lowest_balance_date",
       "recurring_income", "starting_balance", "surplus_shortfall", "total_projected_bills",
       "total_projected_discretionary", "total_projected_income",
     ]);

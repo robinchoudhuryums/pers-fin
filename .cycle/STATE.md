@@ -12,12 +12,21 @@ to the "none in progress" state.
 Cycle: 8
 Phase: implement
 Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
-Updated: 2026-10-28
+Updated: 2026-10-29
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E1a (DONE, 2026-10-29):** block `.cycle/blocks/8-e1a-broad-implement.md`.
+  - **Shipped (G1 server):** recurring_transfers.forecast_treatment (auto / bill / internal / ignore, CHECK via CHECK_LISTS)
+    and detected_subscriptions.forecast_ignore; the forecast honours them (the user's choice beats the card-autopay /
+    internal-move heuristics), returns `left_out` with a reason beside `bills`, and reports both as `forecast_items` on
+    GET /api/cash-flow; PATCH /api/recurring-transfers/:id/forecast and /api/subscriptions/:id/forecast (strict, then
+    cash-alerts invalidate). Plan decisions 1–4 taken as proposed.
+  - **Verified:** npm test 2934/2934 (17 new); contract forecast-e1a 5/5; cash-alerts-l2 and cash-flow-l1 fail on date-
+    dependent seeds (pre-existing — cash-flow-l1's fails today, Oct 29, with the changes stashed too). Mutation checks red.
+  - **Where I left off:** E1a committed and pushed. Next: `/broad-implement E1b` (the "What's in this forecast" list), then E1c.
 - **Cycle-8 expansion E1–E5 (PLANNED, 2026-10-28):** the scan's expansion plan saved as `.cycle/plan-cycle8-expansion.md`;
   the operator wants E1–E5 done before cycle 8's `/reflect`. E1 (G1 forecast overrides + G5 bulk Resolve undo) is planned in
   `.cycle/plan-e1-forecast-corrections.md` as three batches — E1a (G1 server), E1b (G1 UI), E1c (G5). Found while planning:

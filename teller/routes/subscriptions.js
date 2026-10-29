@@ -1284,6 +1284,71 @@ router.patch("/api/recurring-transfers/:id/type", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Forecast corrections (cycle-8 E1a / G1) — how the cash-flow forecast
+// (services/cash-flow.js) treats one recurring transfer or subscription. They
+// change the forecast only; the next hourly cash-alert check re-evaluates.
+// ---------------------------------------------------------------------------
+// The CHECK's own value list (read at request time — test doubles of the
+// database module don't carry it).
+const forecastTreatments = () => require("../services/database").CHECK_LISTS.recurring_transfers.forecast_treatment;
+function rowId(raw) {
+  const s = String(raw || "");
+  if (!/^\d{1,10}$/.test(s)) return null;
+  const n = Number(s);
+  return n >= 1 && n <= 2147483647 ? n : null;
+}
+function forecastChanged() {
+  try { require("../services/cash-alerts").invalidate(); }
+  catch (err) { console.error("cash-alerts invalidate failed:", err.message); }
+}
+
+// PATCH /api/recurring-transfers/:id/forecast — { treatment: auto | bill |
+// internal | ignore }
+router.patch("/api/recurring-transfers/:id/forecast", async (req, res) => {
+  const id = rowId(req.params.id);
+  if (!id) return res.status(400).json({ error: "id must be a positive integer" });
+  const treatment = req.body && req.body.treatment;
+  const allowed = forecastTreatments();
+  if (typeof treatment !== "string" || !allowed.includes(treatment)) {
+    return res.status(400).json({ error: `treatment must be one of: ${allowed.join(", ")}` });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE recurring_transfers SET forecast_treatment = $1, updated_at = now() WHERE id = $2
+       RETURNING id, display_name, direction, forecast_treatment`,
+      [treatment, id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    forecastChanged();
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("recurring-transfer forecast error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/subscriptions/:id/forecast — { ignore: true | false }
+router.patch("/api/subscriptions/:id/forecast", async (req, res) => {
+  const id = rowId(req.params.id);
+  if (!id) return res.status(400).json({ error: "id must be a positive integer" });
+  const ignore = req.body && req.body.ignore;
+  if (typeof ignore !== "boolean") return res.status(400).json({ error: "ignore must be true or false" });
+  try {
+    const result = await pool.query(
+      `UPDATE detected_subscriptions SET forecast_ignore = $1, updated_at = now() WHERE id = $2
+       RETURNING id, display_name, forecast_ignore`,
+      [ignore, id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    forecastChanged();
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("subscription forecast error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // ============================================================================
 // Manual Bills — user-created expected charges for the calendar
 // ============================================================================
