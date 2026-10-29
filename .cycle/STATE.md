@@ -18,6 +18,13 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E1b (DONE, 2026-10-29):** block `.cycle/blocks/8-e1b-broad-implement.md`.
+  - **Shipped (G1 UI):** a collapsed "What's in this forecast" list in the dashboard's Cash Flow section — each projected
+    bill (count and total in the window, next date) and each item left out (the reason in words), with a labelled setting
+    per transfer / subscription saved through writeOk (the section and summary reload; a refused save reverts).
+  - **Verified:** npm test 2948/2948 (14 new); e2e 73/73 (1 new) — e2e runs here with executablePath
+    /opt/pw-browsers/chromium (a throwaway local config). Mutation checks red.
+  - **Where I left off:** E1b committed and pushed. Next: `/broad-implement E1c` (G5 — bulk undo of a CSV-overlap Resolve).
 - **Cycle-8 E1a (DONE, 2026-10-29):** block `.cycle/blocks/8-e1a-broad-implement.md`.
   - **Shipped (G1 server):** recurring_transfers.forecast_treatment (auto / bill / internal / ignore, CHECK via CHECK_LISTS)
     and detected_subscriptions.forecast_ignore; the forecast honours them (the user's choice beats the card-autopay /
