@@ -1,7 +1,8 @@
 // ============================================================================
 // Cycle-8 broad scan, Batch 1 — scheduler + auth safety
 // ============================================================================
-//   F27  every scheduled job also runs once shortly after boot (staggered)
+//   F27  every scheduled job also runs once shortly after boot (staggered) —
+//        since cycle-8 E2b the job runner's, pinned in tests/cycle8-e2b.test.js
 //   F29  bank auto-sync / self-healing reconcile / insights trigger skip their
 //        settings read while off or not due; a Settings change looks again
 //   F25  safeReturnTo refuses control characters (the biometric open redirect)
@@ -16,7 +17,7 @@
 if (!process.env.NEON_DATABASE_URL) process.env.NEON_DATABASE_URL = "postgres://mock:mock@localhost/mock";
 if (!process.env.TOKEN_ENCRYPTION_PASSPHRASE) process.env.TOKEN_ENCRYPTION_PASSPHRASE = "test-passphrase";
 
-const { describe, it, before, after, beforeEach, afterEach, mock } = require("node:test");
+const { describe, it, before, after, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -31,59 +32,11 @@ const startup = require("../teller/startup");
 
 const originalQuery = dbModule.pool.query;
 const originalConnect = dbModule.pool.connect;
-const settle = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
 
 // ---------------------------------------------------------------------------
-describe("F27 — every scheduled job runs once shortly after boot", () => {
-  let quiet;
-  beforeEach(() => {
-    quiet = console.error;
-    console.error = () => {};
-    jobHealth._memoryTicks.clear();
-    startup._awayJobs.reset();
-    // Every query answers "nothing here": each job ticks, finds nothing to do
-    // (or is switched off) and returns.
-    dbModule.pool.query = async () => ({ rows: [] });
-    mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  });
-  afterEach(async () => {
-    startup.stopBackgroundJobs();
-    mock.timers.reset();
-    await settle();
-    dbModule.pool.query = originalQuery;
-    console.error = quiet;
-    jobHealth._memoryTicks.clear();
-  });
-
-  it("nothing runs before the first boot delay; every watched job has run once the stagger has passed", async () => {
-    startup.startBackgroundJobs();
-    mock.timers.tick(startup._boot.BOOT_FIRST_DELAY_MS - 1);
-    await settle();
-    assert.equal(jobHealth._memoryTicks.size, 0, "no job before the first boot delay");
-
-    const plan = startup._boot.bootRunPlan(Object.keys(jobHealth.JOB_INTERVALS_MS));
-    mock.timers.tick(plan[plan.length - 1].delayMs);
-    await settle();
-    for (const job of Object.keys(jobHealth.JOB_INTERVALS_MS)) {
-      assert.ok(jobHealth._memoryTicks.has(job), `"${job}" must run once after boot`);
-    }
-  });
-
-  it("the boot runs are staggered and finish well inside the first hour", () => {
-    const plan = startup._boot.bootRunPlan(Object.keys(jobHealth.JOB_INTERVALS_MS));
-    assert.equal(plan[0].delayMs, startup._boot.BOOT_FIRST_DELAY_MS);
-    for (let i = 1; i < plan.length; i++) assert.ok(plan[i].delayMs > plan[i - 1].delayMs);
-    assert.ok(plan[plan.length - 1].delayMs <= 10 * 60 * 1000, "all boot runs within 10 minutes");
-  });
-
-  it("stopBackgroundJobs cancels boot runs that haven't fired", async () => {
-    startup.startBackgroundJobs();
-    startup.stopBackgroundJobs();
-    mock.timers.tick(15 * 60 * 1000);
-    await settle();
-    assert.equal(jobHealth._memoryTicks.size, 0);
-  });
-});
+// F27's one-shot boot runs were replaced by the due-based job runner in cycle-8
+// E2b: every job still runs shortly after a boot when it is due — pinned with
+// the runner's scheduling in tests/cycle8-e2b.test.js.
 
 // ---------------------------------------------------------------------------
 describe("F29 — the ungated jobs skip their settings read while off or not due", () => {

@@ -32,6 +32,13 @@ const ROOT = path.join(__dirname, "..");
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), "utf8");
 const dbModule = require("../teller/services/database");
 const jobHealth = require("../teller/services/job-health");
+const scheduled = (name) => {
+  const st = require("../teller/startup");
+  st.startBackgroundJobs();
+  const job = st._scheduler.runner().list().find((j) => j.name === name);
+  st.stopBackgroundJobs();
+  return job;
+};
 
 let origQuery;
 before(() => { origQuery = dbModule.pool.query; });
@@ -125,7 +132,8 @@ describe("F15 — Rent & Utilities reminders reach an away user", () => {
     const src = read("teller", "startup.js");
     const body = src.slice(src.indexOf("async function runHousingLedgerTick()"));
     assert.doesNotMatch(body.slice(0, body.indexOf("\n}\n")), /isUserActive\(\)/);
-    assert.match(src, /setInterval\(\(\) => runHousingLedgerTick\(\), 6 \* 60 \* 60 \* 1000\)/);
+    // Cycle-8 E2b: scheduled by the job runner, every 6 hours, with no activity gate.
+    assert.deepEqual(scheduled("housing-ledger"), { name: "housing-ledger", everyMs: 6 * 60 * 60 * 1000, gated: false });
     let gen = 0, rem = 0;
     housing.generateHousingObligations = async () => { gen++; return { generated: 0 }; };
     housing.runHousingReminders = async () => { rem++; return { sent: 1 }; };

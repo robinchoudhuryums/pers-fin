@@ -193,7 +193,7 @@ function createJobRunner({
   }
 
   function list() {
-    return [...jobs.values()].sort((a, b) => a.order - b.order).map(({ name, everyMs }) => ({ name, everyMs }));
+    return [...jobs.values()].sort((a, b) => a.order - b.order).map(({ name, everyMs, when }) => ({ name, everyMs, gated: !!when }));
   }
 
   return {

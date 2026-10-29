@@ -21,8 +21,12 @@ const jobHealth = require("./services/job-health");
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY;
 
-// Captured so shutdown (or the shell) can clearInterval them.
-const intervalHandles = [];
+// The scheduler (cycle-8 E2b): every job is registered with the job runner
+// (services/job-runner.js), which runs it when it is DUE. Stopped by
+// stopBackgroundJobs (shutdown, the shell).
+let runner = null;
+// The watchdog's cadence (it isn't one of the watched jobs in JOB_INTERVALS_MS).
+const WATCHDOG_EVERY_MS = 6 * 60 * 60 * 1000;
 
 // All scheduled jobs invoke route logic via exported helpers (in-process)
 // rather than HTTP self-fetches. An HTTP fetch to http://localhost:PORT/api/...
@@ -596,7 +600,8 @@ async function runSelfHealingReconcileTick() {
   }
 }
 
-function startBackgroundJobs() {
+// runnerOptions: passed to createJobRunner (tests shorten gapMs / checkEveryMs).
+function startBackgroundJobs({ runnerOptions = {} } = {}) {
   // Sheets auto-sync check (every hour). Gated: skips when no user has
   // been active for 15+ minutes so Neon can auto-suspend.
   const runSheetsAutoSyncTick = async () => {
@@ -635,7 +640,6 @@ function startBackgroundJobs() {
       jobHealth.result("sheets-auto-sync", { ok: false, error: err.message });
     }
   };
-  intervalHandles.push(setInterval(runSheetsAutoSyncTick, 60 * 60 * 1000));
 
   // Hourly net worth auto-snapshot. Gated: skips when no user is active
   // so Neon can auto-suspend. The INSERT uses ON CONFLICT (snapshot_date)
@@ -669,7 +673,6 @@ function startBackgroundJobs() {
       jobHealth.result("net-worth-snapshot", { ok: false, error: err.message });
     }
   };
-  intervalHandles.push(setInterval(runNetWorthSnapshotTick, 60 * 60 * 1000));
 
   // Goal milestone notifications (every 6 hours). Gated on user activity.
   const runGoalMilestonesTick = async () => {
@@ -727,20 +730,16 @@ function startBackgroundJobs() {
       jobHealth.result("goal-milestones", { ok: false, error: err.message });
     }
   };
-  intervalHandles.push(setInterval(runGoalMilestonesTick, 6 * 60 * 60 * 1000));
 
   // Auto-trigger AI insights based on cadence (every 6 hours).
   // Pre-syncs transactions + balances + detection so AI sees fresh data.
-  intervalHandles.push(setInterval(() => runInsightsAutoTriggerTick(), 6 * 60 * 60 * 1000));
 
   // Budget alert push notifications (every 3 hours). NOT activity-gated
   // (PSC-3): the push + opt-in critical-alert email are "away" channels;
   // repeats are bounded by the per-category+severity 24h sentRecently dedup.
-  intervalHandles.push(setInterval(() => runBudgetAlertTick(), 3 * 60 * 60 * 1000));
 
   // Rent & Utilities ledger (every 6 hours) — an away channel, see
   // runHousingLedgerTick (cycle-7 F15: it used to be activity-gated).
-  intervalHandles.push(setInterval(() => runHousingLedgerTick(), 6 * 60 * 60 * 1000));
 
   // Budget snapshot auto-trigger (every 6 hours). Snapshots the PRIOR (now-
   // complete) month's spending + rollover so rollover-enabled budgets advance.
@@ -771,13 +770,10 @@ function startBackgroundJobs() {
       jobHealth.result("budget-snapshot", { ok: false, error: err.message });
     }
   };
-  intervalHandles.push(setInterval(runBudgetSnapshotTick, 6 * 60 * 60 * 1000));
 
   // Bank auto-sync (every hour, throttled by user setting) — runBankAutoSyncTick.
-  intervalHandles.push(setInterval(() => runBankAutoSyncTick(), 60 * 60 * 1000));
 
   // Self-healing reconcile (every hour, acts at most weekly) — runSelfHealingReconcileTick.
-  intervalHandles.push(setInterval(() => runSelfHealingReconcileTick(), 60 * 60 * 1000));
 
   // Weekly digest email. NOT activity-gated (PSC-3) — it exists for when the
   // user is away. Fires on the configured weekly_digest_day when
@@ -786,41 +782,35 @@ function startBackgroundJobs() {
   // (sent / already sent / disabled / not the day / nothing to send) the job
   // skips its DB read until the next local day. A failed send stays unsettled
   // and retries on the next hourly tick.
-  intervalHandles.push(setInterval(() => runWeeklyDigestTick(), 60 * 60 * 1000));
 
   // Daily digest email (#19). NOT activity-gated (PSC-3); runDailyDigest's own
   // last_daily_digest_at watermark (once per local date, ≥ 07:00 local, covers
   // everything since the previous send) is the gate. Before the send hour the
   // tick skips without touching the DB; once the day is settled it skips too.
-  intervalHandles.push(setInterval(() => runDailyDigestTick(), 60 * 60 * 1000));
 
   // CSV import reminder. Hourly tick, NOT activity-gated (PSC-3): the old
   // 24-hour setInterval needed 24h of continuous uptime AND activity at that
   // exact tick, so under free-tier sleep/deploys it essentially never fired.
   // The last_csv_reminder_at watermark limits it to one reminder per 24h
   // (surviving restarts); the in-memory day memo keeps it to ~one DB read a day.
-  intervalHandles.push(setInterval(() => runCsvReminderTick(), 60 * 60 * 1000));
 
   // Low projected cash alert (roadmap T2.2 L2). Hourly, NOT activity-gated;
   // see runCashAlertsTick — no DB read while it's off.
-  intervalHandles.push(setInterval(() => runCashAlertsTick(), 60 * 60 * 1000));
 
   // Linked tasks (roadmap T2.4 X2b). Hourly, NOT activity-gated; see
   // runLinkedTasksTick — nothing while off or standalone.
-  intervalHandles.push(setInterval(() => runLinkedTasksTick(), 60 * 60 * 1000));
 
   // Plan-change alert (roadmap T4.1 A4). Hourly, NOT activity-gated; see
   // runAdvicePlanTick — at most one evaluation a local day.
-  intervalHandles.push(setInterval(() => runAdvicePlanTick(), 60 * 60 * 1000));
 
   // Missed-job watchdog (F4). Flushes the in-memory job heartbeats to the
   // job_runs table and alerts (once per outage, signature-deduped) when any
   // scheduled job hasn't ticked for 36h+ — i.e. the process was asleep or
   // dead long enough that data is going stale (Render free tier with
-  // keep-alive off, crash loops). Runs ~2 minutes after boot (boot counts as
-  // user activity, and a wake-after-long-sleep is exactly when the gap is
-  // visible) and every 6 hours thereafter. Activity-gated like the other
-  // jobs so it doesn't keep Neon awake.
+  // keep-alive off, crash loops). Registered with the runner first, every 6
+  // hours (WATCHDOG_EVERY_MS) — so a wake after a long sleep, when the gap is
+  // visible, checks first (boot counts as user activity). Activity-gated like
+  // the other jobs so it doesn't keep Neon awake.
   const runWatchdog = async () => {
     if (!isUserActive()) return;
     try {
@@ -847,59 +837,59 @@ function startBackgroundJobs() {
       console.error("Operator checks error:", err.message);
     }
   };
-  const bootCheck = setTimeout(runWatchdog, 2 * 60 * 1000);
-  if (bootCheck.unref) bootCheck.unref();
-  intervalHandles.push(setInterval(runWatchdog, 6 * 60 * 60 * 1000));
-
-  // Boot run (cycle-8 F27). Every job above is a setInterval, so its first run
-  // was one full interval after boot — on a host that sleeps after ~15 minutes
-  // idle (Render free tier) the 3- and 6-hour jobs essentially never ran, and
-  // the hourly away channels only if the process stayed up an hour. Each job
-  // now also runs once shortly after boot, staggered, lightest first. They are
-  // all safe to run early: each is gated by its own watermark / dedup / due
-  // time (the reason the extra run costs nothing when there's nothing to do).
-  scheduleBootRuns({
-    "cash-alerts": runCashAlertsTick,
-    "linked-tasks": runLinkedTasksTick,
-    "advice-plan": runAdvicePlanTick,
-    "budget-alerts": runBudgetAlertTick,
-    "housing-ledger": runHousingLedgerTick,
-    "csv-reminder": runCsvReminderTick,
-    "daily-digest": runDailyDigestTick,
-    "weekly-digest": runWeeklyDigestTick,
-    "goal-milestones": runGoalMilestonesTick,
-    "budget-snapshot": runBudgetSnapshotTick,
-    "net-worth-snapshot": runNetWorthSnapshotTick,
-    "sheets-auto-sync": runSheetsAutoSyncTick,
-    "self-healing-reconcile": runSelfHealingReconcileTick,
-    "bank-auto-sync": runBankAutoSyncTick,
-    "insights-auto-trigger": runInsightsAutoTriggerTick,
+  // The job runner (cycle-8 E2a / E2b, ST1). Each job runs when its last run
+  // (job_runs.last_ran_at) is older than its cadence — checked a minute after
+  // boot and every 5 minutes after, in memory (no query unless a job is due).
+  // It replaces the setIntervals and the one-shot boot runs (F27): a host that
+  // sleeps between requests still runs whatever came due, and a short restart
+  // doesn't re-run jobs that just ran. The cadences are JOB_INTERVALS_MS
+  // (services/job-health.js — the one copy). Jobs run one at a time, 20 s
+  // apart, oldest-due first; on a first boot (no history) in the order below —
+  // the watchdog, then lightest first. The activity-gated jobs carry a `when`
+  // gate (checked in memory before the run's claim, so a closed gate costs no
+  // query and the job stays due — it runs at the first check after the user
+  // returns); the away channels (INV-77) carry none. A job body keeps its own
+  // gates, tick and outcome; the runner also ticks each watched job on every
+  // check (the watchdog's "scheduler alive" signal).
+  const { createJobRunner } = require("./services/job-runner");
+  if (runner) runner.stop();
+  runner = createJobRunner({
+    pool,
+    onCheck: (name) => { if (name in jobHealth.JOB_INTERVALS_MS) jobHealth.tick(name); },
+    ...runnerOptions,
   });
-}
-
-// One-shot boot runs (F27): the first at BOOT_FIRST_DELAY_MS, then one every
-// BOOT_STAGGER_MS in the order given, so the boot doesn't hit the database
-// with fourteen jobs at once. Unref'd, and cleared by stopBackgroundJobs.
-const BOOT_FIRST_DELAY_MS = 60 * 1000;
-const BOOT_STAGGER_MS = 20 * 1000;
-const bootHandles = [];
-function bootRunPlan(names) {
-  return names.map((name, i) => ({ name, delayMs: BOOT_FIRST_DELAY_MS + i * BOOT_STAGGER_MS }));
-}
-function scheduleBootRuns(jobs) {
-  for (const { name, delayMs } of bootRunPlan(Object.keys(jobs))) {
-    const h = setTimeout(() => {
-      // Each tick records its own outcome; this only guards a synchronous throw.
-      Promise.resolve().then(jobs[name]).catch((e) => console.error(`Boot run of ${name} failed:`, e.message));
-    }, delayMs);
-    if (h.unref) h.unref();
-    bootHandles.push(h);
+  const active = () => isUserActive();
+  const every = (name) => jobHealth.JOB_INTERVALS_MS[name];
+  runner.register({ name: "job-watchdog", everyMs: WATCHDOG_EVERY_MS, run: runWatchdog, when: active });
+  for (const [name, run, when] of [
+    ["cash-alerts", runCashAlertsTick],
+    ["linked-tasks", runLinkedTasksTick],
+    ["advice-plan", runAdvicePlanTick],
+    ["budget-alerts", runBudgetAlertTick],
+    ["housing-ledger", runHousingLedgerTick],
+    ["csv-reminder", runCsvReminderTick],
+    ["daily-digest", runDailyDigestTick],
+    ["weekly-digest", runWeeklyDigestTick],
+    ["goal-milestones", runGoalMilestonesTick, active],
+    ["budget-snapshot", runBudgetSnapshotTick, active],
+    ["net-worth-snapshot", runNetWorthSnapshotTick, active],
+    ["sheets-auto-sync", runSheetsAutoSyncTick, active],
+    ["self-healing-reconcile", runSelfHealingReconcileTick],
+    ["bank-auto-sync", runBankAutoSyncTick],
+    ["insights-auto-trigger", runInsightsAutoTriggerTick],
+  ]) {
+    runner.register({ name, everyMs: every(name), run, when });
   }
+  runner.start();
 }
 
+// Stops the runner: no further check; a check in progress finishes its
+// current job and runs no more. Returns that check's promise.
 function stopBackgroundJobs() {
-  while (intervalHandles.length) clearInterval(intervalHandles.pop());
-  while (bootHandles.length) clearTimeout(bootHandles.pop());
+  if (!runner) return Promise.resolve();
+  const r = runner;
+  runner = null;
+  return r.stop();
 }
 
 async function start(app, opts = {}) {
@@ -916,7 +906,7 @@ async function start(app, opts = {}) {
 
   if (!standalone) {
     // Embedded mode: shell owns the listener, keep-alive, and shutdown.
-    return { app, intervalHandles };
+    return { app };
   }
 
   const server = app.listen(PORT, "0.0.0.0", () => {
@@ -941,7 +931,7 @@ async function start(app, opts = {}) {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
-  return { app, server, intervalHandles };
+  return { app, server };
 }
 
 module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity, isUserActive, invalidateJobMemos };
@@ -952,4 +942,5 @@ module.exports._awayJobs = {
   runAdvicePlanTick, runBankAutoSyncTick, runSelfHealingReconcileTick,
   reset() { invalidateJobMemos(); },
 };
-module.exports._boot = { bootRunPlan, BOOT_FIRST_DELAY_MS, BOOT_STAGGER_MS };
+// The live runner (tests): its registered jobs and checks.
+module.exports._scheduler = { runner: () => runner, WATCHDOG_EVERY_MS };

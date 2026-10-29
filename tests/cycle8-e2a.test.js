@@ -76,7 +76,7 @@ describe("registration", () => {
     assert.throws(() => runner.register({ name: "c", everyMs: NaN, run: () => {} }), /positive/);
     assert.throws(() => runner.register({ name: "d", everyMs: HOUR }), /run must be a function/);
     assert.throws(() => runner.register({ everyMs: HOUR, run: () => {} }), /name required/);
-    assert.deepEqual(runner.list(), [{ name: "a", everyMs: HOUR }]);
+    assert.deepEqual(runner.list(), [{ name: "a", everyMs: HOUR, gated: false }]);
   });
 });
 
@@ -296,8 +296,8 @@ describe("SQL and schema", () => {
     assert.match(db, /ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS last_ran_at TIMESTAMPTZ/);
     assert.ok(db.indexOf("ADD COLUMN IF NOT EXISTS last_ran_at") > db.indexOf("CREATE TABLE IF NOT EXISTS job_runs"));
   });
-  it("not wired into startup.js yet (E2b)", () => {
+  it("startup.js schedules through it (E2b — tests/cycle8-e2b.test.js)", () => {
     const src = fs.readFileSync(path.join(__dirname, "..", "teller", "startup.js"), "utf8");
-    assert.doesNotMatch(src, /job-runner/);
+    assert.match(src, /require\("\.\/services\/job-runner"\)/);
   });
 });

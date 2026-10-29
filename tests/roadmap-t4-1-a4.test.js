@@ -28,6 +28,13 @@ afterEach(() => { dbModule.pool.query = originalQuery; });
 const advice = require("../teller/services/advice");
 const aa = require("../teller/services/advice-alerts");
 const jobHealth = require("../teller/services/job-health");
+const scheduled = (name) => {
+  const st = require("../teller/startup");
+  st.startBackgroundJobs();
+  const job = st._scheduler.runner().list().find((j) => j.name === name);
+  st.stopBackgroundJobs();
+  return job;
+};
 beforeEach(() => aa._reset());
 
 const TODAY = "2026-10-27";
@@ -288,8 +295,9 @@ describe("T4.1 A4 — the advice-plan away job", () => {
   it("is hourly, watched, boot-run and not activity-gated", () => {
     assert.equal(jobHealth.JOB_INTERVALS_MS["advice-plan"], 60 * 60 * 1000);
     const src = read("teller/startup.js");
-    assert.match(src, /setInterval\(\(\) => runAdvicePlanTick\(\), 60 \* 60 \* 1000\)/);
-    assert.match(src, /"advice-plan": runAdvicePlanTick,/);
+    // Cycle-8 E2b: scheduled by the job runner, hourly, with no activity gate.
+    assert.deepEqual(scheduled("advice-plan"), { name: "advice-plan", everyMs: 60 * 60 * 1000, gated: false });
+    assert.match(src, /\["advice-plan", runAdvicePlanTick\],/);
     const body = src.slice(src.indexOf("async function runAdvicePlanTick"), src.indexOf("async function runLinkedTasksTick"));
     assert.doesNotMatch(body, /isUserActive/);
     assert.match(body, /^async function runAdvicePlanTick\(\) \{\n  jobHealth\.tick\("advice-plan"\);/);

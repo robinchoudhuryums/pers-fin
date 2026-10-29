@@ -26,6 +26,13 @@ afterEach(() => { dbModule.pool.query = originalQuery; });
 const ca = require("../teller/services/cash-alerts");
 const fq = require("../teller/services/financial-queries");
 const jobHealth = require("../teller/services/job-health");
+const scheduled = (name) => {
+  const st = require("../teller/startup");
+  st.startBackgroundJobs();
+  const job = st._scheduler.runner().list().find((j) => j.name === name);
+  st.stopBackgroundJobs();
+  return job;
+};
 
 const NOW = new Date("2026-03-10T15:00:00Z");
 const TODAY = "2026-03-10";
@@ -216,7 +223,8 @@ describe("the cash-alerts job", () => {
     const src = fs.readFileSync(path.join(__dirname, "../teller/startup.js"), "utf8");
     const body = src.slice(src.indexOf("async function runCashAlertsTick()"), src.indexOf("\n}\n", src.indexOf("async function runCashAlertsTick()")));
     assert.doesNotMatch(body, /isUserActive\(\)/);
-    assert.match(src, /setInterval\(\(\) => runCashAlertsTick\(\), 60 \* 60 \* 1000\)/);
+    // Cycle-8 E2b: scheduled by the job runner, hourly, with no activity gate.
+    assert.deepEqual(scheduled("cash-alerts"), { name: "cash-alerts", everyMs: 3600e3, gated: false });
   });
 
   it("records an outcome only when it evaluated; a failure or an unlogged alert as an error", async () => {
