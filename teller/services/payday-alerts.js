@@ -182,7 +182,7 @@ async function runPaydayMissed(pool, { now = new Date(), today = todayStr(), dep
   if (_disabledDay === today) return { status: "disabled", ran: false };
   const sendToAll = deps.sendToAll || defaultSend;
   const sentRecently = deps.sentRecently || ((t, h) => require("../routes/notifications").sentRecently(t, h));
-  const sendEmail = deps.sendEmail || ((t, b) => require("../routes/persistent").sendCriticalAlertEmail(t, b));
+  const sendEmail = deps.sendEmail || ((t, b, o) => require("../routes/persistent").sendCriticalAlertEmail(t, b, o));
 
   const s = (await pool.query(`
     SELECT payday_alerts_enabled,
@@ -224,7 +224,7 @@ async function runPaydayMissed(pool, { now = new Date(), today = todayStr(), dep
     const r = await sendToAll({ title: "Payday missed?", body, tag, data: { url: "/transactions" } });
     if (!(r && r.logged)) { unlogged++; continue; }
     notified++;
-    try { await sendEmail("Payday missed?", body); }
+    try { await sendEmail("Payday missed?", body, { tag }); }
     catch (e) { console.error("Payday missed email error:", e.message); }
   }
   // An unlogged push isn't deduped — leave the memo unset so the next tick retries.

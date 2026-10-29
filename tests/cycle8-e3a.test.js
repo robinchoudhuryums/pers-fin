@@ -82,6 +82,9 @@ describe("the kind catalog", () => {
       "audit-alert", "pin-lockout", "test"]) {
       assert.ok(found.has(t), "the scan finds " + t);
     }
+    // The release job's own summary push (routes/notifications.js) is never
+    // logged or decided — it carries held notifications that already were.
+    found.delete("quiet-summary");
     for (const [t, f] of found) {
       // a prefix literal stands for tags that continue it
       assert.notEqual(np.kindOf(t.endsWith("-") ? t + "x" : t), "other", `${t} (${f}) has no kind in services/notify-prefs.js`);

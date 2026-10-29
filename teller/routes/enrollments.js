@@ -552,7 +552,8 @@ async function runAnomalyCheck() {
         }).join("\n");
         await sendCriticalAlertEmail(
           anomalies.rows.length > 1 ? "Unusual charges detected" : "Unusual charge detected",
-          lines
+          lines,
+          { kind: "spending" }
         );
       } catch (e) { console.error("Anomaly alert email error:", e.message); }
     }

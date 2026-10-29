@@ -31,11 +31,14 @@ const originalQuery = dbModule.pool.query;
 const settle = async (n = 30) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
 
 const LIGHTEST_FIRST = [
-  "job-watchdog", "cash-alerts", "linked-tasks", "advice-plan", "budget-alerts", "housing-ledger", "csv-reminder",
+  "job-watchdog", "notify-release", "cash-alerts", "linked-tasks", "advice-plan", "budget-alerts", "housing-ledger", "csv-reminder",
   "daily-digest", "weekly-digest", "goal-milestones", "budget-snapshot", "net-worth-snapshot", "sheets-auto-sync",
   "self-healing-reconcile", "bank-auto-sync", "insights-auto-trigger",
 ];
 const GATED = ["job-watchdog", "goal-milestones", "budget-snapshot", "net-worth-snapshot", "sheets-auto-sync"];
+// Cycle-8 E3b: the quiet-hours release is gated in memory on a hold (not on
+// activity — an away user is who quiet hours are for).
+const HELD_GATED = ["notify-release"];
 
 function registry() {
   startup.startBackgroundJobs();
@@ -60,7 +63,7 @@ describe("the registry", () => {
   it("today's cadences are kept", () => {
     const every = Object.fromEntries(registry().map((j) => [j.name, j.everyMs / HOUR]));
     assert.deepEqual(every, {
-      "job-watchdog": 6, "cash-alerts": 1, "linked-tasks": 1, "advice-plan": 1, "budget-alerts": 3, "housing-ledger": 6,
+      "job-watchdog": 6, "notify-release": 0.25, "cash-alerts": 1, "linked-tasks": 1, "advice-plan": 1, "budget-alerts": 3, "housing-ledger": 6,
       "csv-reminder": 1, "daily-digest": 1, "weekly-digest": 1, "goal-milestones": 6, "budget-snapshot": 6,
       "net-worth-snapshot": 1, "sheets-auto-sync": 1, "self-healing-reconcile": 1, "bank-auto-sync": 1, "insights-auto-trigger": 6,
     });
@@ -68,7 +71,7 @@ describe("the registry", () => {
 
   it("only the activity-gated jobs carry a gate; the away channels and the ungated syncs don't (INV-77)", () => {
     const gated = registry().filter((j) => j.gated).map((j) => j.name);
-    assert.deepEqual(gated.sort(), [...GATED].sort());
+    assert.deepEqual(gated.sort(), [...GATED, ...HELD_GATED].sort());
   });
 
   it("no setInterval or boot timer is left in startup.js", () => {
@@ -120,7 +123,7 @@ describe("scheduling (mock timers)", () => {
     assert.equal(queries[0].sql, LOAD_SQL, "the first check reads job_runs once");
     assert.deepEqual(claims(), ["job-watchdog"], "one job, then a 20 s gap");
     await advance(DEFAULTS.gapMs);
-    assert.deepEqual(claims(), ["job-watchdog", "cash-alerts"]);
+    assert.deepEqual(claims(), ["job-watchdog", "notify-release"]);
     await advance(DEFAULTS.gapMs * (LIGHTEST_FIRST.length - 2));
     assert.deepEqual(claims(), LIGHTEST_FIRST);
     for (const job of Object.keys(jobHealth.JOB_INTERVALS_MS)) assert.ok(jobHealth._memoryTicks.has(job), `${job} ticked`);

@@ -52,6 +52,7 @@ const JOB_INTERVALS_MS = {
   "cash-alerts": 1 * HOUR, // roadmap T2.2 L2
   "linked-tasks": 1 * HOUR, // roadmap T2.4 X2b
   "advice-plan": 1 * HOUR, // roadmap T4.1 A4
+  "notify-release": HOUR / 4, // cycle-8 E3b — gated in memory on a hold
 };
 const MISSED_FACTOR = 4;
 const MIN_THRESHOLD_MS = 36 * HOUR;

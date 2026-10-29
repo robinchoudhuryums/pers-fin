@@ -18,6 +18,15 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E3b (DONE, 2026-10-29) — G2 part 2:** block `.cycle/blocks/8-e3b-broad-implement.md`.
+  - **Shipped:** sendToAll decides through notify-prefs (push_state sent / held / muted / none, `logged` unchanged, a
+    failed settings read holds nothing); releaseHeldNotifications pushes holds once quiet hours end (one summary for
+    several, 12 h expiry, marked sent only after the push); the notify-release job (15 min, in-memory gate);
+    sendCriticalAlertEmail skips a muted kind and every caller names its kind; PATCH /api/settings drops the cached prefs.
+  - **Decision detail:** a held push whose row failed to write is pushed at once (nothing to release later); a summary
+    push carries the newest row's link; the release gate is open at boot (rows held before a restart).
+  - **Verified:** npm test 3058/3058 (22 new); contract 315/316 (6 new; cash-alerts-l2 pre-existing). Mutation red.
+  - **Where I left off:** E3b committed and pushed. Next: `/sync-docs`, then `/broad-implement E3c`.
 - **Cycle-8 E3a (DONE, 2026-10-29) — G2 part 1:** block `.cycle/blocks/8-e3a-broad-implement.md`.
   - **Shipped:** `teller/services/notify-prefs.js` (15 kinds mapped from tags / check types, isQuiet on the APP_TIMEZONE
     wall clock, decide: muted → covered → held → sent, the PATCH parsers); user_settings.notify_quiet_hours /

@@ -14,11 +14,14 @@
 //     from a settings row, defaults filled, unknown / unmutable kinds dropped.
 //   - isQuiet(now, quiet, tz) — inside quiet hours on the APP_TIMEZONE wall
 //     clock; end before start wraps past midnight.
+//   - minutesUntilQuietEnd(now, quiet, tz) — 0 outside quiet hours, else the
+//     minutes left on the wall clock (the release job waits that long, E3b).
 //   - decide({ kind, prefs, now, tz, covered }) — what to do with the
 //     INTERRUPTION (never the record): "muted" | "covered" (an open linked
 //     task is the surface — ST2) | "held" (quiet hours) | "sent".
 //   - parseQuietHours / parseMutedKinds — PATCH /api/settings validation.
-// Pure apart from Intl; no database. Delivery uses it from E3b.
+// Pure apart from Intl; no database. sendToAll and the release job
+// (routes/notifications.js) deliver through it since E3b.
 // ============================================================================
 
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "UTC";
@@ -108,6 +111,12 @@ function isQuiet(now, quiet, tz = APP_TIMEZONE) {
   return s < e ? (m >= s && m < e) : (m >= s || m < e);
 }
 
+function minutesUntilQuietEnd(now, quiet, tz = APP_TIMEZONE) {
+  if (!isQuiet(now, quiet, tz)) return 0;
+  const m = localMinutes(now instanceof Date ? now : new Date(now), tz);
+  return (toMinutes(quiet.end) - m + 1440) % 1440 || 1440;
+}
+
 function decide({ kind, prefs, now = new Date(), tz = APP_TIMEZONE, covered = false }) {
   const info = kindInfo(kind);
   const p = prefs || normalizePrefs(null);
@@ -146,5 +155,5 @@ function parseMutedKinds(v) {
 module.exports = {
   NOTIFY_KINDS, MUTABLE_KINDS, DEFAULT_QUIET,
   kindOf, kindOfCheckType, kindInfo, catalog,
-  normalizePrefs, isQuiet, decide, parseQuietHours, parseMutedKinds,
+  normalizePrefs, isQuiet, minutesUntilQuietEnd, decide, parseQuietHours, parseMutedKinds,
 };

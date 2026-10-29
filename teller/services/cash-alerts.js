@@ -91,7 +91,7 @@ async function runCashAlerts(pool, { now = new Date(), today = todayStr(), deps 
   if (_disabledDay === today) return { status: "disabled", ran: false };
   const forecast = deps.forecast || ((days) => require("./cash-flow").getCashFlowForecast(pool, { days, today }));
   const sendToAll = deps.sendToAll || ((p) => require("../routes/notifications").sendToAll(p));
-  const sendEmail = deps.sendEmail || ((t, b) => require("../routes/persistent").sendCriticalAlertEmail(t, b));
+  const sendEmail = deps.sendEmail || ((t, b, o) => require("../routes/persistent").sendCriticalAlertEmail(t, b, o));
   const sentRecently = deps.sentRecently || ((t, h) => require("../routes/notifications").sentRecently(t, h));
 
   const { rows } = await pool.query(`
@@ -173,7 +173,7 @@ async function checkProjection(s, state, { now, at, forecast, sendToAll, sendEma
     console.error("Cash alert: notification not logged — will retry on the next tick.");
     return { status: "unlogged", breach, unlogged: true };
   }
-  try { await sendEmail("Low cash ahead", body); }
+  try { await sendEmail("Low cash ahead", body, { tag: TAG }); }
   catch (e) { console.error("Cash alert email error:", e.message); }
   return {
     status: "notified", breach,

@@ -452,6 +452,11 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body && req.body.advice_alerts_enabled !== undefined) {
       require("../services/advice-alerts").invalidate();
     }
+    // Quiet hours / muted kinds are cached 60 s by sendToAll and the release
+    // job waits in memory for quiet hours to end — a change applies at once.
+    if (req.body && (req.body.notify_quiet_hours !== undefined || req.body.notify_muted_types !== undefined)) {
+      require("./notifications").invalidateNotifyPrefs();
+    }
     // The bank auto-sync and the insights auto-trigger skip their settings
     // read while off or not due (cycle-8 F29); a change to what decides that
     // makes the next tick look again.

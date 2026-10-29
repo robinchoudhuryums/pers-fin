@@ -290,7 +290,7 @@ async function runSubscriptionWatchdog(db = pool) {
     // the alert is marked; a failure never un-marks it.
     try { await linkedTasks.ensureStillChargingTask(db, r); }
     catch (e) { console.error("still-charging linked task failed:", e.message); }
-    await sendCriticalAlertEmail(title, body);
+    await sendCriticalAlertEmail(title, body, { tag: "sub-still-charging-" + r.id });
   }
 
   const rises = await db.query(`

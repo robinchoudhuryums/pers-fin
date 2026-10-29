@@ -171,26 +171,51 @@ async function pruneNotificationLog(now = Date.now()) {
   }
 }
 
-// Also logs to notification_log for in-app history.
-async function sendToAll(payload) {
-  // Always log to notification_log, even if push isn't configured. This row is
-  // ALSO the dedup marker that sentRecently() reads, so the return value carries
-  // `logged` — if this insert fails, the marker didn't persist and a dedup-gated
-  // caller (e.g. the budget-alert scheduler) must not treat the alert as
-  // recorded, or it would re-fire on the next tick (F24).
-  let logged = false;
-  try {
-    await pool.query(
-      "INSERT INTO notification_log (type, title, body, data) VALUES ($1, $2, $3, $4)",
-      [payload.tag || "general", payload.title || "", payload.body || "", JSON.stringify(payload.data || {})]
-    );
-    logged = true;
-  } catch (err) {
-    console.error("notification_log insert error:", err.message);
-  }
-  await pruneNotificationLog();
+// ---------------------------------------------------------------------------
+// Quiet hours and mutes (cycle-8 E3b, G2 — services/notify-prefs.js). They act
+// on the INTERRUPTION only: every notification is still written to
+// notification_log exactly as before (the bell, and the dedup marker every
+// caller's `logged` check relies on); push_state records what happened to
+// its push — sent / held (quiet hours) / muted / none (push not configured).
+// ---------------------------------------------------------------------------
+const notifyPrefs = require("../services/notify-prefs");
+const NOTIFY_TZ = process.env.APP_TIMEZONE || "UTC";
+const PREFS_TTL_MS = 60 * 1000;
+const HOLD_MAX_HOURS = 12; // a hold older than this stays in the bell, never pushed late
+const RELEASE_BATCH = 200;
+let prefsCache = null; // { prefs, at }
+// The release job's in-memory gate (startup.js): true at boot (rows held before
+// a restart), set by every hold, cleared once a release finds nothing left.
+let heldPending = true;
+let holdGeneration = 0;
+let releaseNotBefore = 0; // epoch ms — while quiet, no read until the end
 
-  if (!pushConfigured()) return { sent: 0, failed: 0, logged };
+// The settings row's quiet hours + muted kinds, cached 60 s. A failed read is
+// null — decide() then holds and mutes nothing: a settings outage never
+// silences an alert.
+async function readNotifyPrefs({ fresh = false } = {}) {
+  if (!fresh && prefsCache && Date.now() - prefsCache.at < PREFS_TTL_MS) return prefsCache.prefs;
+  try {
+    const r = await pool.query("SELECT notify_quiet_hours, notify_muted_types FROM user_settings WHERE id = 1");
+    const prefs = notifyPrefs.normalizePrefs(r.rows[0] || null);
+    prefsCache = { prefs, at: Date.now() };
+    return prefs;
+  } catch (err) {
+    console.error("notification prefs read error:", err.message);
+    return null;
+  }
+}
+
+// PATCH /api/settings calls this when notify_quiet_hours / notify_muted_types
+// change: the next send reads them again, and a release waiting for the end of
+// quiet hours checks at once (switching quiet hours off releases what's held).
+function invalidateNotifyPrefs() {
+  prefsCache = null;
+  releaseNotBefore = 0;
+}
+
+// Push one payload to every subscription. A 410/404 prunes it.
+async function pushToSubscribers(payload) {
   try {
     const result = await pool.query("SELECT endpoint, keys FROM push_subscriptions");
     let sent = 0, failed = 0;
@@ -209,11 +234,116 @@ async function sendToAll(payload) {
         failed++;
       }
     }
-    return { sent, failed, logged };
+    return { sent, failed };
   } catch (err) {
     console.error("sendToAll push delivery error:", err.message);
-    return { sent: 0, failed: 0, logged };
+    return { sent: 0, failed: 0, error: true };
   }
+}
+
+// Also logs to notification_log for in-app history. opts.now: the clock (tests).
+async function sendToAll(payload, opts = {}) {
+  const now = opts.now instanceof Date ? opts.now : new Date();
+  const kind = notifyPrefs.kindOf(payload.tag);
+  const prefs = await readNotifyPrefs();
+  let state = notifyPrefs.decide({ kind, prefs, now, tz: NOTIFY_TZ });
+  if (!pushConfigured() && state !== "muted") state = "none";
+
+  // Always log to notification_log, even if push isn't configured. This row is
+  // ALSO the dedup marker that sentRecently() reads, so the return value carries
+  // `logged` — if this insert fails, the marker didn't persist and a dedup-gated
+  // caller (e.g. the budget-alert scheduler) must not treat the alert as
+  // recorded, or it would re-fire on the next tick (F24). A held / muted push
+  // doesn't change that: the row is written the same way.
+  let logged = false;
+  try {
+    await pool.query(
+      "INSERT INTO notification_log (type, title, body, data, push_state) VALUES ($1, $2, $3, $4, $5)",
+      [payload.tag || "general", payload.title || "", payload.body || "", JSON.stringify(payload.data || {}), state]
+    );
+    logged = true;
+  } catch (err) {
+    console.error("notification_log insert error:", err.message);
+  }
+  await pruneNotificationLog();
+
+  if (state === "muted" || state === "none") return { sent: 0, failed: 0, logged, push_state: state };
+  if (state === "held") {
+    if (logged) {
+      heldPending = true;
+      holdGeneration++;
+      const mins = notifyPrefs.minutesUntilQuietEnd(now, prefs && prefs.quiet, NOTIFY_TZ);
+      if (mins > 0) releaseNotBefore = now.getTime() + mins * 60 * 1000;
+      return { sent: 0, failed: 0, logged, push_state: "held" };
+    }
+    // No row to release later — deliver now rather than lose it.
+    state = "sent";
+  }
+  const r = await pushToSubscribers(payload);
+  return { sent: r.sent, failed: r.failed, logged, push_state: state };
+}
+
+// The release job's gate (in memory — no query while nothing is held or quiet
+// hours are still running).
+function releaseDue(now = Date.now()) {
+  return heldPending && now >= releaseNotBefore;
+}
+
+// Push what quiet hours held, once they've ended: one held notification as
+// itself, several as ONE summary. A hold older than HOLD_MAX_HOURS is left in
+// the bell (expired); a kind muted since is marked muted. Rows are marked sent
+// only after the push went out — a failed delivery leaves them held for the
+// next run. Returns { ok, outcome: quiet | none | released | expired | failed,
+// released, expired, error? }.
+async function releaseHeldNotifications({ now = new Date() } = {}) {
+  const gen = holdGeneration;
+  const prefs = await readNotifyPrefs({ fresh: true });
+  if (prefs && notifyPrefs.isQuiet(now, prefs.quiet, NOTIFY_TZ)) {
+    releaseNotBefore = now.getTime() + notifyPrefs.minutesUntilQuietEnd(now, prefs.quiet, NOTIFY_TZ) * 60 * 1000;
+    return { ok: true, outcome: "quiet", released: 0, expired: 0 };
+  }
+  const exp = await pool.query(
+    `UPDATE notification_log SET push_state = 'expired'
+      WHERE push_state = 'held' AND created_at < $1::timestamptz - make_interval(hours => $2)
+      RETURNING id`,
+    [now.toISOString(), HOLD_MAX_HOURS]
+  );
+  const expired = exp.rows.length;
+  const held = (await pool.query(
+    `SELECT id, type, title, body, data FROM notification_log
+      WHERE push_state = 'held' ORDER BY created_at, id LIMIT $1`,
+    [RELEASE_BATCH]
+  )).rows;
+  const done = () => { if (holdGeneration === gen && held.length < RELEASE_BATCH) heldPending = false; };
+
+  const muted = prefs ? held.filter((h) => prefs.muted.includes(notifyPrefs.kindOf(h.type))) : [];
+  if (muted.length) {
+    await pool.query("UPDATE notification_log SET push_state = 'muted' WHERE id = ANY($1::int[]) AND push_state = 'held'", [muted.map((h) => h.id)]);
+  }
+  const rows = held.filter((h) => !muted.includes(h));
+  if (!rows.length) { done(); return { ok: true, outcome: expired ? "expired" : "none", released: 0, expired }; }
+  const ids = rows.map((h) => h.id);
+  if (!pushConfigured()) {
+    await pool.query("UPDATE notification_log SET push_state = 'none' WHERE id = ANY($1::int[]) AND push_state = 'held'", [ids]);
+    done();
+    return { ok: true, outcome: "none", released: 0, expired };
+  }
+  const dataOf = (h) => (typeof h.data === "string" ? JSON.parse(h.data || "{}") : h.data) || {};
+  const payload = rows.length === 1
+    ? { title: rows[0].title, body: rows[0].body, tag: rows[0].type, data: dataOf(rows[0]) }
+    : {
+        title: rows.length + " notifications during quiet hours",
+        body: rows.slice(-3).reverse().map((h) => h.title).join(" · ") + (rows.length > 3 ? " · +" + (rows.length - 3) + " more" : ""),
+        tag: "quiet-summary",
+        data: { url: dataOf(rows[rows.length - 1]).url || "/dashboard" },
+      };
+  const r = await pushToSubscribers(payload);
+  if (r.error || (r.sent === 0 && r.failed > 0)) {
+    return { ok: false, outcome: "failed", released: 0, expired, error: "The held notifications couldn't be pushed — they'll be retried." };
+  }
+  await pool.query("UPDATE notification_log SET push_state = 'sent' WHERE id = ANY($1::int[]) AND push_state = 'held'", [ids]);
+  done();
+  return { ok: true, outcome: "released", released: rows.length, expired };
 }
 
 // Utility: has a notification with this tag been sent within the last N hours?
@@ -239,3 +369,13 @@ module.exports.sendToAll = sendToAll;
 module.exports.sentRecently = sentRecently;
 module.exports.pruneNotificationLog = pruneNotificationLog;
 module.exports.NOTIFICATION_RETENTION_DAYS = NOTIFICATION_RETENTION_DAYS;
+module.exports.readNotifyPrefs = readNotifyPrefs;
+module.exports.invalidateNotifyPrefs = invalidateNotifyPrefs;
+module.exports.releaseDue = releaseDue;
+module.exports.releaseHeldNotifications = releaseHeldNotifications;
+module.exports.HOLD_MAX_HOURS = HOLD_MAX_HOURS;
+// Tests: the in-memory release gate.
+module.exports._release = {
+  state: () => ({ heldPending, releaseNotBefore, holdGeneration }),
+  reset(v = {}) { heldPending = v.heldPending ?? true; releaseNotBefore = v.releaseNotBefore ?? 0; prefsCache = null; },
+};

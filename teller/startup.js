@@ -124,7 +124,8 @@ async function runBudgetAlertTick() {
             const { sendCriticalAlertEmail } = require("./routes/persistent");
             await sendCriticalAlertEmail(
               "Budget exceeded: " + b.category,
-              "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + shownPct + "%) this month."
+              "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + shownPct + "%) this month.",
+              { tag }
             );
           } catch (e) { console.error("Budget alert email error:", e.message); }
         } else {
@@ -303,6 +304,24 @@ async function runAdvicePlanTick() {
   } catch (err) {
     console.error("Plan alert scheduler error:", err.message);
     jobHealth.result("advice-plan", { ok: false, error: err.message });
+  }
+}
+
+// Quiet-hours release (cycle-8 E3b, G2 — routes/notifications.js): push what
+// quiet hours held once they've ended (one summary for several). Its runner
+// gate is in memory (releaseDue — something is held and quiet hours are over),
+// so it costs no query while nothing is held; NOT activity-gated (an away user
+// is who quiet hours are for). An outcome is recorded only when it pushed or
+// failed to.
+async function runNotifyReleaseTick() {
+  jobHealth.tick("notify-release");
+  try {
+    const r = await require("./routes/notifications").releaseHeldNotifications();
+    if (!r.ok) jobHealth.result("notify-release", { ok: false, error: r.error });
+    else if (r.outcome === "released") jobHealth.result("notify-release", { ok: true });
+  } catch (err) {
+    console.error("Quiet-hours release error:", err.message);
+    jobHealth.result("notify-release", { ok: false, error: err.message });
   }
 }
 
@@ -861,7 +880,9 @@ function startBackgroundJobs({ runnerOptions = {} } = {}) {
   const active = () => isUserActive();
   const every = (name) => jobHealth.JOB_INTERVALS_MS[name];
   runner.register({ name: "job-watchdog", everyMs: WATCHDOG_EVERY_MS, run: runWatchdog, when: active });
+  const heldReady = () => require("./routes/notifications").releaseDue();
   for (const [name, run, when] of [
+    ["notify-release", runNotifyReleaseTick, heldReady],
     ["cash-alerts", runCashAlertsTick],
     ["linked-tasks", runLinkedTasksTick],
     ["advice-plan", runAdvicePlanTick],
@@ -939,7 +960,7 @@ module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity
 module.exports._awayJobs = {
   runBudgetAlertTick, runWeeklyDigestTick, runDailyDigestTick, runCsvReminderTick,
   runHousingLedgerTick, runInsightsAutoTriggerTick, runCashAlertsTick, runLinkedTasksTick,
-  runAdvicePlanTick, runBankAutoSyncTick, runSelfHealingReconcileTick,
+  runAdvicePlanTick, runBankAutoSyncTick, runSelfHealingReconcileTick, runNotifyReleaseTick,
   reset() { invalidateJobMemos(); },
 };
 // The live runner (tests): its registered jobs and checks.
