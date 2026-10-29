@@ -78,8 +78,12 @@ teller/
                            don't need a circular require)
     keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
     job-health.js        — Scheduled-job heartbeats + missed-job watchdog. Every
-                           startup.js interval calls tick(name) BEFORE its activity
-                           gate (in-memory only — preserves the Neon idle-gate);
+                           startup.js job calls tick(name) BEFORE its activity
+                           gate, and since cycle-8 E2b the job runner ticks each
+                           watched job on every 5-minute check (in-memory only —
+                           preserves the Neon idle-gate); JOB_INTERVALS_MS is the
+                           one copy of the jobs' cadences (the runner registers
+                           from it);
                            the watchdog flushes ticks to job_runs and pushes a
                            signature-deduped "Scheduled jobs missed" notification
                            when any job hasn't ticked for 36h+ (process asleep
@@ -90,8 +94,8 @@ teller/
                            only jobs with a new tick or outcome; GET
                            /api/data-health flushes before it reads, so a user
                            back from time away doesn't see every job "stale"
-    job-runner.js        — Due-based job runner (cycle-8 E2a, ST1 — NOT yet wired
-                           into startup.js; E2b moves the jobs onto it):
+    job-runner.js        — Due-based job runner (cycle-8 E2a / E2b, ST1 — every
+                           startup.js job runs through it, see Scheduled Tasks):
                            createJobRunner({ pool, … }) → register({ name, everyMs,
                            run, when? }) / start / stop / check / list. The first
                            check (1 min after start) reads the registered jobs'
@@ -103,7 +107,8 @@ teller/
                            (≥ 90% of the cadence old), so two processes run a due
                            job once; a failed claim runs it anyway. A when() gate
                            (e.g. isUserActive) is checked in memory before the
-                           claim — closed → no query, the job stays due
+                           claim — closed → no query, the job stays due. list()
+                           reports { name, everyMs, gated }
     github-ops.js        — Read-only GitHub Actions checks (cycle-7 G1):
                            runGithubChecks over GITHUB_OPS_TOKEN + GITHUB_OPS_REPO —
                            each backstop workflow's state + latest COMPLETED run
@@ -1176,7 +1181,7 @@ The unified shell adds:
 shell/
   index.js                     — PIN gate, sub-app mounts, cross-pool wiring,
                                  keep-alive, graceful shutdown (stops Perfin's
-                                 intervals + Per-sistant's node-cron tasks
+                                 job runner + Per-sistant's node-cron tasks
                                  before draining the pools — F16), public PWA-icon
                                  + /health + /health/deep routes mounted before
                                  the auth gate. Installs the error-log
@@ -1370,9 +1375,14 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2990 tests as of latest); use
+  Perfin and Per-sistant test files (2996 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2990 tests across 160 test files (incl.
+  Current count: 2996 tests across 161 test files (incl.
+  `tests/cycle8-e2b.test.js` — cycle-8 E2b (ST1): startup.js's registry (every JOB_INTERVALS_MS job at its cadence plus
+  the watchdog, lightest first; only the five activity-gated jobs gated; no setInterval or boot timer left) and its
+  scheduling under mock timers (nothing before the first check, then the job_runs read and every job claimed once 20 s
+  apart, every watched job ticked; a restart right after a run → only the read; a stop before the first check → nothing;
+  a second start replacing the runner) — F27's boot-run tests in broad-scan-c8-batch1 were replaced by it;
   `tests/cycle8-e2a.test.js` — cycle-8 E2a (ST1): the job runner over a fake job_runs with one clock — registration
   checks, the one read at the first check and no query when nothing is due, due jobs run once oldest-due first with the
   gap, a time loaded from job_runs respected, another process's claim (not run, its time taken), a failed read / claim,
@@ -2381,8 +2391,10 @@ shell/
   whose account is gone; a rename rule folding a transfer and a subscription into existing rows keeping their forecast
   settings; an incoming transfer's setting a 400 that changes nothing). Since E2a, job-runner-e2a (two runners checking at
   once run each due job once; a restart right after a run runs nothing and a 2-hour-old run is due again; the claim and
-  job-health's flush leave each other's columns alone).
-  299 tests, run
+  job-health's flush leave each other's columns alone). Since E2b, scheduler-e2b (the real registry's first check running
+  all 16 real job bodies on a fresh database and stamping last_ran_at; a restart and a concurrent second runner running
+  nothing; a 2-hour-old run due again, a 10-minute-old one not).
+  302 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -4572,7 +4584,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2990 tests passing across 160 test files (Perfin 2269 + Per-sistant 721), plus the real-Postgres route contract suite (299 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2996 tests passing across 161 test files (Perfin 2275 + Per-sistant 721), plus the real-Postgres route contract suite (302 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -6204,7 +6216,7 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   `summary_status: "preserved_validation_failed"`.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
-## Scheduled Tasks (intervals)
+## Scheduled Tasks (the job runner)
 All run automatically after server startup — and the CRITICAL ones are
 additionally guaranteed out-of-process by GitHub Actions cron (so Render
 free-tier sleep can't skip them): `daily-sync.yml` (Teller + Plaid transactions
@@ -6241,17 +6253,25 @@ their settings read while switched off (the rest of the local day) or not due
 (an in-memory next-due time — `notDueYet` / `setNextDue`), and PATCH /api/settings
 drops that memo (`startup.invalidateJobMemos`) when `auto_sync_*`,
 `insights_enabled` or `insights_cadence_days` changes.
-**Boot run (cycle-8 F27).** Every job is a `setInterval`, so its first run used to
-come one full interval after boot — on a host that sleeps after ~15 minutes idle
-(Render free tier) the 3- and 6-hour jobs essentially never ran and the hourly
-away channels only when the process stayed up an hour. `scheduleBootRuns` now also
-runs every job once after boot: the first 60 s in (`BOOT_FIRST_DELAY_MS`), then one
-every 20 s (`BOOT_STAGGER_MS`), lightest first (cash alerts … bank auto-sync, the
-insights trigger last), all within ~5.3 minutes; unref'd, and cleared by
-`stopBackgroundJobs`. Each job's own watermark / dedup / due time decides whether
-it does anything, so a boot with nothing due costs one settings read per job. The
-activity-gated jobs run too (boot counts as activity), including when the wake came
-from a backstop workflow.
+**Due-based runner (cycle-8 E2a / E2b, ST1).** No job is a `setInterval`.
+`startBackgroundJobs` registers the watchdog (`job-watchdog`, every 6 h) and the 15
+jobs below, lightest first, with `services/job-runner.js` at their `JOB_INTERVALS_MS`
+cadences (the "every N hours" below). A job runs when its last run
+(`job_runs.last_ran_at`) is older than its cadence: the first check comes 60 s after
+boot and reads `job_runs` once, then a check every 5 minutes decides in memory (no
+query unless a job is due). So a host that sleeps between requests runs whatever came
+due when it wakes, and a short restart doesn't re-run jobs that just ran (the F27
+one-shot boot runs, which re-ran every job after any restart, are gone). Due jobs run
+ONE AT A TIME, 20 s apart, oldest-due first (on a first boot in registration order) —
+a long body (a bank auto-sync, an insights run) delays the jobs behind it. Each run is
+claimed with a conditional UPSERT of `last_ran_at`, so two processes (a deploy
+overlap) run a due job once; a failed claim runs it anyway. The activity-gated jobs
+(goal milestones, budget snapshot, net-worth snapshot, Sheets auto-sync, the
+watchdog) carry a `when: isUserActive` gate checked in memory before the claim: while
+the user is away they cost no query and stay due, and run at the first check after
+the user returns. The away channels carry none (INV-77). A job's own gates,
+watermarks, memos and outcome are unchanged. `stopBackgroundJobs` stops the runner
+(a check in progress finishes its current job). Test seam: `startup._scheduler`.
 **Single-flight (PSC-12).** `syncAllTransactions`, `syncAllBalances` and
 `runCategorize` keep a module-level in-flight promise: a caller that arrives
 while a run is in progress (the 6-hourly insights chain and the bank auto-sync
@@ -6378,8 +6398,8 @@ second one (which re-sent the same uncategorized rows to Claude).
   while `jobHealth.failingJobs()` (each job's latest outcome in this process) is
   non-empty. Deliberately not inside the watchdog below, which is activity-gated and so
   would stop pinging (a false alarm) whenever the user is away.
-- **Missed-job watchdog**: ~2 minutes after boot, then every 6 hours
-  (activity-gated). Every scheduled interval above calls
+- **Missed-job watchdog**: the first job checked after boot, then every 6 hours
+  (activity-gated, `job-watchdog`). Every scheduled job above calls
   `jobHealth.tick(name)` as its first statement — BEFORE the activity
   gate, recorded in memory only so the Neon idle-gate stays intact. The
   watchdog flushes ticks to the `job_runs` table and pushes a
@@ -7103,7 +7123,7 @@ F31 F32 F33 F52 F45) are done — every cycle-8 fix batch is done.
 Batch 1 follow-ons: the weekly / daily digest, CSV reminder and housing ledger settle for
 the day once they find themselves off and a Settings change doesn't drop that memo
 (switching one on takes effect the next local day); the watchdog's boot timeout isn't
-cleared by stopBackgroundJobs; in the cloud container `npm run test:e2e` needs
+cleared by stopBackgroundJobs (closed by E2b — the timeout is gone); in the cloud container `npm run test:e2e` needs
 `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium` (the project's Playwright pins a build that isn't
 preinstalled — the E1 follow-ons added the env-gated option).
 Batch 2 follow-ons: a linked card paid by an autopay whose name has no card phrase and whose
@@ -7167,8 +7187,11 @@ undismisses its subscription first.
 
 **Cycle-8 expansion E2 (planned — `.cycle/plan-e2-scheduler-watermarks.md`, batches E2a–E2d):** a due-based job
 runner over job_runs (ST1) and id watermarks with an overlap rescan for the anomaly, payday and "Since you last
-looked" checks (ST3). E2a done: `services/job-runner.js` + `job_runs.last_ran_at` (not wired into startup.js yet —
-E2b). E2b–E2d queued. E2a follow-on: a failing job waits a full cadence before its next run (as with setInterval).
+looked" checks (ST3). E2a + E2b done (ST1): every Perfin background job runs through `services/job-runner.js` when it
+is due (`job_runs.last_ran_at`). E2c / E2d (ST3) queued. Follow-ons: a failing job waits a full cadence before its next
+run (as with setInterval); jobs run one at a time, so a long one delays the rest; the runner ticks each watched job every
+5 minutes, so a job-health flush (a dashboard load's /api/data-health) can write up to 15 job_runs rows while awake; in a
+deploy overlap with pre-E2b code a job can run in both processes once.
 
 **Roadmap T4.1 (done — A1–A10):** `services/advice.js` computes the plan; since A2 it is
 served by GET /api/advice, shown in the dashboard's "Your plan" card (widget key `advice`, on by default)
@@ -7867,7 +7890,7 @@ INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trai
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
-INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b, the plan-change alert — T4.1 A4) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state; advice_state.checked_on + signature; the linked tasks: a clean run's local day, with every write that can change a task kicking its own refresh — cycle-8 F21) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day; every scheduled job also runs once shortly after boot (scheduleBootRuns, cycle-8 F27), so a host that sleeps between requests still reaches them | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
+INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b, the plan-change alert — T4.1 A4) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state; advice_state.checked_on + signature; the linked tasks: a clean run's local day, with every write that can change a task kicking its own refresh — cycle-8 F21) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day; every scheduled job runs when it is due — checked a minute after boot and every 5 minutes, from job_runs.last_ran_at (the job runner, cycle-8 E2b; it replaced F27's boot runs) — so a host that sleeps between requests still reaches them | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
 INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with at most one sendToAll alert per 6h — makeLockoutNotifier); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET; no login input can crash the process (and so reset the in-memory counter) — see INV-104 | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks) + tests/scan-oct-batch1.test.js (F1 / F7 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)
