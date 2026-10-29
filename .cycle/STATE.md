@@ -23,7 +23,7 @@ implement and reflect sessions only set Phase.)
     watchdog's timers and the F27 boot runs are gone; the watchdog + 15 jobs registered lightest first at their unchanged
     JOB_INTERVALS_MS cadences, the five activity-gated jobs with `when: isUserActive`, the away channels without.
   - **Verified:** npm test 2996/2996 (9 new, 3 F27 boot-run tests removed); contract 301/302 (3 new; cash-alerts-l2
-    date-dependent, pre-existing); e2e E2E_RESULT. Mutation check red.
+    date-dependent, pre-existing); e2e 73/73. Mutation check red.
   - **Where I left off:** E2b committed and pushed. Next: `/sync-docs`, then `/broad-implement E2c` (or E2d).
 - **Cycle-8 E2a (DONE, 2026-10-29):** block `.cycle/blocks/8-e2a-broad-implement.md`.
   - **Shipped (ST1, part 1):** `teller/services/job-runner.js` — a due-based job runner (one job_runs read at the first
