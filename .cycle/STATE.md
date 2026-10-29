@@ -18,6 +18,16 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E3 (PLANNED, 2026-10-29) — G2 + ST2:** plan `.cycle/plan-e3-notifications.md`.
+  - **Batches:** E3a (the kind catalog `services/notify-prefs.js`, quiet-hours / mute settings + validation, the
+    notification_log push_state / item_key columns — no delivery change), E3b (Perfin delivery: holds during quiet
+    hours, mutes, the `notify-release` job, the critical email honouring mutes — `logged` unchanged), E3c (Settings UI,
+    the bell's words, Per-sistant's check / dashboard following the same prefs), E3d (ST2 core: item keys, a Perfin push
+    covered by an open linked task), E3e (ST2 Per-sistant half + cross-app contract). ≈ 22–23h.
+  - **Decisions to confirm at E3a:** Perfin owns the setting (Per-sistant reads it through perfinPool); the bell is
+    never silenced (only the interruption); quiet hours hold and release (one summary push), never drop; `security`
+    / `test` can't be muted.
+  - **Where I left off:** plan written and pushed. Next: `/broad-implement E3a`.
 - **Cycle-8 E2d (DONE, 2026-10-29) — ST3 complete, E2 complete:** block `.cycle/blocks/8-e2d-broad-implement.md`.
   - **Shipped:** GET /api/whats-new returns a seen_token (the newest transaction id + the time, read before its
     queries); the dashboard posts it back to /seen, which stores last_dashboard_view_txn_id / last_dashboard_view_at
