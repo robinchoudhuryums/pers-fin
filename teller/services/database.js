@@ -254,6 +254,10 @@ async function runMigrationsOnce() {
     // flags a changed one (its snapshot is stale).
     await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS bank_changed_at TIMESTAMPTZ");
     await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS bank_removed_at TIMESTAMPTZ");
+    // Cycle-8 E1c (G5): the CSV-overlap Resolve that removed a row (one id per
+    // Resolve; NULL for a single delete), so the whole batch can be restored.
+    await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS batch_id TEXT");
+    await client.query("CREATE INDEX IF NOT EXISTS idx_deleted_transactions_batch ON deleted_transactions (batch_id) WHERE batch_id IS NOT NULL");
     await client.query(`CREATE TABLE IF NOT EXISTS detected_subscriptions (
       id             SERIAL PRIMARY KEY,
       merchant_key   TEXT NOT NULL,

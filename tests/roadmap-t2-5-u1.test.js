@@ -91,7 +91,7 @@ describe("T2.5 U1 — the delete keeps a snapshot", () => {
     assert.match(s[snapAt], /WHEN la\.teller_enrollment_id IS NOT NULL THEN 'teller'/);
     assert.match(s[snapAt], /WHEN pi\.status = 'CSV' THEN 'csv'/);
     const tomb = c.log[tombAt];
-    assert.match(tomb.sql, /ON CONFLICT \(transaction_id\) DO UPDATE\s+SET snapshot = EXCLUDED\.snapshot, source = EXCLUDED\.source, deleted_at = now\(\)/);
+    assert.match(tomb.sql, /ON CONFLICT \(transaction_id\) DO UPDATE\s+SET snapshot = EXCLUDED\.snapshot, source = EXCLUDED\.source, batch_id = NULL, deleted_at = now\(\)/);
     assert.deepEqual(JSON.parse(tomb.params[1]), SNAPSHOT);
     assert.equal(tomb.params[2], "teller");
   });
@@ -228,6 +228,8 @@ describe("T2.5 U1 — the list", () => {
   it("maps snapshot and legacy rows, and returns a cursor only when there is another page", async () => {
     let seen;
     dbModule.pool.query = async (sql, params) => {
+      // Cycle-8 E1c: the Resolve batches are a second query.
+      if (/GROUP BY batch_id/.test(sql)) return { rows: [] };
       seen = { sql, params };
       return { rows: [
         { transaction_id: "txn_abc", deleted_at: "2026-10-01T10:00:00.000Z", source: "teller", has_snapshot: true,
@@ -247,7 +249,7 @@ describe("T2.5 U1 — the list", () => {
     assert.equal(res.body.items.length, 2);
     assert.deepEqual(res.body.items[0], {
       transaction_id: "txn_abc", deleted_at: "2026-10-01T10:00:00.000Z", source: "teller", legacy: false, restorable: true,
-      date: "2026-09-14", merchant: "Starbucks", amount: 42.5, account_name: "Checking", splits_count: 2,
+      date: "2026-09-14", merchant: "Starbucks", amount: 42.5, account_name: "Checking", splits_count: 2, batch_id: null,
     });
     assert.equal(res.body.items[1].legacy, true);
     assert.equal(res.body.items[1].source, "manual");
@@ -257,7 +259,7 @@ describe("T2.5 U1 — the list", () => {
 
     dbModule.pool.query = async () => ({ rows: [] });
     const empty = await supertest(mount("../teller/routes/transactions")).get("/api/deleted-transactions").expect(200);
-    assert.deepEqual(empty.body, { items: [], next: null });
+    assert.deepEqual(empty.body, { items: [], next: null, batches: [] });
   });
 });
 

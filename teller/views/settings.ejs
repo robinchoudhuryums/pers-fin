@@ -2042,6 +2042,17 @@
     // undelete existed only has its id, and its message says how it returns.
     var deletedItems = [];
     var deletedNext = null;
+    // Cycle-8 E1c (G5): every CSV-overlap Resolve that still has deleted rows
+    // gets a "Restore all N" header (POST …/batches/:batch_id/restore); its
+    // rows below say they belong to it.
+    var deletedBatches = [];
+    function deletedBatchHtml(b) {
+      var when = b.deleted_at ? new Date(b.deleted_at).toLocaleString() : '';
+      var n = Number(b.count) || 0;
+      return '<li style="margin:8px 0;"><strong>Removed by a CSV overlap resolve</strong> \u2014 ' + esc(String(n)) + ' row' + (n === 1 ? '' : 's')
+        + (when ? ' \u00b7 ' + esc(when) : '')
+        + '<button class="btn" data-restore-batch="' + esc(b.batch_id) + '" aria-label="Restore all ' + esc(String(n)) + ' rows removed by the CSV overlap resolve' + (when ? ' on ' + esc(when) : '') + '" style="margin-left:8px;">Restore all ' + esc(String(n)) + '</button></li>';
+    }
     function deletedRowHtml(d) {
       var id = d.transaction_id;
       var what, label;
@@ -2060,7 +2071,8 @@
         ? '<span style="margin-left:8px;">A manual entry deleted before undelete existed — it can\'t be restored.</span>'
         : '<button class="btn" data-restore-deleted="' + esc(id) + '" aria-label="Restore ' + esc(label) + '" style="margin-left:8px;">Restore</button>';
       return '<li style="margin:8px 0;">' + what
-        + '<div style="font-size:12px;margin-left:16px;">Deleted ' + esc(d.deleted_at ? new Date(d.deleted_at).toLocaleString() : '') + action + '</div></li>';
+        + '<div style="font-size:12px;margin-left:16px;">Deleted ' + esc(d.deleted_at ? new Date(d.deleted_at).toLocaleString() : '')
+        + (d.batch_id ? ' by a CSV overlap resolve' : '') + action + '</div></li>';
     }
     function renderDeletedTransactions() {
       var el = document.getElementById('deleted-transactions-body');
@@ -2068,7 +2080,8 @@
       if (count) count.textContent = deletedItems.length ? '(' + deletedItems.length + (deletedNext ? '+' : '') + ')' : '';
       if (!el) return;
       if (!deletedItems.length) { el.textContent = 'No deleted transactions.'; return; }
-      el.innerHTML = '<ul style="margin:6px 0;padding-left:0;list-style:none;">' + deletedItems.map(deletedRowHtml).join('') + '</ul>'
+      el.innerHTML = (deletedBatches.length ? '<ul style="margin:6px 0;padding-left:0;list-style:none;">' + deletedBatches.map(deletedBatchHtml).join('') + '</ul>' : '')
+        + '<ul style="margin:6px 0;padding-left:0;list-style:none;">' + deletedItems.map(deletedRowHtml).join('') + '</ul>'
         + (deletedNext ? '<button class="btn" data-deleted-more>Show more</button>' : '');
     }
     async function loadDeletedTransactions(more) {
@@ -2081,6 +2094,7 @@
         var body = await res.json();
         deletedItems = (more ? deletedItems : []).concat(body.items || []);
         deletedNext = body.next || null;
+        if (Array.isArray(body.batches)) deletedBatches = body.batches;
         renderDeletedTransactions();
       } catch (e) {
         if (more) showMsg("Couldn't load more deleted transactions — check your connection.", false);
@@ -2095,6 +2109,8 @@
         // Cycle-8 F37: put the button back after a failed load (a successful one
         // redraws the list) — it used to stay disabled, so Show more was dead.
         if (more) { more.disabled = true; try { await loadDeletedTransactions(true); } finally { more.disabled = false; } return; }
+        var batchBtn = ev.target.closest('[data-restore-batch]');
+        if (batchBtn) { await restoreDeletedBatch(batchBtn); return; }
         var btn = ev.target.closest('[data-restore-deleted]');
         if (!btn) return;
         var id = btn.getAttribute('data-restore-deleted');
@@ -2105,6 +2121,35 @@
         } else btn.disabled = false;
       });
     })();
+    // Restore every row one CSV-overlap Resolve removed (E1c). Rows that can't
+    // come back (account gone, removed by the bank) are counted in the message
+    // and stay listed; the list reloads on success.
+    function restoreBatchMessage(r) {
+      var n = Number(r.restored) || 0;
+      var msg = 'Restored ' + n + ' transaction' + (n === 1 ? '' : 's') + '.';
+      var skipped = (r.skipped || []).length;
+      if (skipped) msg += ' ' + skipped + ' couldn\u2019t be restored (their account is gone or the bank removed them) and stay deleted.';
+      if (r.stale) msg += ' ' + r.stale + ' changed at the bank while deleted \u2014 run Reconcile Now to refresh them.';
+      return msg;
+    }
+    async function restoreDeletedBatch(btn) {
+      if (btn.disabled) return;
+      var id = btn.getAttribute('data-restore-batch');
+      btn.disabled = true;
+      var res;
+      try {
+        res = await apiFetch('/api/deleted-transactions/batches/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
+      } catch (e) {
+        showMsg("Couldn't restore the transactions \u2014 check your connection.", false);
+        btn.disabled = false;
+        return;
+      }
+      if (!(await writeOk(res, 'Restore'))) { btn.disabled = false; return; }
+      var r = {};
+      try { r = await res.json(); } catch (e) { /* restored without a body */ }
+      showMsg(restoreBatchMessage(r), !(r.skipped || []).length);
+      await loadDeletedTransactions(false);
+    }
     async function loadOperatorChecks(refresh) {
       var el = document.getElementById('operator-checks-body');
       try {
