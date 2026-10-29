@@ -25,7 +25,7 @@ implement and reflect sessions only set Phase.)
     sendCriticalAlertEmail skips a muted kind and every caller names its kind; PATCH /api/settings drops the cached prefs.
   - **Decision detail:** a held push whose row failed to write is pushed at once (nothing to release later); a summary
     push carries the newest row's link; the release gate is open at boot (rows held before a restart).
-  - **Verified:** npm test 3058/3058 (22 new); contract 315/316 (6 new; cash-alerts-l2 pre-existing). Mutation red.
+  - **Verified:** npm test 3058/3058 (22 new); contract 315/316 (6 new; cash-alerts-l2 pre-existing); e2e 73/73. Mutation red.
   - **Where I left off:** E3b committed and pushed. Next: `/sync-docs`, then `/broad-implement E3c`.
 - **Cycle-8 E3a (DONE, 2026-10-29) — G2 part 1:** block `.cycle/blocks/8-e3a-broad-implement.md`.
   - **Shipped:** `teller/services/notify-prefs.js` (15 kinds mapped from tags / check types, isQuiet on the APP_TIMEZONE
