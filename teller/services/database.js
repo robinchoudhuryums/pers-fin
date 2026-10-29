@@ -1201,6 +1201,10 @@ async function runMigrationsOnce() {
       last_error  TEXT,
       updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    // When the job runner (services/job-runner.js, cycle-8 E2a) last CLAIMED
+    // the job to run it — distinct from last_run_at, the heartbeat tick. NULL
+    // until the runner runs it once.
+    await client.query("ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS last_ran_at TIMESTAMPTZ");
 
     // In-app error log (roadmap T1.4): server errors grouped by fingerprint,
     // written by services/error-log.js (the shell's console.error wrapper) and

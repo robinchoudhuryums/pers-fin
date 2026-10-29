@@ -1,6 +1,6 @@
 # Cycle 8 E2 — scheduler and watermark groundwork (plan, 2026-10-29)
 
-Status: queued — E2a next.
+Status: E2a done (2026-10-29); E2b next.
 
 Scope: ST1 and ST3 from the cycle-8 expansion plan (`.cycle/plan-cycle8-expansion.md`).
 
@@ -58,7 +58,8 @@ whether the process just woke, restarted or has been up for days (ST1); and the 
    nothing is due, so Neon still suspends. Due jobs run one at a time (never two bodies of
    the same job at once), oldest-due first; a boot runs only what is due, so a 10-minute
    restart doesn't re-run every hourly job (replaces `scheduleBootRuns`; the boot spacing
-   stays — the first check 60 s after start).
+   stays — the first check 60 s after start). (E2a: the `job_runs` read happens at that first check, not
+   at start.)
 3. **"Last run" is persisted when a job runs**: new `job_runs.last_ran_at TIMESTAMPTZ` (when
    the runner last STARTED the job's check — distinct from `last_run_at`, the heartbeat
    tick). Written by the runner's claim (decision 4) — one write per run, never per check.
@@ -69,10 +70,12 @@ whether the process just woke, restarted or has been up for days (ST1); and the 
    the row. A failed claim query runs the job anyway (fail-open: a missed run is worse than
    a duplicate; every body is idempotent / deduped).
 5. **Gates stay in the bodies, with one change**: an activity-gated job (sheets auto-sync,
-   net-worth snapshot, goal milestones, budget snapshot, the watchdog) whose body skipped
-   because the user is away tells the runner `{ skipped: 'away' }`, and the runner keeps it
-   due — it runs at the next check after the user returns instead of a full interval later.
-   Its claim is released (last_ran_at put back) so it isn't counted as run.
+   net-worth snapshot, goal milestones, budget snapshot, the watchdog) registers a `when()`
+   gate (`isUserActive`) that the runner checks IN MEMORY before the claim: a closed gate
+   costs no query and keeps the job due — it runs at the first check after the user returns
+   instead of a full interval later. (Decided at E2a: the plan first had the body return
+   `{ skipped: 'away' }` and release its claim, which would have cost two writes per check
+   while the user was away and kept Neon awake.)
 6. **tick / result stay**: the runner calls `tick(name)` on every check that considers the
    job (the watchdog's "scheduler alive" signal is unchanged) and the body still calls
    `result`. `stopBackgroundJobs` stops the runner; shutdown unchanged.
@@ -105,7 +108,7 @@ whether the process just woke, restarted or has been up for days (ST1); and the 
 ## Batches
 | Batch | Scope | Est. | Status |
 |-------|-------|------|--------|
-| E2a | The runner (`services/job-runner.js`): registry, the one `job_runs` read at start, in-memory due checks every 5 min, one job at a time oldest-due first, the claim (decision 4) incl. its fail-open path, `{ skipped: 'away' }` keeping a job due and releasing its claim, stop(); the `job_runs.last_ran_at` migration; unit tests under node:test mock timers over a fake pool (nothing due → no query after start; due at start → runs once; a second process's claim → not run, time refreshed; a failed read → all due, staggered; an away skip → runs on the next check once active; stop). Not wired yet | 5h | queued |
+| E2a | The runner (`services/job-runner.js`): registry, the one `job_runs` read at start, in-memory due checks every 5 min, one job at a time oldest-due first, the claim (decision 4) incl. its fail-open path, `{ skipped: 'away' }` keeping a job due and releasing its claim, stop(); the `job_runs.last_ran_at` migration; unit tests under node:test mock timers over a fake pool (nothing due → no query after start; due at start → runs once; a second process's claim → not run, time refreshed; a failed read → all due, staggered; an away skip → runs on the next check once active; stop). Not wired yet | 5h | done (2026-10-29) |
 | E2b | Wire startup.js onto the runner: the 16 jobs + the watchdog registered with today's cadences, `scheduleBootRuns` / the intervals removed, `JOB_INTERVALS_MS` derived from the registry, the activity-gated bodies returning `{ skipped: 'away' }`, `stopBackgroundJobs` stopping it; rework `tests/broad-scan-c8-batch1.test.js` (every job runs once after boot when due; a restart right after a run runs nothing; none after stop) and the other startup pins; a contract test (two runners on one real database → each due job runs once; a job that ran 10 minutes ago isn't re-run by a new process) | 5h | queued |
 | E2c | ST3 for the anomaly and payday checks: `services/txn-watermark.js`, the two BIGINT columns + their backfill, runAnomalyCheck on it (pg_stat_activity read removed, `data.transaction_id`, the overlap dedup), runPaydayLanded on it (the tag dedup kept); unit tests over a fake pool and a contract test (an open transaction commits an anomaly charge and a paycheck with lower ids after a check ran — each announced once by the next run, never twice; replaces `tests/contract/c8-batch4`'s pg_stat_activity case) | 4h | queued |
 | E2d | ST3 for "Since you last looked": the `seen_token` on GET, /seen storing it (GREATEST; the token-less fallback), new transactions by id, the dashboard posting the token back; vm test of the widget's POST, unit tests of the route, a contract test (a row committed between the GET and /seen shows on the next visit), the e2e dashboard still clean | 2–3h | queued |
