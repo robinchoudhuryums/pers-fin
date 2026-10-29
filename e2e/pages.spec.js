@@ -197,6 +197,25 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("the Cash Flow section lists what the forecast holds and saves a setting (cycle-8 E1b)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/perfin/dashboard");
+    const wrap = page.locator("#cashflow-items-wrap");
+    await expect(wrap).toBeVisible();
+    await wrap.locator("summary").click();
+    const items = page.locator("#cashflow-items");
+    // The seeded subscription is a projected bill with its own setting.
+    const sel = items.getByLabel("Forecast setting for Streamflix");
+    await expect(sel).toHaveValue("auto");
+    await sel.selectOption("ignore");
+    await expect(items).toContainText("You left it out");
+    await expect(items.getByLabel("Forecast setting for Streamflix")).toHaveValue("ignore");
+    // Put it back so the other checks see the seeded forecast.
+    await items.getByLabel("Forecast setting for Streamflix").selectOption("auto");
+    await expect(items).not.toContainText("You left it out");
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
   test("the landing tiles carry their status lines (design D7)", async ({ page }) => {
     test.setTimeout(75000);
     const problems = watch(page);

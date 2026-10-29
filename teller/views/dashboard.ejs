@@ -493,6 +493,13 @@
       <div style="margin-top:12px;">
         <div id="cashflow-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
         <div id="cashflow-list"></div>
+        <!-- Cycle-8 E1b (G1): what the projection billed and left out, each with
+             its forecast setting (PATCH …/forecast). Collapsed; its open state
+             survives the section's reloads (only the body is re-rendered). -->
+        <details id="cashflow-items-wrap" style="margin-top:14px;">
+          <summary style="cursor:pointer;font-size:13px;">What's in this forecast</summary>
+          <div id="cashflow-items" style="margin-top:10px;"></div>
+        </details>
       </div>
     </details>
   </div>
@@ -1724,6 +1731,7 @@
     loadSpendingSummary();
     loadForecast();
     loadAdvice();
+    wireForecastItems();
 
     // Load upcoming bills for calendar widget
     (async function loadCalendarWidget() {
@@ -3276,7 +3284,105 @@
         document.getElementById('cashflow-summary').innerHTML = cashFlowSummaryHtml(data);
         var html = cashFlowTableHtml(data.by_week);
         document.getElementById('cashflow-list').innerHTML = html;
+        renderForecastItems(data);
       } catch (e) { /* non-critical */ }
+    }
+
+    // Cycle-8 E1b (G1): "What's in this forecast" — each projected bill and each
+    // item left out, with the reason in words and its forecast setting. A change
+    // is saved through writeOk; the section and the summary reload on success,
+    // a refused or failed save puts the select back.
+    var FORECAST_REASONS = {
+      card_autopay: 'Looks like a credit card payment \u2014 the card\u2019s purchases are already in your daily spending',
+      internal: 'Looks like a move between your own accounts',
+      user_internal: 'You marked it as a move between your accounts',
+      user_ignored: 'You left it out',
+    };
+    var FORECAST_TRANSFER_OPTIONS = [['auto', 'Automatic'], ['bill', 'Always a bill'], ['internal', 'Between my accounts'], ['ignore', 'Leave out']];
+    var FORECAST_SUB_OPTIONS = [['auto', 'Include'], ['ignore', 'Leave out']];
+    function cadenceWords(days) {
+      var named = { 7: 'a week', 14: 'every 2 weeks', 30: 'a month', 60: 'every 2 months', 90: 'a quarter', 365: 'a year' };
+      if (named[days]) return named[days];
+      return days ? 'every ' + days + ' days' : '';
+    }
+    function forecastSelectHtml(item) {
+      var opts = item.source === 'subscription' ? FORECAST_SUB_OPTIONS : FORECAST_TRANSFER_OPTIONS;
+      var value = item.treatment || 'auto';
+      return '<select class="fi-select" data-fi-source="' + esc(item.source) + '" data-fi-id="' + esc(item.id) + '" data-fi-prev="' + esc(value) + '"' +
+        ' aria-label="Forecast setting for ' + esc(item.name) + '" style="font-size:12px;">' +
+        opts.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === value ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') +
+        '</select>';
+    }
+    function forecastItemRow(item, detail) {
+      var editable = (item.source === 'transfer' || item.source === 'subscription') && item.id != null;
+      return '<li style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' +
+        '<span style="min-width:0;"><strong>' + esc(item.name) + '</strong> ' + fmt(item.amount) +
+        (cadenceWords(item.cadence_days) ? ' ' + esc(cadenceWords(item.cadence_days)) : '') +
+        '<br><span style="font-size:12px;color:var(--text-muted);">' + detail + '</span></span>' +
+        (editable ? forecastSelectHtml(item) : '') + '</li>';
+    }
+    function forecastItemsHtml(items, days) {
+      items = items || {};
+      var bills = items.bills || [], out = items.left_out || [];
+      if (!bills.length && !out.length) return '<div class="note">No recurring bills or transfers are projected.</div>';
+      var html = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Projected bills</div>';
+      html += bills.length ? '<ul style="list-style:none;margin:0 0 12px;padding:0;">' + bills.map(function (b) {
+        var detail = b.occurrences
+          ? b.occurrences + ' in the next ' + days + ' days, ' + fmt(b.projected_total) + (b.next_date ? ' \u00b7 next ' + esc(fmtDate(b.next_date)) : '')
+          : 'Not due in the next ' + days + ' days';
+        if (b.why === 'user') detail += ' \u00b7 you set it as a bill';
+        return forecastItemRow(b, detail);
+      }).join('') + '</ul>' : '<div class="note" style="margin-bottom:12px;">None.</div>';
+      if (out.length) {
+        html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Left out</div>';
+        html += '<ul style="list-style:none;margin:0;padding:0;">' + out.map(function (b) {
+          return forecastItemRow(b, esc(FORECAST_REASONS[b.reason] || 'Left out'));
+        }).join('') + '</ul>';
+      }
+      return html;
+    }
+    function renderForecastItems(data) {
+      var el = document.getElementById('cashflow-items');
+      if (!el) return;
+      // Keep focus on the control that was just changed across the re-render.
+      var active = document.activeElement;
+      var key = active && active.getAttribute && active.getAttribute('data-fi-id') != null
+        ? [active.getAttribute('data-fi-source'), active.getAttribute('data-fi-id')] : null;
+      el.innerHTML = forecastItemsHtml(data.forecast_items, data.forecast_days || 90);
+      if (key && el.querySelector) {
+        var again = el.querySelector('select[data-fi-source="' + key[0] + '"][data-fi-id="' + key[1] + '"]');
+        if (again) again.focus();
+      }
+    }
+    async function onForecastItemChange(sel) {
+      var source = sel.getAttribute('data-fi-source');
+      var id = sel.getAttribute('data-fi-id');
+      var prev = sel.getAttribute('data-fi-prev');
+      var value = sel.value;
+      var url = source === 'subscription' ? '/api/subscriptions/' + encodeURIComponent(id) + '/forecast'
+        : '/api/recurring-transfers/' + encodeURIComponent(id) + '/forecast';
+      var body = source === 'subscription' ? { ignore: value === 'ignore' } : { treatment: value };
+      sel.disabled = true;
+      var ok = false;
+      try {
+        var res = await apiFetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        ok = await writeOk(res, 'Could not save the forecast setting');
+      } catch (e) {
+        showMsg('Could not save the forecast setting: the server could not be reached.', false);
+      }
+      sel.disabled = false;
+      if (!ok) { sel.value = prev; return; }
+      sel.setAttribute('data-fi-prev', value);
+      await loadCashFlow();
+      loadDashboardSummary();
+    }
+    function wireForecastItems() {
+      var el = document.getElementById('cashflow-items');
+      if (!el) return;
+      el.addEventListener('change', function (e) {
+        var sel = e.target;
+        if (sel && sel.classList && sel.classList.contains('fi-select')) onForecastItemChange(sel);
+      });
     }
 
     // --- Year-over-Year Comparison ---
