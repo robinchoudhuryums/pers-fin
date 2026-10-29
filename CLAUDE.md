@@ -369,6 +369,22 @@ teller/
                            "Payday missed?" + the opt-in critical-alert email, once
                            per (stream, expected date) via sentRecently; an in-memory
                            (local day + sync stamp) memo, off → no DB read that day
+    notify-prefs.js      — Notification kinds, quiet hours and mutes (cycle-8 E3a,
+                           G2; .cycle/plan-e3-notifications.md): NOTIFY_KINDS — 15
+                           user-facing kinds (spending, cash, bills, plan, goals,
+                           accounts, system, tasks, habits, knowledge, jobs, email,
+                           security, test, other), each with its Perfin tags / tag
+                           prefixes and Per-sistant check types; kindOf(tag) (exact,
+                           then the longest prefix, else "other" — mutable) /
+                           kindOfCheckType (housing_due → bills, the kind of Perfin's
+                           rent push); catalog(); normalizePrefs(row); isQuiet(now,
+                           quiet, tz) on the APP_TIMEZONE wall clock (end before start
+                           wraps past midnight, start inclusive, end exclusive);
+                           decide({ kind, prefs, now, tz, covered }) → muted → covered
+                           (an open linked task — ST2) → held (quiet hours) → sent;
+                           security and test are never muted or held;
+                           parseQuietHours / parseMutedKinds (PATCH /api/settings).
+                           Pure; nothing delivers through it yet (E3b)
     advice.js            — "Where should my extra money go?" (roadmap T4.1 A1,
                            .cycle/plan-t4-1-advisory.md; read by routes/advice.js and
                            Ask's get_cash_plan since A2):
@@ -1398,9 +1414,14 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3016 tests as of latest); use
+  Perfin and Per-sistant test files (3036 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3016 tests across 163 test files (incl.
+  Current count: 3036 tests across 164 test files (incl.
+  `tests/cycle8-e3a.test.js` — cycle-8 E3a (G2): the kind catalog (unique keys, security / test unmutable), kindOf over
+  today's tags, a source scan that every tag literal a notification is sent with and every Per-sistant check type maps to
+  a named kind, isQuiet (the midnight wrap and its edges, a same-day window, off / malformed, another zone, an invalid zone,
+  both 01:30s of the night clocks go back), decide's order, normalizePrefs, the PATCH parsers, PATCH /api/settings
+  refusing or storing both fields and GET's normalized fields + catalog, the migration;
   `tests/cycle8-e2d.test.js` — cycle-8 E2d (ST3): parseSeenToken's accepted / refused shapes; GET /api/whats-new reading
   the mark first and returning seen_token, by id with a stored id, by created_at without one and for the daily digest;
   /seen storing the token (capped, forward only), a malformed token a 400 with no write, the token-less fallback; the
@@ -4629,7 +4650,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3016 tests passing across 163 test files (Perfin 2295 + Per-sistant 721), plus the real-Postgres route contract suite (310 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 3036 tests passing across 164 test files (Perfin 2315 + Per-sistant 721), plus the real-Postgres route contract suite (310 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4985,7 +5006,8 @@ GET  /api/context-export   # structured data dump for Claude chat (query: format
                            # included, no Plaid phantom, debts as "-$X owed" (JSON:
                            # is_liability), ISO dates (SXE-9)
 GET  /api/tax-deductions   # accumulated tax-deductible transactions
-GET  /api/settings         # retrieve user settings
+GET  /api/settings         # retrieve user settings (+ notify_kinds — the notification
+                           # kind catalog — and notify_timezone, cycle-8 E3a)
 PATCH /api/settings        # update user settings. Accepts: theme,
                            # dashboard_months, insights_*, keep_alive_*,
                            # zip_code, partner_name (shared-card settlement
@@ -5016,7 +5038,11 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # housing / utility_amount / bills / tax_documents →
                            # booleans, merged over the stored map; GET shows the
                            # stored map over the defaults), linked_tasks_bill_lead_days (integer
-                           # 0-14) — T2.4 X2a, etc.
+                           # 0-14) — T2.4 X2a, notify_quiet_hours ({ enabled
+                           # strict boolean, start / end "HH:MM", start ≠ end, no
+                           # other keys; null → off 22:00-07:00) and
+                           # notify_muted_types (known MUTABLE kind keys, deduped;
+                           # null → []) — cycle-8 E3a, etc.
 POST /api/linked-tasks/run # run the linked-task sync now (Settings → Per-sistant Tasks
                            # "Run now", T2.4 X2c) → { status ok|partial, at, desired,
                            # created, updated, closed, reopened, skipped, errors[{kind,
@@ -5551,8 +5577,8 @@ standalone-mode fallback if either app is run on its own Render service.
   running out of attempts (~45s of contention), is still fatal.
   **IN-list CHECKs (cycle-8 F31):** a CHECK written inside `CREATE TABLE IF NOT EXISTS`
   never changes once the table exists. The value lists of `tax_documents.form` / `origin`,
-  `webhook_events.provider` / `status` and `recurring_transfers.forecast_treatment` (E1a — its
-  ADD COLUMN interpolates the list) live in `CHECK_LISTS` (services/database.js —
+  `webhook_events.provider` / `status`, `recurring_transfers.forecast_treatment` (E1a — its
+  ADD COLUMN interpolates the list) and `notification_log.push_state` (cycle-8 E3a, the same way) live in `CHECK_LISTS` (services/database.js —
   the CREATE TABLEs interpolate them); `syncInListChecks(client)` reads each
   `<table>_<column>_check` (`pg_get_constraintdef`) and, only when its values differ,
   drops it and re-adds it `NOT VALID` inside the migration transaction. Add a new value to
@@ -5974,7 +6000,15 @@ standalone-mode fallback if either app is run on its own Render service.
   `monthly_payment` is the car amount.
 - `notification_log`: in-app notification history. Columns: `type`, `title`, `body`,
   `data` (JSONB), `is_read`. `sendToAll()` inserts here on every push notification.
-  Indexed on (is_read, created_at DESC) for fast unread queries.
+  Indexed on (is_read, created_at DESC) for fast unread queries. Cycle-8 E3a adds
+  `push_state TEXT` (CHECK sent / held / muted / covered / none / expired, its list in
+  `CHECK_LISTS`) and `item_key TEXT` (the real-world item, e.g. `housing:<period>` — the
+  linked-task key without `perfin:`); both NULL until E3b / E3d write them.
+- `user_settings.notify_quiet_hours JSONB NOT NULL DEFAULT '{"enabled": false, "start":
+  "22:00", "end": "07:00"}'` and `notify_muted_types JSONB NOT NULL DEFAULT '[]'` (cycle-8
+  E3a, G2): quiet hours on the APP_TIMEZONE clock and the muted notification kinds
+  (services/notify-prefs.js). Perfin owns them for both apps (Per-sistant will read them
+  through perfinPool, E3c). Auto-migrated; reset by `npm run reset:fresh`.
 - `ai_audit_log`: post-generation insight validation results. Columns: `insight_id`
   (FK to financial_insights), `module`, `severity` (critical/warning/info),
   `check_type` (tier1-4), `claim_text`, `expected_value`, `actual_value`.
@@ -7257,6 +7291,14 @@ run (as with setInterval); jobs run one at a time, so a long one delays the rest
 5 minutes, so a job-health flush (a dashboard load's /api/data-health) can write up to 15 job_runs rows while awake; in a
 deploy overlap with pre-E2b code a job can run in both processes once.
 
+**Cycle-8 expansion E3 (in progress — `.cycle/plan-e3-notifications.md`, batches E3a–E3e):** quiet hours and a
+mute per kind of alert in both apps (G2), and one alert per real-world item across Perfin's push, Per-sistant's
+notifications and linked tasks (ST2). E3a done: the kind catalog and the decision (`services/notify-prefs.js`), the two
+settings with PATCH validation, and notification_log.push_state / item_key — nothing delivers through them yet (E3b holds
+pushes in quiet hours and drops muted ones, E3c adds the Settings section and Per-sistant's side, E3d / E3e the one-alert
+rule). E3a follow-on: a kind is read from the tag's prefix, so a caller whose tag is built entirely at runtime isn't
+covered by the scan test and lands in "other" until the catalog names it.
+
 **Roadmap T4.1 (done — A1–A10):** `services/advice.js` computes the plan; since A2 it is
 served by GET /api/advice, shown in the dashboard's "Your plan" card (widget key `advice`, on by default)
 and read by Ask's get_cash_plan; since A3 it is the `cash_plan` insight module (the model words the plan,
@@ -7823,7 +7865,8 @@ AI Insights & Audit:
    call, incl. categorize.js / budgets.js / housing.js in other subsystems)
 Settings, Notifications & Cross-app:
   teller/routes/settings.js, teller/routes/notifications.js,
-  teller/routes/persistent.js, teller/services/linked-tasks.js
+  teller/routes/persistent.js, teller/services/linked-tasks.js,
+  teller/services/notify-prefs.js
   (Seam: the matching Per-sistant integration files —
    apps/per-sistant/routes/perfin.js + routes/webhooks.js — are audited
    together with this subsystem from both sides.)
@@ -7937,7 +7980,7 @@ INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — 
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
 INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
-INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean; since T2.2 L2 cash_alert_enabled (strict boolean), cash_alert_threshold and cash_alert_horizon_days; since T2.2 L3 payday_alerts_enabled (strict boolean); since T4.1 A4 advice_alerts_enabled (strict boolean); since T4.1 A10 contribution_limits (known keys → 0-1,000,000); since T2.4 X2a linked_tasks_enabled (strict boolean), linked_tasks_sources (known sources → booleans) and linked_tasks_bill_lead_days (0-14)) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean; since T2.2 L2 cash_alert_enabled (strict boolean), cash_alert_threshold and cash_alert_horizon_days; since T2.2 L3 payday_alerts_enabled (strict boolean); since T4.1 A4 advice_alerts_enabled (strict boolean); since T4.1 A10 contribution_limits (known keys → 0-1,000,000); since T2.4 X2a linked_tasks_enabled (strict boolean), linked_tasks_sources (known sources → booleans) and linked_tasks_bill_lead_days (0-14); since cycle-8 E3a notify_quiet_hours (enabled strict boolean, HH:MM, start ≠ end) and notify_muted_types (known mutable kinds)) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
