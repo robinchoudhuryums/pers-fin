@@ -18,6 +18,15 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E2d (DONE, 2026-10-29) — ST3 complete, E2 complete:** block `.cycle/blocks/8-e2d-broad-implement.md`.
+  - **Shipped:** GET /api/whats-new returns a seen_token (the newest transaction id + the time, read before its
+    queries); the dashboard posts it back to /seen, which stores last_dashboard_view_txn_id / last_dashboard_view_at
+    from it (forward only, capped; malformed → 400; no token → "now" as before); new transactions are read by id once
+    an id is stored (created_at before that and for the daily digest).
+  - **Verified:** npm test 3016/3016 (12 new); contract 309/310 (4 new; cash-alerts-l2 date-dependent, pre-existing);
+    e2e 73/73. Mutation check red.
+  - **Where I left off:** E2d committed and pushed — E2 (ST1 + ST3) is complete. Next: `/sync-docs`, then E3
+    (`.cycle/plan-cycle8-expansion.md` — plan it into batches first if it isn't yet).
 - **Cycle-8 E2c (DONE, 2026-10-29) — ST3 part 1:** block `.cycle/blocks/8-e2c-broad-implement.md`.
   - **Shipped:** `teller/services/txn-watermark.js` (mark / window / never-backwards advance); runAnomalyCheck and
     runPaydayLanded on an id watermark with a 24 h overlap rescan measured from the previous check, deduped against

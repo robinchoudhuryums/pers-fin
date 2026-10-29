@@ -850,6 +850,10 @@ async function runMigrationsOnce() {
     // /api/whats-new which aggregates new txns, balance deltas, new
     // subscriptions/anomalies/notifications since this timestamp.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_dashboard_view_at TIMESTAMPTZ");
+    // Cycle-8 E2d (ST3): the newest transaction id the widget's last GET read
+    // (its seen_token). NULL until the first /seen with a token — new
+    // transactions are read by created_at until then.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_dashboard_view_txn_id BIGINT");
 
     // ---- Weekly digest scheduler (S2) ----
     // Independent of the per-insight `insights_generated` email — this is a

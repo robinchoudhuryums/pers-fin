@@ -2641,9 +2641,14 @@
         }
         body.innerHTML = html.join('');
         // Advance the watermark after a short delay so navigating away
-        // immediately doesn't lose the unseen state. Fire-and-forget.
+        // immediately doesn't lose the unseen state. Fire-and-forget. The
+        // token is what this GET read (cycle-8 E2d), so anything that arrived
+        // since shows on the next visit.
+        var seenBody = data.seen_token ? JSON.stringify({ seen_token: data.seen_token }) : undefined;
         setTimeout(function() {
-          apiFetch('/api/whats-new/seen', { method: 'POST' }).catch(function() {});
+          apiFetch('/api/whats-new/seen', seenBody
+            ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: seenBody }
+            : { method: 'POST' }).catch(function() {});
         }, 4000);
       } catch (e) { /* silently hide */ }
     })();
