@@ -18,6 +18,15 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E3a (DONE, 2026-10-29) — G2 part 1:** block `.cycle/blocks/8-e3a-broad-implement.md`.
+  - **Shipped:** `teller/services/notify-prefs.js` (15 kinds mapped from tags / check types, isQuiet on the APP_TIMEZONE
+    wall clock, decide: muted → covered → held → sent, the PATCH parsers); user_settings.notify_quiet_hours /
+    notify_muted_types; notification_log.push_state (CHECK_LISTS) / item_key; PATCH validation + GET's catalog and zone.
+  - **Decisions confirmed:** Perfin owns the setting; security and test can't be muted or held; an unknown tag is
+    "other" (mutable); Per-sistant's housing_due is the same kind (bills) as Perfin's rent push.
+  - **Verified:** npm test 3036/3036 (20 new); contract 309/310 (cash-alerts-l2 pre-existing); migrations twice on a
+    scratch database.
+  - **Where I left off:** E3a committed and pushed. Next: `/sync-docs`, then `/broad-implement E3b`.
 - **Cycle-8 E3 (PLANNED, 2026-10-29) — G2 + ST2:** plan `.cycle/plan-e3-notifications.md`.
   - **Batches:** E3a (the kind catalog `services/notify-prefs.js`, quiet-hours / mute settings + validation, the
     notification_log push_state / item_key columns — no delivery change), E3b (Perfin delivery: holds during quiet

@@ -89,6 +89,12 @@ const CHECK_LISTS = {
   recurring_transfers: {
     forecast_treatment: ["auto", "bill", "internal", "ignore"],
   },
+  // Cycle-8 E3a (G2): what happened to a notification's push — sent, held
+  // (quiet hours), muted, covered (an open linked task is the surface — ST2),
+  // none (push not configured), expired (held past 12 h). NULL on older rows.
+  notification_log: {
+    push_state: ["sent", "held", "muted", "covered", "none", "expired"],
+  },
 };
 const sqlLiteral = (v) => "'" + String(v).replace(/'/g, "''") + "'";
 const inList = (values) => values.map(sqlLiteral).join(", ");
@@ -777,6 +783,11 @@ async function runMigrationsOnce() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_notification_log_unread ON notification_log (is_read, created_at DESC) WHERE is_read = false");
+    // Cycle-8 E3a (G2 / ST2): the push's fate (written by sendToAll from E3b)
+    // and the real-world item the notification is about (housing:<period> …,
+    // the linked-task key without its "perfin:" prefix).
+    await client.query(`ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS push_state TEXT CHECK (push_state IN (${inList(CHECK_LISTS.notification_log.push_state)}))`);
+    await client.query("ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS item_key TEXT");
 
     // ---- Data freshness tracking ----
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_balance_sync_at TIMESTAMPTZ DEFAULT NULL");
@@ -961,6 +972,11 @@ async function runMigrationsOnce() {
     // Roadmap T4.1 A10: yearly contribution limits entered by hand, per
     // investment account — { "investment:<id>" | "linked:<id>": dollars }.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS contribution_limits JSONB NOT NULL DEFAULT '{}'::jsonb");
+    // Cycle-8 E3a (G2): quiet hours (APP_TIMEZONE wall clock; end before
+    // start wraps past midnight) and the muted notification kinds
+    // (services/notify-prefs.js). Perfin owns them for both apps.
+    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS notify_quiet_hours JSONB NOT NULL DEFAULT '{"enabled": false, "start": "22:00", "end": "07:00"}'::jsonb`);
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS notify_muted_types JSONB NOT NULL DEFAULT '[]'::jsonb");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS advice_state JSONB");
     // Roadmap T2.4 X2a: linked tasks — Perfin items kept as Per-sistant tasks
     // (services/linked-tasks.js). Off by default; which sources (decision 5 —

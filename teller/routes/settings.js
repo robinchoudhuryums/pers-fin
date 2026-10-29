@@ -24,13 +24,21 @@ router.get("/api/settings", async (req, res) => {
   // suppresses the "configure the webhook" prereq warning.
   const embedded = req.app.get("embedded") === true;
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, contribution_limits, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, insight_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override, cash_alert_enabled, cash_alert_threshold, cash_alert_horizon_days, cash_alert_state, cash_alerts_checked_at, payday_alerts_enabled, advice_alerts_enabled, advice_state, linked_tasks_enabled, linked_tasks_sources, linked_tasks_bill_lead_days, linked_tasks_state FROM user_settings WHERE id = 1");
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, contribution_limits, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, insight_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override, cash_alert_enabled, cash_alert_threshold, cash_alert_horizon_days, cash_alert_state, cash_alerts_checked_at, payday_alerts_enabled, advice_alerts_enabled, advice_state, linked_tasks_enabled, linked_tasks_sources, linked_tasks_bill_lead_days, linked_tasks_state, notify_quiet_hours, notify_muted_types FROM user_settings WHERE id = 1");
     const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false, insight_emails_enabled: true, cash_alert_enabled: false, cash_alert_threshold: 500, cash_alert_horizon_days: 14, cash_alert_state: null, cash_alerts_checked_at: null, payday_alerts_enabled: false, advice_alerts_enabled: false, advice_state: null, contribution_limits: {}, linked_tasks_enabled: false, linked_tasks_sources: { ...require("../services/linked-tasks").DEFAULT_SOURCES }, linked_tasks_bill_lead_days: 3, linked_tasks_state: null };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
     // The stored sources over the defaults, so a source added later (T3.3 K2's
     // tax_documents) shows as it runs — on — until the user switches it off.
     row.linked_tasks_sources = require("../services/linked-tasks").effectiveSources(row.linked_tasks_sources);
+    // Cycle-8 E3a (G2): quiet hours + muted kinds, normalized, with the kind
+    // catalog and the zone the quiet hours are read in (the Settings section).
+    const notifyPrefs = require("../services/notify-prefs");
+    const np = notifyPrefs.normalizePrefs(row);
+    row.notify_quiet_hours = np.quiet;
+    row.notify_muted_types = np.muted;
+    row.notify_kinds = notifyPrefs.catalog();
+    row.notify_timezone = require("../services/financial-queries").APP_TIMEZONE;
     // always_on (services/hosting.js): the host never sleeps, so Settings
     // replaces the Keep-Alive controls with a note.
     res.json({ ...defaults, ...row, embedded, always_on: require("../services/hosting").alwaysOn(), available_modules: INSIGHT_MODULES });
@@ -388,6 +396,19 @@ router.patch("/api/settings", async (req, res) => {
       }
       updates.push("contribution_limits = $" + idx++);
       values.push(JSON.stringify(clean));
+    }
+    // Cycle-8 E3a (G2): quiet hours { enabled, start: "HH:MM", end: "HH:MM" }
+    // (null → the default, off) and the muted notification kinds (a list of
+    // mutable kind keys; null → none). services/notify-prefs.js validates both.
+    if (req.body.notify_quiet_hours !== undefined) {
+      const q = require("../services/notify-prefs").parseQuietHours(req.body.notify_quiet_hours);
+      if (q.error) return res.status(400).json({ error: q.error });
+      updates.push("notify_quiet_hours = $" + idx++); values.push(JSON.stringify(q.value));
+    }
+    if (req.body.notify_muted_types !== undefined) {
+      const m = require("../services/notify-prefs").parseMutedKinds(req.body.notify_muted_types);
+      if (m.error) return res.status(400).json({ error: m.error });
+      updates.push("notify_muted_types = $" + idx++); values.push(JSON.stringify(m.value));
     }
     // Shell-layer idle-session timeout (minutes). Sliding window — the shell's
     // requireAuth refreshes the cookie on every request with this many minutes
