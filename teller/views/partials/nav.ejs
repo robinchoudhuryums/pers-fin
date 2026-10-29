@@ -191,6 +191,13 @@
         } catch (_) {}
       }
 
+      // Cycle-8 E3c (G2): what happened to a notification's push (push_state,
+      // E3b) — said in the bell for the ones that didn't push right away.
+      var PUSH_STATE_WORDS = {
+        held: 'Held for quiet hours',
+        expired: 'Held for quiet hours — not pushed',
+        muted: 'Muted — not pushed',
+      };
       function renderList(notifs) {
         if (!notifs.length) { list.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">No notifications</div>'; return; }
         list.innerHTML = notifs.map(function(n) {
@@ -204,7 +211,8 @@
             ' style="padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;' + bg + '">' +
             '<div style="font-weight:' + (n.is_read ? '400' : '600') + ';">' + esc(n.title) + '</div>' +
             '<div style="color:var(--text-muted);margin-top:2px;">' + esc(n.body) + '</div>' +
-            '<div style="color:var(--text-muted);font-size:10px;margin-top:4px;">' + ago + '</div>' +
+            '<div style="color:var(--text-muted);font-size:10px;margin-top:4px;">' + ago +
+              (PUSH_STATE_WORDS[n.push_state] ? ' · ' + PUSH_STATE_WORDS[n.push_state] : '') + '</div>' +
           '</div>';
         }).join('');
       }

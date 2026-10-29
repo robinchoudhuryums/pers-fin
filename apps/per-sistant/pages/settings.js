@@ -147,6 +147,7 @@ ${navBar("/settings")}
   <div class="section">
     <h2>Browser Notifications</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Get notified about reminders and overdue tasks.</p>
+    ${req.app.get("embedded") ? '<p style="font-size:12px;color:var(--muted);margin-bottom:12px;" id="quiet-hours-link">Quiet hours and muting for both apps are set in <a href="/perfin/settings#quiet-hours-section">Perfin Settings</a>.</p>' : ''}
     <div class="actions" style="margin-bottom:0;">
       <button class="btn" id="notif-btn">Enable notifications</button>
     </div>

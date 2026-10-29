@@ -359,6 +359,31 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("Settings saves quiet hours and a mute, and Per-sistant points there (cycle-8 E3c)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/perfin/settings#quiet-hours-section");
+    const section = page.locator("#quiet-hours-section");
+    await expect(section).toBeVisible();
+    await expect(section.locator("#mute-list")).toContainText("Per-sistant"); // under the shell
+    await section.getByLabel("Quiet hours start").fill("21:30");
+    await section.getByLabel("Quiet hours end").fill("06:45");
+    await section.getByRole("button", { name: "Save times" }).click();
+    await expect(page.locator("#toast-stack .toast", { hasText: "Setting saved." }).first()).toBeVisible();
+    await section.getByLabel("Job Radar").check();
+    await expect.poll(async () => (await (await page.request.get("/perfin/api/settings")).json()).notify_muted_types).toEqual(["jobs"]);
+    const s = await (await page.request.get("/perfin/api/settings")).json();
+    expect(s.notify_quiet_hours).toEqual({ enabled: false, start: "21:30", end: "06:45" });
+    await page.reload();
+    await expect(page.locator("#quiet-hours-section").getByLabel("Job Radar")).toBeChecked();
+    await expect(page.locator("#quiet-start")).toHaveValue("21:30");
+    // Put it back so later checks see the defaults.
+    await page.locator("#quiet-hours-section").getByLabel("Job Radar").uncheck();
+    await expect.poll(async () => (await (await page.request.get("/perfin/api/settings")).json()).notify_muted_types).toEqual([]);
+    await page.goto("/per-sistant/settings");
+    await expect(page.locator("#quiet-hours-link a")).toHaveAttribute("href", "/perfin/settings#quiet-hours-section");
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
   test("the Tax page shows the year's package, takes a form and downloads the ZIP (T3.3 K4)", async ({ page }) => {
     const problems = watch(page);
     await page.goto("/perfin/tax?year=" + taxYear);

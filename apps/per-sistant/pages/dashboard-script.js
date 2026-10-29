@@ -328,6 +328,9 @@ var REMINDER_PREFIX = {
 };
 function reminderPrefix(n) { return REMINDER_PREFIX[n.type] != null ? REMINDER_PREFIX[n.type] : ''; }
 function isImportantReminder(n) {
+  // Cycle-8 E3c (G2): quiet hours and muted kinds (Perfin Settings) — the check
+  // marks such an entry notify:false; it stays in the Reminders list.
+  if (n.notify === false) return false;
   if (n.type === 'overdue' || n.type === 'due_today' || n.type === 'streak_at_risk' ||
       n.type === 'habit_streak_at_risk' || n.type === 'reminder' || n.type === 'job_radar' ||
       n.type === 'vault_sync_error' || n.type === 'email_failed') return true;

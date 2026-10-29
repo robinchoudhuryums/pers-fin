@@ -18,6 +18,14 @@ Updated: 2026-10-29
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E3c (DONE, 2026-10-29) — G2 complete:** block `.cycle/blocks/8-e3c-broad-implement.md`.
+  - **Shipped:** Settings → Alerts & Notifications → Quiet Hours & Muting (switch, times, the zone, a box per mutable
+    kind grouped by app — Per-sistant's under the shell only; every save through writeOk, reverted on refusal); the bell
+    names a held / expired / muted push; Per-sistant's notification check gives each entry `kind` / `notify` from
+    Perfin's prefs (read-only through perfinPool) and the dashboard raises no browser notification for notify:false;
+    Per-sistant Settings links to the section.
+  - **Verified:** npm test 3075/3075 (17 new); contract 315/316 (cash-alerts-l2 pre-existing); e2e see below.
+  - **Where I left off:** E3c committed and pushed. Next: `/sync-docs`, then `/broad-implement E3d`.
 - **Cycle-8 E3b (DONE, 2026-10-29) — G2 part 2:** block `.cycle/blocks/8-e3b-broad-implement.md`.
   - **Shipped:** sendToAll decides through notify-prefs (push_state sent / held / muted / none, `logged` unchanged, a
     failed settings read holds nothing); releaseHeldNotifications pushes holds once quiet hours end (one summary for

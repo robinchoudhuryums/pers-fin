@@ -332,6 +332,27 @@
     </div>
   </div>
 
+  <div class="section" id="quiet-hours-section"><h2>Quiet Hours &amp; Muting</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Quiet Hours</div><div class="desc">Hold push notifications between these times and send what was held as one notification afterwards. Everything still appears in the bell, and a PIN lockout always comes through. Times are in <span id="quiet-tz">UTC</span>.</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="quiet-toggle" aria-label="Quiet hours"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">From / To</div><div class="desc">An end before the start runs past midnight</div></div>
+      <div class="setting-control" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <input type="time" id="quiet-start" aria-label="Quiet hours start">
+        <input type="time" id="quiet-end" aria-label="Quiet hours end">
+        <button class="btn" id="quiet-save">Save times</button>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Mute</div><div class="desc">A muted kind still appears in the bell but never pushes or emails</div></div>
+    </div>
+    <div id="mute-list" style="margin:-4px 0 10px;"></div>
+  </div>
+
   <div class="section" id="cash-alerts-section"><h2>Cash Alerts</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Low Cash Alert</div><div class="desc">Notify me when my checking and savings cash is projected to fall below a floor — the dashboard's cash-flow forecast (bills, paychecks and usual spending). Checked when new bank data arrives, at most once a day otherwise; never on balances more than 36 hours old. Also emails when Critical Alert Emails is on.</div></div>
@@ -789,6 +810,74 @@
         });
       } catch (e) { el.textContent = 'Unavailable'; }
     }
+    // Quiet hours & muting (cycle-8 E3c, G2): Perfin owns the setting for both
+    // apps (services/notify-prefs.js); Per-sistant's kinds are listed only under
+    // the shell. Each change is one PATCH through writeOk; a refused save puts
+    // the control back.
+    var NOTIFY_APPS = [['perfin', 'Perfin'], ['per-sistant', 'Per-sistant']];
+    function renderNotifyPrefs(s) {
+      var toggle = document.getElementById('quiet-toggle');
+      var list = document.getElementById('mute-list');
+      if (!toggle || !list) return;
+      var q = s.notify_quiet_hours || { enabled: false, start: '22:00', end: '07:00' };
+      toggle.checked = !!q.enabled;
+      document.getElementById('quiet-start').value = q.start || '22:00';
+      document.getElementById('quiet-end').value = q.end || '07:00';
+      var tz = document.getElementById('quiet-tz');
+      if (tz) tz.textContent = s.notify_timezone || 'UTC';
+      var muted = Array.isArray(s.notify_muted_types) ? s.notify_muted_types : [];
+      var kinds = (Array.isArray(s.notify_kinds) ? s.notify_kinds : []).filter(function(k) {
+        return k && k.mutable && (k.app !== 'per-sistant' || s.embedded);
+      });
+      list.innerHTML = NOTIFY_APPS.map(function(app) {
+        var ks = kinds.filter(function(k) { return k.app === app[0]; });
+        if (!ks.length) return '';
+        return '<div class="desc" style="margin:8px 0 2px;">' + app[1] + '</div>' + ks.map(function(k) {
+          var id = 'mute-' + k.key;
+          return '<div style="margin:4px 0;"><input type="checkbox" id="' + esc(id) + '" data-mute="' + esc(k.key) + '"' +
+            (muted.indexOf(k.key) >= 0 ? ' checked' : '') + '> <label for="' + esc(id) + '">' + esc(k.label) + '</label></div>';
+        }).join('');
+      }).join('');
+    }
+    async function saveNotifyPrefs(body) {
+      try {
+        var res = await apiFetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!(await writeOk(res, 'Quiet hours & muting'))) return false;
+        showMsg('Setting saved.', true);
+        return true;
+      } catch (e) { showMsg('Quiet hours & muting: ' + e.message, false); return false; }
+    }
+    function quietBody(enabled) {
+      return { notify_quiet_hours: { enabled: !!enabled, start: document.getElementById('quiet-start').value, end: document.getElementById('quiet-end').value } };
+    }
+    function quietTimesError() {
+      var a = document.getElementById('quiet-start').value, b = document.getElementById('quiet-end').value;
+      if (!/^[0-9]{2}:[0-9]{2}$/.test(a) || !/^[0-9]{2}:[0-9]{2}$/.test(b)) return 'Enter a start and an end time';
+      if (a === b) return 'The start and end times must differ';
+      return '';
+    }
+    async function onQuietToggle(box) {
+      var err = quietTimesError();
+      if (err) { showMsg(err, false); box.checked = !box.checked; return false; }
+      if (await saveNotifyPrefs(quietBody(box.checked))) return true;
+      box.checked = !box.checked;
+      return false;
+    }
+    async function saveQuietTimes() {
+      var err = quietTimesError();
+      if (err) { showMsg(err, false); return false; }
+      return saveNotifyPrefs(quietBody(document.getElementById('quiet-toggle').checked));
+    }
+    function mutedKinds() {
+      var list = document.getElementById('mute-list');
+      return Array.prototype.slice.call(list.querySelectorAll('[data-mute]'))
+        .filter(function(b) { return b.checked; }).map(function(b) { return b.getAttribute('data-mute'); });
+    }
+    async function onMuteToggle(box) {
+      if (await saveNotifyPrefs({ notify_muted_types: mutedKinds() })) return true;
+      box.checked = !box.checked;
+      return false;
+    }
     async function loadSettings() {
       try {
         const res = await apiFetch('/api/settings'); if (!res.ok) return;
@@ -858,6 +947,7 @@
         document.getElementById('advice-alert-toggle').checked = !!s.advice_alerts_enabled;
         renderCashAlertLast(s);
         renderLinkedTasks(s);
+        renderNotifyPrefs(s);
         var critToggle = document.getElementById('critical-alert-toggle');
         if (critToggle) critToggle.checked = !!s.critical_alert_emails_enabled;
         var insightEmailToggle = document.getElementById('insight-email-toggle');
@@ -1813,6 +1903,9 @@
         if (!isFinite(n) || n < 0) { showMsg('Enter a floor of $0 or more', false); return; }
         updateSetting('cash_alert_threshold', n);
       }],
+      ['quiet-toggle', 'change', function() { onQuietToggle(this); }],
+      ['quiet-save', 'click', function() { saveQuietTimes(); }],
+      ['mute-list', 'change', function(e) { if (e.target && e.target.getAttribute && e.target.getAttribute('data-mute')) onMuteToggle(e.target); }],
       ['linked-tasks-toggle', 'change', function() { onLinkedToggle(this, { linked_tasks_enabled: this.checked }); }],
       ['linked-src-housing', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { housing: this.checked } }); }],
       ['linked-src-utility_amount', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { utility_amount: this.checked } }); }],
