@@ -109,6 +109,20 @@ teller/
                            (e.g. isUserActive) is checked in memory before the
                            claim — closed → no query, the job stays due. list()
                            reports { name, everyMs, gated }
+    txn-watermark.js     — Transaction id watermarks with an overlap rescan (cycle-8
+                           E2c, ST3) for the "what's new since the last check" reads
+                           (runAnomalyCheck, runPaydayLanded): readMark(db) → { id:
+                           MAX(transactions.id) (0 when empty), at: now() } as text,
+                           read BEFORE the candidates; windowSql({ alias, watermark,
+                           since, mark, overlapHours = 24 }) → id <= mark AND (id >
+                           watermark OR created_at > since − overlap) + inOverlap (id
+                           <= watermark) — an id is allocated at INSERT, so a
+                           transaction open at the last check can commit a LOWER id
+                           later; the overlap is measured from the PREVIOUS check's
+                           time; the caller drops overlap rows it already announced
+                           (notification_log). advanceSql(idCol, atCol) moves both
+                           forward only (GREATEST). Replaced F1's pg_stat_activity-
+                           bounded created_at mark
     github-ops.js        — Read-only GitHub Actions checks (cycle-7 G1):
                            runGithubChecks over GITHUB_OPS_TOKEN + GITHUB_OPS_REPO —
                            each backstop workflow's state + latest COMPLETED run
@@ -331,18 +345,21 @@ teller/
     payday-alerts.js     — Payday alerts (roadmap T2.2 L3; off by default —
                            payday_alerts_enabled). runPaydayLanded (the third
                            runPostSyncSteps step — never a reconcile): settled
-                           income deposits (INCOME_PREDICATE) created after
-                           last_income_alert_at and dated within 5 days that match a
-                           LIVE income stream (same source, ±10%) → "Paycheck landed"
-                           (tag payday-<hash>); the watermark (text, microseconds
-                           kept) advances to the newest processed, held just before a
+                           income deposits (INCOME_PREDICATE) new since the last check —
+                           an id watermark (last_income_alert_txn_id) with a
+                           LANDED_OVERLAP_HOURS (24) overlap rescan measured from
+                           last_income_alert_at (services/txn-watermark.js, cycle-8
+                           E2c) — dated within 5 days that match a LIVE income stream
+                           (same source, ±10%) → "Paycheck landed" (tag
+                           payday-<hash>); an overlap deposit whose tag is already in
+                           notification_log (30 days) is skipped (a CSV import commits
+                           its rows, ids taken earlier, after a check — cycle-8 F51).
+                           The watermark advances to the mark read before the
+                           candidates (also when nothing was found), held just before a
                            send that isn't logged (sendToAll's { logged: false }, or a
                            throw — cycle-8 F10) and never moved backwards (GREATEST);
-                           no watermark yet → set to now, nothing older announced.
-                           Each run re-reads LANDED_OVERLAP_HOURS (24) behind the
-                           watermark and skips an overlap deposit whose tag is already
-                           in notification_log (30 days) — a CSV import's rows carry
-                           the import's start time (cycle-8 F51). runPaydayMissed (the hourly cash-alerts
+                           no watermark yet → set to the newest id and now, nothing
+                           older announced. runPaydayMissed (the hourly cash-alerts
                            job): a live stream's latest expected payday after its
                            last deposit whose 3-day grace has passed (≤ 14 days old,
                            overduePayday) with NO deposit from that source (any
@@ -1375,9 +1392,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2996 tests as of latest); use
+  Perfin and Per-sistant test files (3004 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2996 tests across 161 test files (incl.
+  Current count: 3004 tests across 162 test files (incl.
+  `tests/cycle8-e2c.test.js` — cycle-8 E2c (ST3): services/txn-watermark.js's mark, window (and its overlap-hours guard)
+  and never-backwards advance; runAnomalyCheck on it (the mark read before the candidates, the window's parameters, the
+  transaction_id dedupe in the candidate SQL, data.transaction_id on the push, an unlogged or thrown push holding the
+  watermark, an empty table, no pg_stat_activity read left); runPaydayLanded's overlap (an unannounced overlap deposit
+  announced, an announced one skipped, an unlogged overlap deposit leaving the id put) and the migrations' backfill SQL —
+  F1 / F51's created_at tests in broad-scan-c8-batch4 were replaced by it;
   `tests/cycle8-e2b.test.js` — cycle-8 E2b (ST1): startup.js's registry (every JOB_INTERVALS_MS job at its cadence plus
   the watchdog, lightest first; only the five activity-gated jobs gated; no setInterval or boot timer left) and its
   scheduling under mock timers (nothing before the first check, then the job_runs read and every job claimed once 20 s
@@ -2393,8 +2416,11 @@ shell/
   once run each due job once; a restart right after a run runs nothing and a 2-hour-old run is due again; the claim and
   job-health's flush leave each other's columns alone). Since E2b, scheduler-e2b (the real registry's first check running
   all 16 real job bodies on a fresh database and stamping last_ran_at; a restart and a concurrent second runner running
-  nothing; a 2-hour-old run due again, a 10-minute-old one not).
-  302 tests, run
+  nothing; a 2-hour-old run due again, a 10-minute-old one not). Since E2c, txn-watermark-e2c (a charge and a paycheck
+  whose ids sit below a check's mark, committed after it, each announced by the next run once — the anomaly notification
+  carrying transaction_id; a long-open transaction elsewhere no longer holding a new charge back; each id backfilled once
+  from its time watermark).
+  306 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3483,8 +3509,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   payday is 3 days past with no deposit from that source, only once that account's
   bank connection has completed a clean sync since (CSV / manual accounts never alert).
   Switching them on doesn't announce deposits from before (`services/payday-alerts.js`).
-  Each check re-reads the last 24 hours and skips a paycheck already announced, so one a
-  long CSV import committed after a check is still announced, once (cycle-8 F51).
+  Each check also re-reads rows created within 24 hours of the previous check and skips a
+  paycheck already announced, so one a long CSV import committed after a check is still
+  announced, once (cycle-8 F51; an id watermark since E2c).
 - **Plan-change alert** (roadmap T4.1 A4, opt-in — Settings → Cash Alerts → Plan Changes):
   "Your plan changed" when the dashboard's "Your plan" moves to a new step, moves on to
   another debt, or its amount per paycheck moves by 20% and at least $50 — e.g. "Visa is
@@ -3827,10 +3854,13 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   per `syncAllTransactions` over the combined added count — it reads the transactions
   table, not a provider result. Previously it lived inside the Teller sync and was gated
   on the Teller count, so Plaid charges never alerted (DD-1). Reconcile never runs it.
-  Its watermark is the newest `created_at` visible before the candidate read, kept below
-  the start of any other transaction still writing, never moved backwards (cycle-8 F1 —
-  it was `now()` after the sends, so a row an overlapping sync or CSV import committed in
-  between was never checked).
+  New = an id watermark with a 24 h overlap rescan (`services/txn-watermark.js`, cycle-8
+  E2c): rows above `last_anomaly_txn_id` (the newest id read before the candidates) plus
+  rows at or below it created within 24 h of the previous check — a row an overlapping
+  sync or CSV import committed after a check, with an id taken before it, is still
+  checked; a charge already announced (its `transaction_id` in an anomaly notification's
+  data) is skipped. It replaced F1's `created_at` mark, which stopped at the start of any
+  open transaction on the database and so held every later alert back.
 - **Budget threshold alerts**: Push notifications at 80% (warning) and 100%+ (exceeded) every 3 hours
 
 ### UI & UX
@@ -4584,7 +4614,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2996 tests passing across 161 test files (Perfin 2275 + Per-sistant 721), plus the real-Postgres route contract suite (302 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 3004 tests passing across 162 test files (Perfin 2283 + Per-sistant 721), plus the real-Postgres route contract suite (306 tests; CI `migrations` job, `npm run test:contract`) and 73 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4958,7 +4988,8 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # "" / null refused), cash_alert_horizon_days
                            # (integer 7-60) — T2.2 L2, payday_alerts_enabled
                            # (strict boolean; switching on moves
-                           # last_income_alert_at to now) — T2.2 L3,
+                           # last_income_alert_at to now and, since cycle-8
+                           # E2c, last_income_alert_txn_id to the newest id) — T2.2 L3,
                            # advice_alerts_enabled (strict boolean;
                            # switching on clears advice_state, so the
                            # first check is a fresh baseline) — T4.1 A4,
@@ -5662,17 +5693,17 @@ standalone-mode fallback if either app is run on its own Render service.
   on PATCH — http(s), no credentials, ≤500 chars, cycle-7 F82),
   `persistent_webhook_secret_enc BYTEA` (encrypted at rest with `pgp_sym_encrypt`,
   same passphrase as Teller/Plaid tokens), `persistent_webhook_enabled BOOLEAN`
-- `user_settings.last_anomaly_check_at TIMESTAMPTZ` — watermark used by the post-sync
-  anomaly notifier (`POST /api/sync`) to dedupe push notifications. Only transactions
-  whose `created_at > last_anomaly_check_at` are considered candidates, so the same
-  anomaly never re-pushes on subsequent syncs. It is read and written as TEXT (microseconds
-  kept) and set to the high-water mark read BEFORE the candidates — `LEAST(MAX(created_at)
-  after the watermark, MIN(xact_start) − 1µs of other backends on this database holding an
-  xid)`, the candidates bounded `created_at <= mark` — only when later than the stored value
-  (cycle-8 F1; without pg_stat_activity rights the writer bound is NULL and LEAST ignores
-  it). Nothing new → no candidate read, no update. If the notify dispatch throws,
-  the watermark is held back so the next sync re-considers the same candidates —
-  a transient `sendToAll` error no longer permanently silences the anomaly.
+- `user_settings.last_anomaly_txn_id BIGINT` + `last_anomaly_check_at TIMESTAMPTZ` — the
+  post-sync anomaly notifier's watermark (cycle-8 E2c, `services/txn-watermark.js`): the
+  newest `transactions.id` and the database time read BEFORE the candidates, which stop at
+  that id. Candidates are rows above the stored id plus rows at or below it created within
+  24 h of the stored time (a transaction open at the last check commits a lower id later);
+  a charge whose `transaction_id` is already in an anomaly notification's `data` (30 days)
+  is skipped, so the overlap never re-pushes. Both move forward only (GREATEST). If a push
+  throws or isn't logged, the watermark is held back so the next sync re-considers the same
+  candidates (the logged ones are skipped then). The id was backfilled once from the time
+  watermark (the newest id created at or before it). (Cycle-8 F1's mark — the newest
+  created_at, bounded by pg_stat_activity — is gone.)
 - `user_settings.last_dashboard_view_at TIMESTAMPTZ` — watermark for the
   "Since you last looked" dashboard widget. Read by `GET /api/whats-new`
   to scope the response (new txns / new subs / balance deltas /
@@ -5724,10 +5755,12 @@ standalone-mode fallback if either app is run on its own Render service.
   F11), last_check: { at, outcome, reason?, breach_date?, floors_below } }`) and `cash_alerts_checked_at
   TIMESTAMPTZ` (roadmap T2.2 L2 — the low cash alert's settings, dedup state and last
   evaluation; services/cash-alerts.js). Auto-migrated; reset by `npm run reset:fresh`.
-- `user_settings.payday_alerts_enabled BOOLEAN NOT NULL DEFAULT false` and
-  `last_income_alert_at TIMESTAMPTZ` (roadmap T2.2 L3): the payday alerts' switch and
-  the "Paycheck landed" watermark over `transactions.created_at` (set to now when the
-  switch goes on, so older deposits aren't announced). Auto-migrated.
+- `user_settings.payday_alerts_enabled BOOLEAN NOT NULL DEFAULT false`,
+  `last_income_alert_at TIMESTAMPTZ` and `last_income_alert_txn_id BIGINT` (roadmap T2.2
+  L3; the id since cycle-8 E2c): the payday alerts' switch and the "Paycheck landed"
+  watermark — the newest transaction id and the time of the last check (the overlap is
+  measured from it); both set to now / the newest id when the switch goes on, so older
+  deposits aren't announced. The id was backfilled once from the time. Auto-migrated.
 - `user_settings.advice_alerts_enabled BOOLEAN NOT NULL DEFAULT false` and `advice_state JSONB`
   (roadmap T4.1 A4): the plan-change alert's switch and its state — `{ signature: { step, target,
   unit, amount, amount_monthly, at } | null, windfalls_seen: [key] (A6), checked_on, notified_at?,
@@ -6834,10 +6867,10 @@ SX3-pinned — the Sheets Income tab.
   returns `{ configError: true }` → reason `"config_error"` rather than the
   misleading `"not_configured"` (F23).
 - **"Since last X" watermarks live in `user_settings`, not in cookies.**
-  The anomaly notifier (`last_anomaly_check_at`) and the "since you last
-  looked" dashboard widget (`last_dashboard_view_at`) both use a single
-  TIMESTAMPTZ column on the single-row `user_settings` table to scope
-  their respective queries. Storing server-side keeps the dedup logic
+  The anomaly notifier (`last_anomaly_txn_id` + `last_anomaly_check_at`
+  since cycle-8 E2c) and the "since you last looked" dashboard widget
+  (`last_dashboard_view_at`) keep their watermark in columns on the
+  single-row `user_settings` table to scope their respective queries. Storing server-side keeps the dedup logic
   intact across devices and across PIN re-logins, and the single-user
   app design means we never need a per-user dimension. New "since last X"
   features should follow the same pattern instead of inventing a cookie
@@ -7139,9 +7172,9 @@ upgrade) on a non-utility subscription alerts once per distinct amount; when a n
 takes only some rows under a name, the moved rows get a fresh detection row (no user state) on
 the next run; a price change later reverted keeps PRICE UP until the next charge;
 tests/roadmap-t2-4-x2a.test.js intermittently fails with a node:test runner IPC error.
-Batch 4 follow-ons: while another transaction holds a write open (a long CSV import, a stuck
-connection) the anomaly watermark can't pass its start, so alerts after it wait until it ends;
-the Plaid verifier's miss cache and lookup cap are per process — a flood of forged kids can
+Batch 4 follow-ons: (the anomaly watermark stalling behind an open transaction was closed by
+E2c — an id watermark with an overlap rescan; a transaction open more than 24 h before a check
+can now commit rows the overlap doesn't reach); the Plaid verifier's miss cache and lookup cap are per process — a flood of forged kids can
 spend the cap, so after a restart a real webhook whose kid isn't cached fails until the hour
 rolls (two instances each get their own); a deposit up to 24 h old that only now matches a pay
 pattern is announced late; "Since you last looked" still advances its watermark to now().
@@ -7188,7 +7221,11 @@ undismisses its subscription first.
 **Cycle-8 expansion E2 (planned — `.cycle/plan-e2-scheduler-watermarks.md`, batches E2a–E2d):** a due-based job
 runner over job_runs (ST1) and id watermarks with an overlap rescan for the anomaly, payday and "Since you last
 looked" checks (ST3). E2a + E2b done (ST1): every Perfin background job runs through `services/job-runner.js` when it
-is due (`job_runs.last_ran_at`). E2c / E2d (ST3) queued. Follow-ons: a failing job waits a full cadence before its next
+is due (`job_runs.last_ran_at`). E2c done (ST3, part 1): the anomaly check and "Paycheck landed" read new rows by
+transaction id with a 24 h overlap rescan (`services/txn-watermark.js`). E2d (ST3 for "Since you last looked") queued.
+E2c follow-ons: the anomaly check still announces at most 5 charges a run (LIMIT 5 — pre-existing); its
+transaction_id dedupe is a NOT EXISTS over notification_log per remaining candidate (no index on the JSON field);
+"Paycheck landed" now writes its watermark on a run that found nothing. Follow-ons: a failing job waits a full cadence before its next
 run (as with setInterval); jobs run one at a time, so a long one delays the rest; the runner ticks each watched job every
 5 minutes, so a job-health flush (a dashboard load's /api/data-health) can write up to 15 job_runs rows while awake; in a
 deploy overlap with pre-E2b code a job can run in both processes once.
@@ -7726,7 +7763,7 @@ Bank Sync & Ingestion:
   teller/data/csv-formats.js, scripts/import-csv-cli.js,
   teller/routes/webhooks.js, teller/services/webhook-verify.js,
   teller/routes/plaid-webhook-events.js, teller/routes/teller-webhook-events.js,
-  teller/services/webhook-status.js
+  teller/services/webhook-status.js, teller/services/txn-watermark.js
   (Teller and Plaid are co-equal, first-class linking paths — both write the
    same transactions/linked_accounts tables. Plaid additionally covers banks
    Teller doesn't, plus investment holdings.)
@@ -7949,7 +7986,7 @@ INV-141 | Bank webhooks are visible without ever exposing a payload: GET /api/da
 INV-140 | A Teller webhook is a trigger, not data: transactions.processed syncs only the enrollment(s) it names (by enrollment id or its transactions' account ids — never a SUSPENDED one) through the same syncOneTellerEnrollment the scheduled sync loops, coalesced per enrollment, recording nothing global (the enrollment's last_synced_at only), then ONE runPostSyncSteps; enrollment.disconnected changes only a GOOD enrollment and notifies once per transition | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w5.test.js + tests/contract/webhooks-w5.contract.test.js
 INV-139 | Plaid webhooks are opt-in by PUBLIC_URL alone (hosting.webhookBaseUrl — never RENDER_EXTERNAL_URL): without it no link token carries a webhook and registration is a 400; a clean sync never clears a webhook's advance warning (PENDING_EXPIRATION / PENDING_DISCONNECT — setPlaidItemErrorCode keepWarnings), only a re-authentication does; an ITEM ERROR sets the signal only for a re-auth code | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w4.test.js + tests/contract/webhooks-w4.contract.test.js
 INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs only the named GOOD item, through the same syncOnePlaidItem the scheduled sync loops, under withPlaidTxnLock and coalesced per item (a request during its run → one more round, never a parallel walk); it records nothing global (no last_txn_sync_at / last_sync_result — the item's last_synced_at only, stamped when the walk reached the end of the cursor) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w3.test.js + tests/contract/webhooks-w3.contract.test.js
-INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit — the landed check's tag looked up in notification_log across its 24 h overlap, cycle-8 F51) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4 + tests/contract/c8-batch4
+INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit — the landed check's tag looked up in notification_log across its 24 h overlap, cycle-8 F51, on an id watermark since E2c) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4 + tests/contract/c8-batch4 + tests/contract/txn-watermark-e2c
 INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included — and a routes/ai.js feature then answers 422 { ai_refusal }, never an empty 200, cycle-8 F24); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4 + apps/per-sistant/tests/broad-scan-c8-batch6 (F24)
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
 INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4), all under one batch_id, and a batch restore runs each row through the same restore in one transaction — a refused row stays deleted (cycle-8 E1c); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3 + tests/cycle8-e1c.test.js + tests/contract/resolve-undo-e1c
@@ -7960,6 +7997,7 @@ INV-149 | A linked task follows its source without ever overriding the user: one
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — and the sinking funds and subscription review — A9, the dates from cadence.js — and the contribution room — A10, from contributions recorded in investment_flows against limits the user entered — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged ; a what-if in Ask (A10) is whatIfPlan — buildAdvicePlan on inputs changed by applyWhatIf, never the model's arithmetic | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 / a9 / a10 + tests/contract/advice-a1
 INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes sets those columns (never the detectors; a rename re-key only copies the user's own setting from the row it retires onto the surviving row still on the default — E1 follow-on) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/cycle8-e1-followons.test.js + tests/contract/forecast-e1a + e1-followons
+INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/contract/txn-watermark-e2c + tests/contract/c8-batch4
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
