@@ -135,4 +135,19 @@ async function seedPersistent(req) {
   } finally { await db.end(); }
 }
 
-module.exports = { seedPerfin, seedPersistent };
+// Seed once per run (cycle-8 E5a): pages.spec.js and behaviour.spec.js both
+// call this; a second seedPerfin would duplicate "E2E Cash", the goal and the
+// subscription and its 1099-NEC POST would 409. The marker is the "E2E Cash"
+// manual account; a later call reads back what the first one returned. Files
+// run one at a time (workers: 1), so two calls never race.
+async function ensureSeeded(req) {
+  const accounts = await call(req, "get", "/perfin/api/accounts", {});
+  const list = Array.isArray(accounts) ? accounts : accounts.accounts || [];
+  const cash = list.find((a) => a.name === "E2E Cash" && a.is_manual);
+  if (cash) return { manualAccountId: cash.id, taxYear: Number(ymd(-3).slice(0, 4)) };
+  const out = await seedPerfin(req);
+  await seedPersistent(req);
+  return out;
+}
+
+module.exports = { seedPerfin, seedPersistent, ensureSeeded };

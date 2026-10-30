@@ -136,7 +136,8 @@
         var res = await apiFetch('/api/transactions/duplicates');
         if (!res.ok) return;
         var data = await res.json();
-        if (!data.duplicates || data.duplicates.length === 0) return;
+        // Cycle-8 E5a: the last pair deleted → clear the list (it used to stay on screen).
+        if (!data.duplicates || data.duplicates.length === 0) { document.getElementById('dup-section').style.display = 'none'; document.getElementById('dup-list').innerHTML = ''; return; }
 
         document.getElementById('dup-section').style.display = 'block';
         document.getElementById('dup-list').innerHTML = data.duplicates.map(function(d) {

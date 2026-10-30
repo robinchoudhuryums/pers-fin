@@ -18,6 +18,16 @@ Updated: 2026-10-30
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E5a (DONE, 2026-10-30) — ST4 part 1:** block `.cycle/blocks/8-e5a-broad-implement.md`.
+  - **Shipped:** `e2e/behaviour.spec.js` (8 tests — Activity rename + note, reimbursed, duplicate delete → Undo, Review
+    Uncategorized Apply, Calendar paid, budget rollover, rent payment → Undo, subscription cancel → Restore — each checks
+    the page, the API and a reload, then puts it back), `e2e/helpers.js`, `ensureSeeded`, `workers: 1`.
+  - **Fixed (exposed by test 3):** the duplicate finder kept a deleted pair on screen once the last one was gone.
+  - **Decisions confirmed:** plan decisions 1–5 as proposed; budgets are removed with the card's own Delete.
+  - **Verified:** npm test 3126/3127 (e1a pre-existing, date); e2e 82/82; mutations red (note dropped, rollover ignored,
+    payment not marking paid).
+  - **Where I left off:** E5a committed and pushed. Next: `/sync-docs`, `/broad-implement E5b`, `/broad-implement E5c`,
+    then cycle 8's `/reflect`.
 - **Cycle-8 E5 (PLANNED, 2026-10-30) — ST4 behaviour tests:** plan `.cycle/plan-e5-behaviour-tests.md`.
   - **Shape:** a new `e2e/behaviour.spec.js` — one test per key action (16) checking the page, the API and a reload,
     then putting the state back; its own uniquely named data; `workers: 1`; an idempotent `ensureSeeded` in seed.js.

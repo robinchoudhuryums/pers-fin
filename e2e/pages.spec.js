@@ -15,9 +15,9 @@
 // error, console error or non-501 5xx it triggers.
 // ============================================================================
 const { test, expect } = require("@playwright/test");
-const { seedPerfin, seedPersistent } = require("./seed");
+const { ensureSeeded } = require("./seed");
+const { PIN, loginWithPin, watch } = require("./helpers");
 
-const PIN = process.env.E2E_SHELL_PIN || "246810";
 // Log in ONCE and reuse the session: a fresh login per test lands on the
 // Per-sistant dashboard (~15 API calls) every time, which alone tripped
 // Per-sistant's 200-requests/15-min limiter part-way through the run before
@@ -40,34 +40,6 @@ function unexpected(pagePath, problems, gaps = KNOWN_GAPS) {
 const SWEEP_KNOWN_GAPS = {
   ...KNOWN_GAPS,
 };
-
-async function loginWithPin(page, pin) {
-  await page.goto("/login");
-  await expect(page.locator("#pin-pad .pin-key").first()).toBeVisible();
-  for (const d of String(pin)) await page.locator('.pin-key[data-digit="' + d + '"]').click();
-  await page.locator('.pin-key[data-action="go"]').click();
-  await page.waitForURL(/\/per-sistant/);
-}
-
-// Collect what would make a page "broken": an uncaught exception, or a server
-// error. 501 is expected (no AI key / push keys in the e2e environment).
-// A console.error counts too (G2) — except the browser's own "Failed to load
-// resource" line, which the response check above already judges (a 501 is
-// expected; a 4xx is often the right answer to a sweep click).
-function watch(page, label = () => "") {
-  const problems = [];
-  page.on("pageerror", (err) => problems.push(label() + "pageerror: " + err.message));
-  page.on("response", (res) => {
-    if (res.status() >= 500 && res.status() !== 501) problems.push(label() + res.status() + " " + res.url());
-  });
-  page.on("console", (msg) => {
-    if (msg.type() !== "error") return;
-    const text = msg.text();
-    if (/^Failed to load resource/.test(text)) return;
-    problems.push(label() + "console.error: " + text);
-  });
-  return problems;
-}
 
 // A control the sweep must never press: marked data-e2e-skip (the static
 // destructive buttons; the microphone buttons — a headless browser has no mic,
@@ -136,10 +108,10 @@ test.describe("every page loads cleanly", () => {
     const page = await context.newPage();
     await loginWithPin(page, PIN);
     sessionCookies = await context.cookies();
-    const seeded = await seedPerfin(page.request);
+    // Once per run: behaviour.spec.js seeds the same data (cycle-8 E5a).
+    const seeded = await ensureSeeded(page.request);
     manualAccountId = seeded.manualAccountId;
     taxYear = seeded.taxYear;
-    await seedPersistent(page.request);
     await context.close();
   });
 
