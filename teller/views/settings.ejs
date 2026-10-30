@@ -1258,11 +1258,14 @@
       el.innerHTML = '<span style="color:' + color + ';">' + monthly + ' hrs/mo</span> (' + hours + ' hrs/day)' +
         (monthly > 375 ? ' <span style="color:var(--red);font-size:11px;">\u2014 tight if running 2 apps on Render free tier (750 hrs shared)</span>' : '');
     }
-    // Override updateSetting to also refresh estimate
+    // Override updateSetting to also refresh estimate. It passes the result on:
+    // saveToggle and the module / widget switches read it, and an undefined
+    // put every saved switch back (cycle-8 E5b).
     var _origUpdate = updateSetting;
     updateSetting = async function(key, value) {
-      await _origUpdate(key, value);
+      var ok = await _origUpdate(key, value);
       if (key.startsWith('keep_alive')) updateKeepAliveEstimate();
+      return ok;
     };
     async function saveSnapshot() {
       const btn = document.getElementById('snapshot-btn');

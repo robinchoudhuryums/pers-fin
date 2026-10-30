@@ -8,14 +8,8 @@
 // ============================================================================
 const { Client } = require("pg");
 
-const ADMIN_URL = process.env.E2E_DATABASE_URL || "postgres://postgres:ci@localhost:5432/postgres";
+const { dbUrl } = require("./helpers");
 const HDR = { "X-Requested-With": "XMLHttpRequest" };
-
-function dbUrl(name) {
-  const u = new URL(ADMIN_URL);
-  u.pathname = "/" + name;
-  return u.toString();
-}
 function ymd(offsetDays) {
   const d = new Date(Date.now() + offsetDays * 86400000);
   return d.toISOString().slice(0, 10);

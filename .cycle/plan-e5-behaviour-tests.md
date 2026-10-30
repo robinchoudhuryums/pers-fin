@@ -1,6 +1,7 @@
 # Cycle 8 E5 — behaviour tests (plan, 2026-10-30)
 
-Status: E5a done (2026-10-30, block `.cycle/blocks/8-e5a-broad-implement.md`); E5b, E5c queued.
+Status: E5a done (2026-10-30, block `.cycle/blocks/8-e5a-broad-implement.md`); E5b done (2026-10-30, block
+`.cycle/blocks/8-e5b-broad-implement.md`); E5c queued.
 
 Scope: ST4 from the cycle-8 expansion plan (`.cycle/plan-cycle8-expansion.md`): state-change assertions in
 e2e for ~15 key actions.
@@ -73,7 +74,7 @@ puts it back.
 | Batch | Scope | Est. | Status |
 |-------|-------|------|--------|
 | E5a | The harness (decisions 1–4: `e2e/behaviour.spec.js` with its helpers — a unique tag, `apiJson`, a reload-and-recheck step; `workers: 1`; `ensureSeeded` and both specs on it) and the Perfin money actions 1–8: Activity rename + note, reimbursed, delete → Undo (seeds its own duplicate pair), Review Uncategorized Apply, Calendar paid, budget rollover, rent payment + Undo, subscription cancel + Uncancel. Mutation check on three of them | ~3.5h | done |
-| E5b | Perfin settings and chrome, actions 9–13: credit score, theme, a dashboard widget toggle, a refused / saved switch (F38's revert, through `page.route`), Mark all read (the one direct notification insert). Mutation check on two | ~2h | queued |
+| E5b | Perfin settings and chrome, actions 9–13: credit score, theme, a dashboard widget toggle, a refused / saved switch (F38's revert, through `page.route`), Mark all read (the one direct notification insert). Mutation check on two | ~2h | done |
 | E5c | Per-sistant actions 14–16: pin a note, complete a todo + subtask, log a habit, save a job. Mutation check on two. CLAUDE.md / README counts are /sync-docs' job | ~2.5h | queued |
 
 Order: E5a (the harness the other two use) → E5b → E5c. Total ≈ 8h. Then cycle 8's `/reflect`.

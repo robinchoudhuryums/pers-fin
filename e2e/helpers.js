@@ -51,9 +51,18 @@ async function apiSend(req, method, path, data) {
   return res.json().catch(() => ({}));
 }
 
+// A connection string for one of the scratch databases boot-server.js creates
+// (perfin_e2e / persistent_e2e) — for the few rows no route can create.
+const ADMIN_URL = process.env.E2E_DATABASE_URL || "postgres://postgres:ci@localhost:5432/postgres";
+function dbUrl(name) {
+  const u = new URL(ADMIN_URL);
+  u.pathname = "/" + name;
+  return u.toString();
+}
+
 // YYYY-MM-DD for a day offset from today (UTC — the e2e server runs on UTC).
 function ymd(offsetDays = 0) {
   return new Date(Date.now() + offsetDays * 86400000).toISOString().slice(0, 10);
 }
 
-module.exports = { PIN, HDR, loginWithPin, watch, apiJson, apiSend, ymd };
+module.exports = { PIN, HDR, loginWithPin, watch, apiJson, apiSend, ymd, dbUrl };

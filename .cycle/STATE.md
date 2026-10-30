@@ -18,6 +18,16 @@ Updated: 2026-10-30
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E5b (DONE, 2026-10-30) — ST4 part 2:** block `.cycle/blocks/8-e5b-broad-implement.md`.
+  - **Shipped:** behaviour tests 9–13 in `e2e/behaviour.spec.js` — a credit score logged, the theme, a dashboard widget
+    switched off / on, a refused switch going back and a saved one staying (page.route 400), Mark all read (the one direct
+    notification_log insert, deleted after); `dbUrl` moved into `e2e/helpers.js`.
+  - **Fixed (exposed by test 12):** Settings' updateSetting wrapper (the keep-alive estimate) dropped the result, so every
+    switch saved through saveToggle / the module and widget switches flipped back after a successful save (since F38).
+  - **Verified:** npm test 3126/3127 (e1a pre-existing, date); e2e 87/87; mutations red (the fix reverted → 11 + 12, the
+    credit widget's re-read → 9, read-all a no-op → 13).
+  - **Where I left off:** E5b committed and pushed. Next: `/sync-docs`, `/broad-implement E5c`, `/sync-docs`, then
+    cycle 8's `/reflect`.
 - **Cycle-8 E5a (DONE, 2026-10-30) — ST4 part 1:** block `.cycle/blocks/8-e5a-broad-implement.md`.
   - **Shipped:** `e2e/behaviour.spec.js` (8 tests — Activity rename + note, reimbursed, duplicate delete → Undo, Review
     Uncategorized Apply, Calendar paid, budget rollover, rent payment → Undo, subscription cancel → Restore — each checks

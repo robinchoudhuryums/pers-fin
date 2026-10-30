@@ -17,8 +17,9 @@
 // a time (workers: 1), so the click sweep never presses these rows mid-test.
 // ============================================================================
 const { test, expect } = require("@playwright/test");
+const { Client } = require("pg");
 const { ensureSeeded } = require("./seed");
-const { loginWithPin, watch, apiJson, apiSend, ymd, HDR } = require("./helpers");
+const { loginWithPin, watch, apiJson, apiSend, ymd, HDR, dbUrl } = require("./helpers");
 
 test.describe.configure({ mode: "serial" });
 
@@ -57,6 +58,23 @@ async function importCsvRow(req, label, date, merchant, amount) {
 
 function toast(page, text) {
   return page.locator("#toast-stack .toast", { hasText: text }).first();
+}
+
+// Settings fills every control from GET /api/settings in one synchronous step
+// (the widget switches among them) — waiting for them means a later change
+// can't be overwritten by that first load.
+async function openSettings(page) {
+  await page.goto("/perfin/settings");
+  await expect(page.locator('#widget-toggles input[data-widget="charts"]')).toBeAttached();
+}
+const settingsOf = (req) => apiJson(req, "/perfin/api/settings");
+
+// The one row in Perfin's database no route can create: a notification is only
+// written by sendToAll from a job or a sync (E5b, plan decision 2).
+async function perfinDb(fn) {
+  const db = new Client({ connectionString: dbUrl("perfin_e2e") });
+  await db.connect();
+  try { return await fn(db); } finally { await db.end(); }
 }
 
 test.describe("key actions change what they say they change", () => {
@@ -393,6 +411,191 @@ test.describe("key actions change what they say they change", () => {
     } finally {
       // Its own manual subscription — dismissed so it stays out of the forecast.
       await apiSend(page.request, "patch", `/perfin/api/subscriptions/${subId}/dismiss`);
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 9 ─────────────────────────────────────────────────────────────────────────
+  test("Dashboard: a logged credit score becomes the current one, and removing it brings the earlier one back", async ({ page }) => {
+    const problems = watch(page);
+    const t = tagOf();
+    const source = `E5 Bureau ${t}`;
+    const scores = async () => (await apiJson(page.request, "/perfin/api/credit-scores?limit=12")).scores || [];
+    let id = null;
+    try {
+      await page.goto("/perfin/dashboard");
+      const widget = page.locator("#credit-score-widget");
+      await widget.locator("#cs-score-input").fill("611");
+      await widget.locator("#cs-type-input").selectOption("other");
+      await widget.locator("#cs-source-input").fill(source);
+      await widget.getByRole("button", { name: "Log score" }).click();
+      await expect(widget.locator("#cs-status")).toHaveText("Logged ✓");
+      // (a) the widget re-reads: 611 is the current score and the form is cleared.
+      await expect(widget.locator("#credit-score-current")).toHaveText("611");
+      await expect(widget.locator("#cs-score-input")).toHaveValue("");
+      // (b) the API: the newest entry, with its type and source.
+      const [latest] = await scores();
+      expect(latest).toMatchObject({ score: 611, score_type: "other", source });
+      id = latest.id;
+      // (c) after a reload.
+      await page.reload();
+      await expect(page.locator("#credit-score-current")).toHaveText("611");
+    } finally {
+      // Its own entry — removed so the seeded score is current again.
+      if (id) await apiSend(page.request, "delete", `/perfin/api/credit-scores/${id}`);
+    }
+    const after = await scores();
+    expect(after.find((s) => s.source === source)).toBeUndefined();
+    await page.reload();
+    await expect(page.locator("#credit-score-current")).toHaveText(after.length ? String(after[0].score) : "");
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 10 ────────────────────────────────────────────────────────────────────────
+  test("Settings: switching the theme applies it, stores it, and survives a reload without the local copy", async ({ page }) => {
+    const problems = watch(page);
+    const start = (await settingsOf(page.request)).theme || "dark";
+    const other = start === "dark" ? "light" : "dark";
+    const html = page.locator("html");
+    await openSettings(page);
+    await expect(page.locator("#theme-select")).toHaveValue(start);
+    try {
+      await page.locator("#theme-select").selectOption(other);
+      await expect(toast(page, "Setting saved.")).toBeVisible();
+      // (a) the page switches at once.
+      await expect(html).toHaveAttribute("data-theme", other);
+      // (b) the API.
+      expect((await settingsOf(page.request)).theme).toBe(other);
+      // (c) a reload with the browser's copy gone still comes back in it —
+      // the stored setting, not localStorage, decides.
+      await page.evaluate(() => localStorage.removeItem("perfin-theme"));
+      await openSettings(page);
+      await expect(html).toHaveAttribute("data-theme", other);
+      await expect(page.locator("#theme-select")).toHaveValue(other);
+      // Put back through the page.
+      await page.locator("#theme-select").selectOption(start);
+      await expect(html).toHaveAttribute("data-theme", start);
+      await expect.poll(async () => (await settingsOf(page.request)).theme).toBe(start);
+    } finally {
+      if ((await settingsOf(page.request)).theme !== start) await apiSend(page.request, "patch", "/perfin/api/settings", { theme: start });
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 11 ────────────────────────────────────────────────────────────────────────
+  test("Settings: switching a dashboard widget off hides it on the dashboard, and on again shows it", async ({ page }) => {
+    const problems = watch(page);
+    const box = page.locator('#widget-toggles input[data-widget="charts"]');
+    const charts = page.locator(".charts-grid").first();
+    const widgetsOf = async () => (await settingsOf(page.request)).dashboard_widgets || {};
+    expect((await widgetsOf()).charts).not.toBe(false);
+    try {
+      await openSettings(page);
+      await expect(box).toBeChecked();
+      await box.uncheck();
+      await expect(toast(page, "Setting saved.")).toBeVisible();
+      await expect(box).not.toBeChecked(); // a saved switch stays where it was put
+      // (b) the API.
+      await expect.poll(async () => (await widgetsOf()).charts).toBe(false);
+      // (a) the dashboard hides the section.
+      await page.goto("/perfin/dashboard");
+      await expect(charts).toHaveClass(/\bwidget-off\b/);
+      await expect(charts).toBeHidden();
+      // (c) after a reload, on both pages.
+      await page.reload();
+      await expect(charts).toBeHidden();
+      await openSettings(page);
+      await expect(box).not.toBeChecked();
+      // Put back through the page.
+      await box.check();
+      await expect.poll(async () => (await widgetsOf()).charts).toBe(true);
+      await expect(box).toBeChecked();
+      await page.goto("/perfin/dashboard");
+      await expect(charts).toBeVisible();
+      await expect(charts).not.toHaveClass(/\bwidget-off\b/);
+    } finally {
+      const w = await widgetsOf();
+      if (w.charts === false) await apiSend(page.request, "patch", "/perfin/api/settings", { dashboard_widgets: { ...w, charts: true } });
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 12 ────────────────────────────────────────────────────────────────────────
+  test("Settings: a switch whose save is refused goes back, and one that saves stays (F38)", async ({ page }) => {
+    const problems = watch(page);
+    const stored = async () => (await settingsOf(page.request)).insight_emails_enabled !== false;
+    const start = await stored();
+    const input = page.locator("#insight-email-toggle");
+    // The checkbox is visually hidden inside its slider; a person clicks the slider.
+    const slider = page.locator("label.toggle", { has: input });
+    const expectChecked = (on) => (on ? expect(input).toBeChecked() : expect(input).not.toBeChecked());
+    try {
+      await openSettings(page);
+      await expectChecked(start);
+      // Refused: the server answers the PATCH with a 400.
+      let refused = 0;
+      await page.route("**/perfin/api/settings", async (route) => {
+        if (route.request().method() !== "PATCH") return route.continue();
+        refused++;
+        return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "E5 refused this save" }) });
+      });
+      await slider.click();
+      await expect(toast(page, "E5 refused this save")).toBeVisible();
+      expect(refused).toBe(1);
+      // (a) the switch shows what is stored again; (b) nothing changed on the server.
+      await expectChecked(start);
+      expect(await stored()).toBe(start);
+      await page.unroute("**/perfin/api/settings");
+
+      // Saved: it stays flipped, the API agrees, a reload shows it.
+      await slider.click();
+      await expect(toast(page, "Setting saved.")).toBeVisible();
+      await expectChecked(!start);
+      expect(await stored()).toBe(!start);
+      await openSettings(page);
+      await expectChecked(!start);
+      // Put back through the page.
+      await slider.click();
+      await expectChecked(start);
+      await expect.poll(stored).toBe(start);
+    } finally {
+      if ((await stored()) !== start) await apiSend(page.request, "patch", "/perfin/api/settings", { insight_emails_enabled: start });
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 13 ────────────────────────────────────────────────────────────────────────
+  test("Bell: Mark all read clears the unread badge, in the API and after a reload", async ({ page }) => {
+    const problems = watch(page);
+    const t = tagOf();
+    const title = `E5 bell ${t}`;
+    const id = await perfinDb(async (db) => (await db.query(
+      `INSERT INTO notification_log (type, title, body, data, is_read) VALUES ('e5-test', $1, 'A behaviour-test notification.', '{}'::jsonb, false) RETURNING id`,
+      [title])).rows[0].id);
+    const unread = async () => (await apiJson(page.request, "/perfin/api/notifications?unread=true&limit=50"));
+    try {
+      await page.goto("/perfin/goals");
+      const bell = page.locator("#nav-notif-bell");
+      const badge = page.locator("#nav-notif-count");
+      await expect(badge).toBeVisible();
+      await expect(bell).toHaveAttribute("aria-label", /unread/);
+      await bell.click();
+      const item = page.locator(`#notif-list [data-nid="${id}"]`);
+      await expect(item).toHaveAttribute("aria-label", new RegExp(title + ", unread"));
+      await page.locator("#notif-mark-all").click();
+      // (a) the badge goes and the open list re-renders the row as read.
+      await expect(badge).toBeHidden();
+      await expect(bell).toHaveAttribute("aria-label", "Notifications");
+      await expect(item).not.toHaveAttribute("aria-label", /unread/);
+      // (b) the API: the row is read (no longer in the unread list).
+      expect((await unread()).notifications.find((n) => Number(n.id) === Number(id))).toBeUndefined();
+      // (c) after a reload.
+      await page.reload();
+      await expect(page.locator("#nav-notif-bell")).toHaveAttribute("aria-label", "Notifications");
+      await expect(page.locator("#nav-notif-count")).toBeHidden();
+    } finally {
+      // Its own row — removed (the others it marked read stay read).
+      await perfinDb((db) => db.query("DELETE FROM notification_log WHERE id = $1", [id]));
     }
     expect(problems, problems.join("\n")).toEqual([]);
   });
