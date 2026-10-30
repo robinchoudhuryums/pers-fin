@@ -18,6 +18,13 @@ Updated: 2026-10-30
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E5 (PLANNED, 2026-10-30) — ST4 behaviour tests:** plan `.cycle/plan-e5-behaviour-tests.md`.
+  - **Shape:** a new `e2e/behaviour.spec.js` — one test per key action (16) checking the page, the API and a reload,
+    then putting the state back; its own uniquely named data; `workers: 1`; an idempotent `ensureSeeded` in seed.js.
+  - **Batches:** E5a harness + Perfin money actions 1–8 (~3.5h); E5b Perfin settings / chrome 9–13 (~2h);
+    E5c Per-sistant 14–16 (~2.5h). Decisions are proposed — confirm at `/broad-implement E5a`.
+  - **Where I left off:** E4 docs synced (7c196a1). Next: `/broad-implement E5a`, `/broad-implement E5b`,
+    `/broad-implement E5c` (each with `/sync-docs`), then cycle 8's `/reflect`.
 - **Cycle-8 E4b (DONE, 2026-10-30) — G3, E4 complete:** block `.cycle/blocks/8-e4b-broad-implement.md`.
   - **Shipped:** `teller/services/freshness.js` (ageInfo, readConnections, overallFreshness, connectionFreshness) behind
     data-health's connection list (unchanged) and GET /api/data-freshness (+ connections, overall); the nav badge reads
