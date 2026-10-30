@@ -1444,9 +1444,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3086 tests as of latest); use
+  Perfin and Per-sistant test files (3095 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3086 tests across 168 test files (incl.
+  Current count: 3095 tests across 169 test files (incl.
+  `apps/per-sistant/tests/cycle8-e3e.test.js` — cycle-8 E3e (ST2), Per-sistant's half of one alert per item:
+  perfinPushedItems (standalone / no items → no query; only push_state sent within 12 h for these items; a failed read
+  → none), annotateNotify marking an item Perfin pushed notify:false while keeping the entry, housingItem (the month of
+  the line's due date), openLinkedItems (open untrashed tasks for these keys, fail-soft) and housingDueUnlessTask hiding
+  the line only for its own month's task, and GET /api/notifications/check (housing_due with its item and notify:false
+  once Perfin pushed it; left out while its task is open, the task's own entry carrying the item);
   `tests/cycle8-e3d.test.js` — cycle-8 E3d (ST2): sendToAll with an item over a fake notification_log and a fake
   Per-sistant pool wired as the shell wires it (an open linked task → covered, logged read with its item_key, `logged`
   true, nothing pushed; a closed task, a failed lookup or standalone → pushed; muted before any lookup; no item or a
@@ -2508,8 +2514,11 @@ shell/
   hold expired on the real SQL, the push_state CHECK). Since E3d, notify-e3d (both apps' real databases wired as the
   shell wires them: with linked tasks off the rent and utility-amount reminders pushed with their item_key; on, one task
   each and both reminders logged covered and read — the bell's unread count 0 — with nothing pushed; the rent task
-  completed by hand → the next rent reminder pushed again).
-  319 tests, run
+  completed by hand → the next rent reminder pushed again). Since E3e, notify-e3e (both apps' real databases wired as
+  the shell wires them: with linked tasks off Perfin pushes the rent reminder and Per-sistant's check lists housing_due
+  with its item and notify:false — notifying again once that push is 13 hours old; on, Perfin's push covered, housing_due
+  left out and the task's own entry carrying the item and notifying).
+  322 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3625,9 +3634,11 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   open until the bill is marked paid, however old (F17); a task the sync closes is not your
   completion — no todo_completed automation / webhook / Slack post, and Per-sistant's
   analytics, weekly review, Ask and stats leave it out (F18); webhooks and Slack get only a
-  kind label for a linked task, never its amounts or payee (F19); while a rent task is open,
-  Per-sistant's housing_due notification and briefing rent line stay quiet (F23), and while
-  any task is open Perfin's own push for the same item is not sent (cycle-8 E3d). Checked
+  kind label for a linked task, never its amounts or payee (F19); while the owed month's rent task is open,
+  Per-sistant's housing_due notification and briefing rent line stay quiet (F23; that month's
+  task only since cycle-8 E3e), while any task is open Perfin's own push for the same item is
+  not sent (cycle-8 E3d), and Per-sistant raises no browser notification for an item Perfin
+  pushed in the last 12 hours (E3e). Checked
   hourly but run once a local day unless something changed (F21), right after a housing,
   housing-config, bill-payment, manual-bill or tax-document write, and on "Run now" (`POST
   /api/linked-tasks/run`); the section shows "Last run …: N outstanding, N closed" with any
@@ -4251,6 +4262,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   Integration section). **One item, one alert (cycle-8 E3d, ST2):** the rent, utility-amount
   and still-charging pushes name their item; while Per-sistant has an open linked task for it
   (Per-sistant Tasks on), the push isn't sent — the bell row is written read as "covered".
+  The other way round (cycle-8 E3e): Per-sistant raises no browser notification for an item
+  Perfin pushed in the last 12 hours.
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
   styles, WCAG AA contrast-compliant text colors. Modals and the bell panel go through the
   shared `openDialog` / `watchDialog` (focus trap, Esc, focus restore — IF-1); form controls
@@ -4480,7 +4493,11 @@ shared session cookie. Cross-app surface area today:
   `notify` (false inside quiet hours or for a muted kind), plus a top-level
   `quiet`. The dashboard raises no browser notification for `notify: false`; the
   Reminders widget still lists every entry. Per-sistant's Settings links to
-  Perfin's section under the shell.
+  Perfin's section under the shell. Since cycle-8 E3e each entry also names its
+  `item` (a linked task's source_key without `perfin:`; housing_due's
+  `housing:<month of its due date>`), and an item Perfin pushed in the last 12
+  hours (`perfinPushedItems` — notification_log push_state sent, read-only) is
+  `notify: false` — one interruption per item across the two apps.
 - **Productivity context** (`GET /api/persistent/productivity-context`):
   task/review stats from Per-sistant (embedded fast-path queries Per-sistant's
   pool via `queryPersistentStats` / `queryPersistentReview`; HTTP fetch is the
@@ -4735,7 +4752,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3086 tests passing across 168 test files (Perfin 2355 + Per-sistant 731), plus the real-Postgres route contract suite (319 tests; CI `migrations` job, `npm run test:contract`) and 74 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 3095 tests passing across 169 test files (Perfin 2355 + Per-sistant 740), plus the real-Postgres route contract suite (322 tests; CI `migrations` job, `npm run test:contract`) and 74 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -7333,9 +7350,9 @@ tombstone short of the database); a manual bill autopaid and never marked paid k
 open indefinitely; a failing statement rolls back the whole linked-task run, and a run waits
 without a timeout while another holds the lock; a change that reaches the sources without a
 kicking route waits for the next local day's tick; an automation or webhook relying on
-todo_completed for a Perfin-closed task no longer fires; any open housing task hides the
-housing_due line, and Perfin's own payment-due push still fires beside the task (the scan's G2
-— one reminder per real-world item, quiet hours — is the follow-on).
+todo_completed for a Perfin-closed task no longer fires. (Any open housing task hiding the
+housing_due line, and Perfin's payment-due push firing beside the task, were closed by cycle-8
+E3d / E3e — one reminder per item.)
 Batch 6 follow-ons: the audit's period words are English-phrase lists, so "back in the fall" or
 "over the holidays" isn't read as another period; a bare other year anywhere before a claim in its
 sentence skips it unless the sentence says "this month"; an unreadable frontmatter line that starts
@@ -7364,7 +7381,9 @@ restored, pre-E1c Resolves are batched by the migration. Still open: the forecas
 and subscriptions only (manual bills and income streams aren't listed or correctable); a surviving row that already
 has its own setting keeps it (the retired row's is dropped); Resolve still has no page (API only); the legacy
 batching groups by an identical deleted_at (only Resolve deletes several csv rows in one transaction). Test
-follow-ons: tests/contract/cash-alerts-l2's seed is still date-dependent (fails in a 31-day month); an e2e click
+follow-ons: tests/contract/cash-alerts-l2's seed is still date-dependent (fails in a 31-day month), and so is
+tests/cycle8-e1a.test.js's "auto: the subscription and the plain transfer are billed" (its last charge is set N days
+back, the forecast steps by calendar month — the next date is a day off near the end of a 31-day month, e.g. Oct 30); an e2e click
 sweep that changes seeded state (Dismiss on the Subscriptions page) can affect a later check — the E1b check
 undismisses its subscription first.
 
@@ -7383,7 +7402,7 @@ run (as with setInterval); jobs run one at a time, so a long one delays the rest
 5 minutes, so a job-health flush (a dashboard load's /api/data-health) can write up to 15 job_runs rows while awake; in a
 deploy overlap with pre-E2b code a job can run in both processes once.
 
-**Cycle-8 expansion E3 (in progress — `.cycle/plan-e3-notifications.md`, batches E3a–E3e):** quiet hours and a
+**Cycle-8 expansion E3 (done — `.cycle/plan-e3-notifications.md`, batches E3a–E3e):** quiet hours and a
 mute per kind of alert in both apps (G2), and one alert per real-world item across Perfin's push, Per-sistant's
 notifications and linked tasks (ST2). E3a done: the kind catalog and the decision (`services/notify-prefs.js`), the two
 settings with PATCH validation, and notification_log.push_state / item_key. E3b done: Perfin's pushes follow them —
@@ -7391,7 +7410,12 @@ held during quiet hours and released after (one summary for several; the notify-
 never pushed or emailed. E3c done (G2 complete): Settings → Quiet Hours & Muting, the bell naming a held / expired /
 muted push, and Per-sistant's notification check following the same settings. E3d done (ST2 core): a Perfin push about an
 item that has an open Per-sistant linked task is logged covered (read) and not pushed — the rent, utility-amount and
-still-charging pushes carry their items; E3e (Per-sistant leaving out what Perfin already pushed) is queued. E3d
+still-charging pushes carry their items. E3e done (ST2 complete): Per-sistant's notification check names each entry's
+item and raises no browser notification for one Perfin pushed in the last 12 hours (still listed), and housing_due steps
+aside only for its own month's open task. E3e follow-ons: notification_log has no index on item_key (the 12 h read is a
+scan of recent rows); the 12 h window counts from the row's created_at, so a held push released later reads older than it
+is; a trashed or deleted month's task lets housing_due show again for that month; manual bills and tax documents have no
+Perfin push, so their tasks carry no pushed-item check. E3d
 follow-ons: a still-charging alert is never covered on its first send (its task is made after the push, and has no due
 date, so the push is the interruption); the rent reminder's item is the month in its tag, so with several months owed
 only that month's task is consulted; a task completed by hand without paying stops covering, but the reminder's 72 h
@@ -8172,7 +8196,7 @@ INV-136 | WebAuthn credential ids are stored exactly as the authenticator report
 INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — and the sinking funds and subscription review — A9, the dates from cadence.js — and the contribution room — A10, from contributions recorded in investment_flows against limits the user entered — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged ; a what-if in Ask (A10) is whatIfPlan — buildAdvicePlan on inputs changed by applyWhatIf, never the model's arithmetic | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 / a9 / a10 + tests/contract/advice-a1
 INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes sets those columns (never the detectors; a rename re-key only copies the user's own setting from the row it retires onto the surviving row still on the default — E1 follow-on) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/cycle8-e1-followons.test.js + tests/contract/forecast-e1a + e1-followons
 INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read ; the dashboard's "Since you last looked" follows the mark-before-read and forward-only rules without the overlap — /seen stores the mark its GET read (seen_token, cycle-8 E2d), never now() | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/cycle8-e2d.test.js + tests/contract/txn-watermark-e2c + whats-new-e2d + c8-batch4
-INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push; a held push is released once quiet hours end — marked sent only after the push went out, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js
+INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push; a held push is released once quiet hours end — marked sent only after the push went out, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d); Per-sistant's check marks notify:false an item Perfin pushed (push_state sent) in the last 12 hours, still listed, and housing_due steps aside only for its own month's open task (cycle-8 E3e) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js + apps/per-sistant/tests/cycle8-e3e.test.js + tests/contract/notify-e3e.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
