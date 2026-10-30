@@ -187,6 +187,19 @@ teller/
                            backup.sh stamps user_settings.last_backup_at),
                            webhookBaseUrl (PUBLIC_URL ONLY — the opt-in for bank
                            webhooks, roadmap T2.1 W4)
+    freshness.js         — How fresh the bank data is (cycle-8 E4b, G3): the ONE
+                           definition behind Sync Health's connection list, GET
+                           /api/data-freshness and the nav badge (INV-154). ageInfo
+                           (fresh < 6 h, aging < 24 h, else / never stale),
+                           CONNECTIONS_SQL + readConnections (non-SUSPENDED Teller
+                           enrollments and non-CSV Plaid items with their own
+                           last_synced_at; NEEDS_REAUTH for a Plaid re-auth code),
+                           overallFreshness (pure: a NEEDS_REAUTH / DISCONNECTED
+                           connection → stale, reason reauth / disconnected, named;
+                           else the OLDEST connection — none recorded counts oldest,
+                           reason never — basis connections; with no connection the
+                           newest global stamp, basis global), connectionFreshness
+                           (a failed read → the global basis, connections_error)
     error-log.js         — In-app error log (roadmap T1.4): install() wraps
                            console.error in the shell (still prints); capture()
                            groups each call by fingerprint (source app from the
@@ -905,6 +918,9 @@ teller/
                            POST /api/sheets/dashboard, GET /api/export,
                            GET /api/data-freshness, POST /api/linked-tasks/run
                            (Settings' "Run now" for the linked tasks — T2.4 X2c).
+                           GET /api/data-freshness also returns `connections` and
+                           `overall` (services/freshness.js — cycle-8 E4b), and
+                           gatherDataHealth's connection list reads the same helper.
                            GET /api/data-health's body is gatherDataHealth(db,
                            { persistentPool }) (design D3 — the dashboard summary
                            counts its warnings)
@@ -1253,8 +1269,12 @@ teller/
     partials/head.ejs    — HTML head (meta, PWA manifest, apple-touch-icon, viewport-fit,
                            dual light/dark theme-color, skip-link)
     partials/nav.ejs     — Top navigation bar with helmet logo icon, "Synced Xm ago"
-                           badge with color-coded staleness (green/yellow/red) and per-source
-                           tooltip (hidden on mobile to free up nav width — same data
+                           badge — since cycle-8 E4b a link to /settings#sync-health
+                           that reads /api/data-freshness's `overall` (the oldest bank
+                           connection; "Reconnect <bank>" for one needing re-auth or
+                           disconnected; renderSyncBadge, level classes sync-fresh /
+                           -aging / -stale) with a per-connection tooltip (hidden on
+                           mobile to free up nav width — same data
                            available in Settings + the notification log), notification
                            bell with unread count + dropdown panel (drops down on
                            desktop, slides up as a bottom sheet with backdrop on
@@ -1467,9 +1487,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3109 tests as of latest); use
+  Perfin and Per-sistant test files (3127 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3109 tests across 170 test files (incl.
+  Current count: 3127 tests across 171 test files (incl.
+  `tests/cycle8-e4b.test.js` — cycle-8 E4b (G3): services/freshness.js's ageInfo edges, overallFreshness (the oldest
+  connection wins, a webhook-synced one fresh beside two-day-old global stamps, a re-auth / disconnected one stale and named
+  whatever the others' ages, a never-synced one oldest, the global fallback and none at all), the connections SQL and
+  mapping, a failed read → the global basis; GET /api/data-freshness keeping its old fields and adding connections / overall
+  on both bases; data-health's connections equal readConnections'; the badge run in a vm from nav.ejs (text, level class,
+  tooltip, aria-label, "Reconnect <bank>", the global tooltip, no overall / a failed load → empty), no inline colour or
+  /api/settings read, the CSS classes, and nav.ejs rendered with the Sync Health link under both mounts;
   `tests/cycle8-e4a.test.js` — cycle-8 E4a (ST5): certExpiresAt on a fixture certificate, localChecks' expiry branches
   (expired → fail, within 30 days → warn, the compromised cert first), each goLiveChecks branch over an injected env and
   a fake pool (the Teller cert missing with live / suspended enrollments, the shared database under the shell only,
@@ -2551,8 +2578,10 @@ shell/
   database failing local:backup without a GitHub token, cleared by db-backup.yml's own statement read out of the
   workflow and failing again at 40 h; reset-fresh's to_jsonb read on the real schema; a GOOD Plaid item under sandbox
   warning — a CSV item not counted — and a Teller enrollment without a certificate failing until SUSPENDED, through GET
-  /api/operator-checks and data-health).
-  325 tests, run
+  /api/operator-checks and data-health). Since E4b, operator-freshness-e4b (a Plaid item synced 15 minutes ago fresh
+  through GET /api/data-freshness while last_txn_sync_at is 48 h old; a second item 30 h old → stale naming it, a CSV item
+  and a suspended enrollment never counted; a re-auth code → reason reauth; data-health listing the same connections).
+  328 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2711,7 +2740,7 @@ shell/
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
 - `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 74 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
-a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back, and Settings → Quiet Hours & Muting (cycle-8 E3c): quiet hours and a mute saved and read back, and Per-sistant's Settings link to it). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back, and Settings → Quiet Hours & Muting (cycle-8 E3c): quiet hours and a mute saved and read back, and Per-sistant's Settings link to it, and the nav sync badge (cycle-8 E4b): its level class and aria-label, and a click landing on Sync Health). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -4201,12 +4230,19 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   Every switch saved through `updateSetting` goes through `saveToggle(box, key)`: a save the server
   refused or that never reached it puts the switch back (cycle-8 F38 — it stayed flipped); the
   insight-module and dashboard-widget switches revert the same way.
-- **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" with color-coded
-  staleness: green (<6h), yellow (6-24h), red (>24h). Tooltip shows per-source
-  freshness (transactions, balances, auto-sync). Populated from the most recent of
-  `last_auto_sync_at`, `last_txn_sync_at`, `last_balance_sync_at`. Hidden on
-  mobile (≤640px) to free up nav width — same data lives in Settings and the
-  notification log.
+- **"Last synced" nav badge** (Phase D; cycle-8 E4b, G3): top nav shows "Synced 47m ago",
+  coloured by a level class — quiet when fresh (<6h), yellow when aging (6-24h), red when
+  stale (>24h). Since E4b it reads `GET /api/data-freshness`'s `overall`
+  (services/freshness.js): with bank connections, the OLDEST one's own `last_synced_at` (a
+  webhook sync stamps only its connection, never the global stamps, so the old newest-of-
+  three badge said "2d ago" while the data was minutes old and hid a connection that had
+  stopped syncing); a connection that needs re-authentication or is disconnected → red
+  "Reconnect <bank>"; one with no complete sync recorded → "Not synced yet"; with no
+  connection (CSV / manual only) the newest of `last_auto_sync_at`, `last_txn_sync_at`,
+  `last_balance_sync_at`. The tooltip lists each connection's state; the badge is a link
+  to `/settings#sync-health` (aria-label "<text> — open Sync Health"); a failed load leaves
+  it hidden. Hidden on mobile (≤640px) to free up nav width — same data lives in Settings
+  and the notification log.
 - **Unified notification center**: In-app notification history via `notification_log`
   table. Nav bar bell icon shows unread count badge. Desktop: clicking opens a
   drop-down panel (`.notif-panel`) anchored top-right. Mobile (≤640px): the panel
@@ -4228,7 +4264,11 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   `stale` flag (>24h), and an explicit `level` (`"fresh"` <6h / `"aging"` 6-24h /
   `"stale"` >24h or never synced). The response also includes a top-level
   `thresholds: { fresh_seconds, stale_seconds }` block so the nav badge's
-  green/yellow/red mapping doesn't need to repeat threshold constants.
+  green/yellow/red mapping doesn't need to repeat threshold constants. Since
+  cycle-8 E4b it also returns `connections` (the list Sync Health shows) and
+  `overall` (`{ basis connections|global, level, reason null|reauth|disconnected|never,
+  timestamp, age_seconds, connection { provider, id, institution } | null }` —
+  services/freshness.js), which the nav badge reads.
   `POST /api/sync` (Teller + Plaid) updates `last_txn_sync_at`;
   `POST /api/sync-balances` updates `last_balance_sync_at`. A reconcile stamps
   `last_txn_sync_at` only when every leg completed (BSI-11).
@@ -4801,7 +4841,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3109 tests passing across 170 test files (Perfin 2369 + Per-sistant 740), plus the real-Postgres route contract suite (325 tests; CI `migrations` job, `npm run test:contract`) and 74 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 3127 tests passing across 171 test files (Perfin 2387 + Per-sistant 740), plus the real-Postgres route contract suite (328 tests; CI `migrations` job, `npm run test:contract`) and 74 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5248,7 +5288,10 @@ GET  /api/dashboard/summary # the dashboard's Summary card + Needs attention (de
                            # href, amount?, count }], errors[{ source, error }] } } — a
                            # failed part { ok: false, error: <fixed sentence> }; each
                            # figure from its own screen's helper (INV-147)
-GET  /api/data-freshness   # per-source sync timestamps with staleness flags
+GET  /api/data-freshness   # per-source sync timestamps with staleness flags +
+                           # connections and overall (the oldest bank connection;
+                           # re-auth / disconnected stale; the global stamps with no
+                           # connection — services/freshness.js, cycle-8 E4b)
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
                            # heartbeats (jobs[] with per-job staleness from
@@ -7453,7 +7496,7 @@ run (as with setInterval); jobs run one at a time, so a long one delays the rest
 5 minutes, so a job-health flush (a dashboard load's /api/data-health) can write up to 15 job_runs rows while awake; in a
 deploy overlap with pre-E2b code a job can run in both processes once.
 
-**Cycle-8 expansion E4 (in progress — `.cycle/plan-e4-operator-freshness.md`, batches E4a–E4b):** token-free
+**Cycle-8 expansion E4 (done — `.cycle/plan-e4-operator-freshness.md`, batches E4a–E4b):** token-free
 go-live checks (ST5) and a nav freshness badge that reads each connection (G3). E4a done: goLiveChecks (the Teller
 cert missing or expiring, the shared database, PUBLIC_URL's shape, API_KEY / SHELL_SECRET strength, Plaid env ↔
 secret, the Teller webhook secret's parts) and the backup record written by db-backup.yml too, so the backup check
@@ -7462,7 +7505,13 @@ the right environment, an API_KEY that differs from the workflows' secret or a r
 local:backup trusts the stamp (one written by hand, or carried by a restore, reads as a backup); with a GitHub token
 and no SERVER_BACKUPS the GitHub backup check stays the only one. Test follow-on: tests/contract/persistent.contract's
 "GET /api/calendar projects recurring todos" is date-dependent (a daily todo due tomorrow has no projection in this
-month on the month's last two days). OPERATOR: expect one "Operator checks: N need attention" push after deploying E4a.
+month on the month's last two days). OPERATOR: expect one "Operator checks: N need attention" push after deploying E4a. E4b done (G3):
+services/freshness.js behind Sync Health's connections, /api/data-freshness's new `overall` and the nav badge — the
+oldest bank connection, "Reconnect <bank>" for one needing it, a link to Sync Health. E4b follow-ons: a Teller
+enrollment with one permanently failing account never stamps last_synced_at, so the badge stays red on it (no way to mark
+an account expected-to-fail); with several connections needing re-auth the badge names the first (the tooltip lists all);
+a Plaid first sync that pages through max_pages over several runs reads "Not synced yet" until it reaches the end of its
+cursor; every Perfin page load runs one more small query (the connections); no Per-sistant badge.
 
 **Cycle-8 expansion E3 (done — `.cycle/plan-e3-notifications.md`, batches E3a–E3e):** quiet hours and a
 mute per kind of alert in both apps (G2), and one alert per real-world item across Perfin's push, Per-sistant's
@@ -8056,7 +8105,7 @@ AI Insights & Audit:
 Settings, Notifications & Cross-app:
   teller/routes/settings.js, teller/routes/notifications.js,
   teller/routes/persistent.js, teller/services/linked-tasks.js,
-  teller/services/notify-prefs.js
+  teller/services/notify-prefs.js, teller/services/freshness.js
   (Seam: the matching Per-sistant integration files —
    apps/per-sistant/routes/perfin.js + routes/webhooks.js — are audited
    together with this subsystem from both sides.)
@@ -8259,6 +8308,7 @@ INV-150 | The cash plan's figures come from code, never the model: services/advi
 INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes sets those columns (never the detectors; a rename re-key only copies the user's own setting from the row it retires onto the surviving row still on the default — E1 follow-on) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/cycle8-e1-followons.test.js + tests/contract/forecast-e1a + e1-followons
 INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read ; the dashboard's "Since you last looked" follows the mark-before-read and forward-only rules without the overlap — /seen stores the mark its GET read (seen_token, cycle-8 E2d), never now() | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/cycle8-e2d.test.js + tests/contract/txn-watermark-e2c + whats-new-e2d + c8-batch4
 INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push; a held push is released once quiet hours end — marked sent only after the push went out, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d); Per-sistant's check marks notify:false an item Perfin pushed (push_state sent) in the last 12 hours, still listed, and housing_due steps aside only for its own month's open task (cycle-8 E3e) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js + apps/per-sistant/tests/cycle8-e3e.test.js + tests/contract/notify-e3e.contract.test.js
+INV-154 | Freshness has one definition — services/freshness.js (readConnections / overallFreshness / connectionFreshness) behind Sync Health's connection list (gatherDataHealth), GET /api/data-freshness and the nav badge; the badge never shows a fresher age than the oldest active bank connection's own last_synced_at, a connection needing re-authentication or disconnected makes it stale ("Reconnect <bank>"), and the global user_settings stamps are read only when no connection exists; colour comes from a level class, never an inline style (cycle-8 E4b) | Subsystem: Settings, Notifications & Cross-app / Web UI | Verify: tests/cycle8-e4b.test.js + tests/contract/operator-freshness-e4b + e2e/pages.spec.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
