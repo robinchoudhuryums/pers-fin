@@ -156,6 +156,12 @@ a:hover { color: var(--text); }
 .topnav .nav-sync-badge { font-size: 11px; color: var(--text-muted); opacity: 0.75;
   padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; }
 .topnav .nav-sync-badge:empty { display: none; }
+/* Cycle-8 E4b: the badge is a link to Sync Health, coloured by its level class
+   (.sync-fresh keeps the quiet default; aging yellow, stale red). */
+a.nav-sync-badge { text-decoration: none; }
+a.nav-sync-badge:hover { opacity: 1; }
+.topnav .nav-sync-badge.sync-aging { color: var(--yellow); border-color: var(--yellow); }
+.topnav .nav-sync-badge.sync-stale { color: var(--red); border-color: var(--red); opacity: 1; }
 /* Mobile nav controls — hidden on desktop; shown in the ≤640px media query. */
 .nav-hamburger { display: none; flex-direction: column; justify-content: center; gap: 4px;
   width: 40px; height: 40px; padding: 9px; background: transparent;

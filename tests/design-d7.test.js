@@ -224,7 +224,7 @@ describe("the phone drawer's Tax link (decision 14)", () => {
     vm.runInNewContext(slice(shared, "function taxSeason(today)", "function localDateStr(d)") + "window.taxSeason = taxSeason;", ctx);
     ctx.window.localTodayStr = () => today;
     ctx.whenShared = (fn) => fn();
-    vm.runInNewContext(slice(nav, "    whenShared(function() {\n      var link = document.getElementById('nav-tax-link');", "    // Populate the \"Last synced"), ctx);
+    vm.runInNewContext(slice(nav, "    whenShared(function() {\n      var link = document.getElementById('nav-tax-link');", "    // The \"Synced Xm ago\" badge (cycle-8 E4b"), ctx);
     return link.hidden;
   }
 

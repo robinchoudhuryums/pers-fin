@@ -31,7 +31,8 @@
       <svg width="18" height="18" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.4"/><line x1="9" y1="9" x2="12.5" y2="12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </a>
 <% } %>
-    <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
+    <%# Cycle-8 E4b (G3): the badge reads /api/data-freshness's `overall` — the oldest bank connection — and opens Sync Health. Empty (hidden) until it loads. %>
+    <a class="nav-sync-badge" id="nav-sync-badge" href="<%= __basePath %>/settings#sync-health" title="How fresh your bank data is — open Sync Health"></a>
     <button class="nav-notification-bell" id="nav-notif-bell" type="button" title="Notifications"
             aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false" aria-controls="notif-panel"
             style="cursor:pointer;position:relative;padding:4px 8px;display:flex;align-items:center;background:none;border:none;">
@@ -130,39 +131,60 @@
       if (ts && ts.season) link.hidden = false;
     });
 
-    // Populate the "Last synced Xm ago" badge from /api/settings.last_auto_sync_at.
-    // Purely informational — no action; graceful no-op if the API call fails.
+    // The "Synced Xm ago" badge (cycle-8 E4b, G3): /api/data-freshness's
+    // `overall` — the OLDEST active bank connection (a webhook sync stamps only
+    // its own connection, never the global stamps), a connection that needs
+    // re-authentication or is disconnected named instead; the global stamps only
+    // when no bank is connected. Colour by a level class, never an inline colour.
+    // A failed load leaves the badge empty (hidden).
+    function fmtAgoSeconds(s) {
+      if (s == null || !isFinite(s)) return '';
+      if (s < 60) return 'just now';
+      if (s < 3600) return Math.floor(s / 60) + 'm ago';
+      if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+      return Math.floor(s / 86400) + 'd ago';
+    }
+    function renderSyncBadge(el, d) {
+      var o = d && d.overall;
+      if (!el || !o) return false;
+      var bank = (o.connection && o.connection.institution) || 'a bank';
+      var text;
+      if (o.reason === 'reauth' || o.reason === 'disconnected') text = 'Reconnect ' + bank;
+      else if (o.reason === 'never' || o.age_seconds == null) text = 'Not synced yet';
+      else text = 'Synced ' + fmtAgoSeconds(o.age_seconds);
+      el.textContent = text;
+      var level = o.level === 'fresh' || o.level === 'aging' ? o.level : 'stale';
+      el.classList.remove('sync-fresh', 'sync-aging', 'sync-stale');
+      el.classList.add('sync-' + level);
+      var tips = [];
+      var conns = Array.isArray(d.connections) ? d.connections : [];
+      if (o.basis === 'connections' && conns.length) {
+        conns.forEach(function(c) {
+          var name = c.institution || (c.provider === 'plaid' ? 'Plaid connection' : 'Teller connection');
+          var ls = c.last_synced || {};
+          var state = c.status === 'NEEDS_REAUTH' ? 'needs re-authentication'
+            : c.status === 'DISCONNECTED' ? 'disconnected'
+            : ls.timestamp ? 'synced ' + fmtAgoSeconds(ls.age_seconds)
+            : 'no complete sync yet';
+          tips.push(name + ': ' + state);
+        });
+      } else {
+        [['Transactions', d.transactions], ['Balances', d.balances], ['Auto-sync', d.auto_sync]].forEach(function(p) {
+          if (p[1] && p[1].timestamp) tips.push(p[0] + ': ' + fmtAgoSeconds(p[1].age_seconds));
+        });
+      }
+      tips.push('Open Sync Health');
+      el.title = tips.join('\n');
+      el.setAttribute('aria-label', text + ' — open Sync Health');
+      return true;
+    }
     whenShared(async function() {
       var el = document.getElementById('nav-sync-badge');
       if (!el) return;
-      function fmtAgo(iso) {
-        if (!iso) return '';
-        var s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-        if (s < 60) return 'just synced';
-        if (s < 3600) return Math.floor(s / 60) + 'm ago';
-        if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-        return Math.floor(s / 86400) + 'd ago';
-      }
       try {
-        var r = await apiFetch('/api/settings');
+        var r = await apiFetch('/api/data-freshness');
         if (!r.ok) return;
-        var s = await r.json();
-        // Show the most recent sync timestamp (max of all sources)
-        var candidates = [s.last_auto_sync_at, s.last_txn_sync_at, s.last_balance_sync_at].filter(Boolean);
-        var latestSync = candidates.length ? candidates.reduce(function(a, b) { return new Date(a) > new Date(b) ? a : b; }) : null;
-        if (latestSync) el.textContent = 'Synced ' + fmtAgo(latestSync);
-        // Build detailed tooltip
-        var tips = [];
-        if (s.last_txn_sync_at) tips.push('Transactions: ' + fmtAgo(s.last_txn_sync_at));
-        if (s.last_balance_sync_at) tips.push('Balances: ' + fmtAgo(s.last_balance_sync_at));
-        if (s.last_auto_sync_at) tips.push('Auto-sync: ' + fmtAgo(s.last_auto_sync_at));
-        if (tips.length) el.title = tips.join('\n');
-        // Visual staleness — warn if data is older than 24 hours
-        if (latestSync) {
-          var ageHrs = (Date.now() - new Date(latestSync).getTime()) / 3600000;
-          if (ageHrs > 24) el.style.color = 'var(--red)';
-          else if (ageHrs > 6) el.style.color = 'var(--yellow, #f0c36d)';
-        }
+        renderSyncBadge(el, await r.json());
       } catch (_) {}
     });
 

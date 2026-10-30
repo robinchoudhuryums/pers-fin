@@ -9,6 +9,7 @@ const errorLog = require("../services/error-log");
 const { INSIGHT_MODULES } = require("../data/reference-data");
 const { csvText, csvDate } = require("../services/csv-export");
 const operatorChecksService = require("../services/operator-checks");
+const freshnessSvc = require("../services/freshness");
 
 let sheetsSync;
 try {
@@ -508,6 +509,10 @@ router.post("/api/linked-tasks/run", async (req, res) => {
 // badge uses these thresholds to show green/yellow/red and previously had to
 // duplicate the threshold values; exposing `level` directly keeps the API
 // and UI consistent without requiring callers to repeat threshold math.
+// Cycle-8 E4b (G3): also `connections` (the list Sync Health shows) and
+// `overall` — the badge's figure, from services/freshness.js: the OLDEST active
+// connection, a re-auth / disconnected one as stale, the global stamps only with
+// no connection at all.
 router.get("/api/data-freshness", async (_req, res) => {
   try {
     const result = await pool.query(
@@ -515,22 +520,23 @@ router.get("/api/data-freshness", async (_req, res) => {
     );
     const s = result.rows[0] || {};
     const now = Date.now();
-    const FRESH_SEC = 6 * 60 * 60;       // <6h → green
-    const STALE_SEC = 24 * 60 * 60;       // >24h → red
+    const { FRESH_SEC, STALE_SEC } = freshnessSvc;
     function ageInfo(ts) {
-      if (!ts) return { timestamp: null, age_seconds: null, stale: true, level: "stale" };
-      const age = Math.floor((now - new Date(ts).getTime()) / 1000);
-      const level = age < FRESH_SEC ? "fresh" : age < STALE_SEC ? "aging" : "stale";
+      const info = freshnessSvc.ageInfo(ts, now);
       // SETT2: `stale` must agree with level==="stale" at the exact STALE_SEC
       // boundary — use >= (level uses `< STALE_SEC ? aging : stale`).
-      return { timestamp: ts, age_seconds: age, stale: age >= STALE_SEC, level };
+      return { timestamp: info.timestamp, age_seconds: info.age_seconds,
+        stale: info.timestamp ? info.age_seconds >= STALE_SEC : true, level: info.level };
     }
+    const conn = await freshnessSvc.connectionFreshness(pool, { now, globals: s });
     res.json({
       thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
       transactions: ageInfo(s.last_txn_sync_at),
       balances: ageInfo(s.last_balance_sync_at),
       auto_sync: ageInfo(s.last_auto_sync_at),
       insights: ageInfo(s.insights_last_run),
+      connections: conn.connections,
+      overall: conn.overall,
     });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -548,15 +554,9 @@ router.get("/api/data-freshness", async (_req, res) => {
 // summary's Sync Health item read this one function). Throws only when the
 // settings read itself fails; every other part is fail-soft as before.
 async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
-  const FRESH_SEC = 6 * 60 * 60;
-  const STALE_SEC = 24 * 60 * 60;
+  const { FRESH_SEC, STALE_SEC } = freshnessSvc;
   const now = Date.now();
-  function ageInfo(ts) {
-    if (!ts) return { timestamp: null, age_seconds: null, level: "stale" };
-    const age = Math.floor((now - new Date(ts).getTime()) / 1000);
-    const level = age < FRESH_SEC ? "fresh" : age < STALE_SEC ? "aging" : "stale";
-    return { timestamp: ts, age_seconds: age, level };
-  }
+  const ageInfo = (ts) => freshnessSvc.ageInfo(ts, now);
   const [settingsRow, teller, plaid, events] = await Promise.all([
     db.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result, last_sheets_sync_result FROM user_settings WHERE id = 1"),
     db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
@@ -670,26 +670,12 @@ async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
   }
 
   // Per-connection freshness (roadmap T2.1 W6): when each Teller enrollment /
-  // Plaid item last synced completely (its own last_synced_at — W3 / W5).
+  // Plaid item last synced completely (its own last_synced_at — W3 / W5). Read
+  // through services/freshness.js, the one definition the nav badge and
+  // /api/data-freshness share (cycle-8 E4b).
   let connections = [];
   try {
-    const cr = await db.query(
-      `SELECT 'teller' AS provider, id, institution_name, status, last_synced_at
-         FROM teller_enrollments WHERE status <> 'SUSPENDED'
-       UNION ALL
-       SELECT 'plaid', id, institution_name,
-              CASE WHEN last_error_code IS NOT NULL THEN 'NEEDS_REAUTH' ELSE status END,
-              last_synced_at
-         FROM plaid_items WHERE status <> 'CSV'
-       ORDER BY 1, 3`
-    );
-    connections = cr.rows.map(c => ({
-      provider: c.provider,
-      id: c.id,
-      institution: c.institution_name,
-      status: c.status,
-      last_synced: ageInfo(c.last_synced_at),
-    }));
+    connections = await freshnessSvc.readConnections(db, now);
   } catch (e) { console.error("data-health connections read failed:", e.message); }
 
   let operatorChecks = null;

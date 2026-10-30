@@ -1,6 +1,6 @@
 # Cycle 8 E4 — operator and freshness visibility (plan, 2026-10-30)
 
-Status: E4a DONE (2026-10-30, block `.cycle/blocks/8-e4a-broad-implement.md`); E4b planned.
+Status: DONE — E4a (2026-10-30, block `.cycle/blocks/8-e4a-broad-implement.md`) and E4b (2026-10-30, block `.cycle/blocks/8-e4b-broad-implement.md`).
 
 Scope: ST5 and G3 from the cycle-8 expansion plan (`.cycle/plan-cycle8-expansion.md`).
 
@@ -85,7 +85,7 @@ the bank data is now that webhooks sync one connection at a time (G3).
 | Batch | Scope | Est. | Status |
 |-------|-------|------|--------|
 | E4a | ST5: `goLiveChecks` (decision 1 — cert missing / expiry via an injectable cert reader, the database share, PUBLIC_URL shape, API_KEY / SHELL_SECRET strength, Plaid env ↔ secret, the Teller webhook secret's parts), wired into `getOperatorChecks`; the backup stamp (decision 2 — `last_backup_source` column, db-backup.yml's `psql` stamp after verification with nothing printed, `backupCheck` token-free, reset-fresh keeping the stamp); unit tests (each branch with an injected env / fake pool, no value or length ever in a detail, the workflow step's order and silence, reset-fresh's lists) and a contract test (the stamp read on the real schema, a fresh database failing the backup check without a token and passing after a stamp, a GOOD Plaid item under sandbox warning) | 4h | done |
-| E4b | G3: `services/freshness.js` `connectionFreshness` (decision 4) behind both gatherDataHealth and `/api/data-freshness`; the badge (decision 5) — nav.ejs on `/api/data-freshness`, level classes, the link, "Reconnect <bank>"; unit tests (the overall rule — oldest wins, reauth / disconnected stale, CSV and suspended left out, the global fallback — data-health's connections byte-for-byte unchanged, the route's shape, the badge run in a vm from nav.ejs: text, class, tooltip, link through withBase, a failed load) and a contract test (a webhook-synced item fresh while the global stamp is two days old → fresh; a second item 30 h old → stale naming it); e2e: the badge on the dashboard (seeded CSV-only → the global basis) linking to Sync Health | 2–3h | planned |
+| E4b | G3: `services/freshness.js` `connectionFreshness` (decision 4) behind both gatherDataHealth and `/api/data-freshness`; the badge (decision 5) — nav.ejs on `/api/data-freshness`, level classes, the link, "Reconnect <bank>"; unit tests (the overall rule — oldest wins, reauth / disconnected stale, CSV and suspended left out, the global fallback — data-health's connections byte-for-byte unchanged, the route's shape, the badge run in a vm from nav.ejs: text, class, tooltip, link through withBase, a failed load) and a contract test (a webhook-synced item fresh while the global stamp is two days old → fresh; a second item 30 h old → stale naming it); e2e: the badge on the dashboard (seeded CSV-only → the global basis) linking to Sync Health | 2–3h | done |
 
 Order: E4a → E4b (independent; E4a first because it carries the deploy-time operator note). Total ≈ 6–7h.
 Then E5 (ST4 — behaviour tests), then cycle 8's `/reflect`.

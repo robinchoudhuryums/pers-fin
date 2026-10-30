@@ -18,6 +18,16 @@ Updated: 2026-10-30
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E4b (DONE, 2026-10-30) — G3, E4 complete:** block `.cycle/blocks/8-e4b-broad-implement.md`.
+  - **Shipped:** `teller/services/freshness.js` (ageInfo, readConnections, overallFreshness, connectionFreshness) behind
+    data-health's connection list (unchanged) and GET /api/data-freshness (+ connections, overall); the nav badge reads
+    `overall` — the oldest bank connection, "Reconnect <bank>" for re-auth / disconnected, the global stamps only with no
+    connection — as a link to /settings#sync-health with level classes instead of an inline colour.
+  - **Decision detail:** a connection with no complete sync recorded counts as the oldest (stale, "Not synced yet"); a
+    failed connections read falls back to the global basis; .sync-fresh keeps the quiet default colour.
+  - **Verified:** npm test 3126/3127 (18 new; e1a pre-existing, date); contract 326/328 (3 new; cash-alerts-l2 and the
+    persistent calendar test pre-existing, date); e2e 74/74 (badge check added). Mutations red.
+  - **Where I left off:** E4b committed and pushed; E4 is complete. Next: `/sync-docs`, then E5 (plan it), then `/reflect`.
 - **Cycle-8 E4a (DONE, 2026-10-30) — ST5:** block `.cycle/blocks/8-e4a-broad-implement.md`.
   - **Shipped:** token-free go-live checks in Operator Checks (goLiveChecks: Teller cert missing while enrollments
     exist, the shared database, PUBLIC_URL's shape, API_KEY / SHELL_SECRET strength, Plaid env ↔ secret and sandbox with

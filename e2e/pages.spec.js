@@ -455,15 +455,25 @@ test.describe("every page loads cleanly", () => {
     const seen = { settings: false, notifications: false, logo: 0 };
     page.on("response", (res) => {
       const u = res.url();
-      if (u.includes("/perfin/api/settings")) seen.settings = true;
+      if (u.includes("/perfin/api/data-freshness")) seen.settings = true;
       if (u.includes("/perfin/api/notifications?limit=20")) seen.notifications = true;
       if (u.endsWith("/perfin/logo.svg")) seen.logo = res.status();
     });
     await page.goto("/perfin/budgets");
     await page.waitForLoadState("networkidle");
-    expect(seen.settings, "nav sync badge fetched /api/settings").toBe(true);
+    expect(seen.settings, "nav sync badge fetched /api/data-freshness (cycle-8 E4b)").toBe(true);
     expect(seen.notifications, "bell fetched the unread count").toBe(true);
     expect(seen.logo, "nav logo mask loads under /perfin").toBe(200);
+    // Cycle-8 E4b: the badge is a link to Sync Health with its level class; the
+    // seeded run has no bank connection, so it reads the global stamps.
+    const badge = page.locator("#nav-sync-badge");
+    await expect(badge).toHaveAttribute("href", "/perfin/settings#sync-health");
+    await expect(badge).toHaveText(/^(Synced .+|Not synced yet)$/);
+    await expect(badge).toHaveClass(/sync-(fresh|aging|stale)/);
+    await expect(badge).toHaveAttribute("aria-label", /open Sync Health$/);
+    await badge.click();
+    await page.waitForURL(/\/perfin\/settings#sync-health$/);
+    await expect(page.locator("#sync-health")).toBeVisible();
   });
 
   test("a burst of toasts caps at five without hanging the tab (F89)", async ({ page }) => {

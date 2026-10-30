@@ -189,8 +189,10 @@ describe("W6 — operator checks and data-health", () => {
   });
 
   it("data-health's connections query excludes CSV items and suspended enrollments and maps a re-auth code", () => {
-    const src = read("teller/routes/settings.js");
-    const q = src.slice(src.indexOf("'teller' AS provider"), src.indexOf("ORDER BY 1, 3"));
+    // Since cycle-8 E4b the query lives in services/freshness.js (CONNECTIONS_SQL),
+    // shared with /api/data-freshness and the nav badge; data-health reads it there.
+    assert.match(read("teller/routes/settings.js"), /freshnessSvc\.readConnections\(db, now\)/);
+    const q = require("../teller/services/freshness").CONNECTIONS_SQL;
     assert.match(q, /FROM teller_enrollments WHERE status <> 'SUSPENDED'/);
     assert.match(q, /CASE WHEN last_error_code IS NOT NULL THEN 'NEEDS_REAUTH' ELSE status END/);
     assert.match(q, /FROM plaid_items WHERE status <> 'CSV'/);
