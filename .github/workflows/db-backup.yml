@@ -122,3 +122,18 @@ jobs:
           path: '*.dump.gpg'
           retention-days: 90
           if-no-files-found: error
+
+      # Cycle-8 E4a (ST5): record the verified backup in user_settings so Settings
+      # → Sync Health → Operator Checks sees it without a GitHub token. Runs only
+      # after both dumps were verified and uploaded (an earlier failure stops the
+      # job). Prints nothing — psql is quiet and its errors are discarded (they can
+      # name the host); a failed stamp is a warning, not a failed backup.
+      - name: Record the backup
+        env:
+          DB_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          if psql "$DB_URL" -qtAc "UPDATE user_settings SET last_backup_at = now(), last_backup_source = 'github' WHERE id = 1" >/dev/null 2>&1; then
+            echo "Backup recorded."
+          else
+            echo "::warning::Couldn't record the backup time in the database — Operator Checks will report the backup as missing."
+          fi

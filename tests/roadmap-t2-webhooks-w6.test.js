@@ -150,7 +150,9 @@ describe("W6 — operator checks and data-health", () => {
 
   it("getOperatorChecks adds the webhook checks; a passed-in status is not read again; the warn reaches toIssues", async () => {
     let queried = 0;
-    const r = await oc.getOperatorChecks({ cachedOnly: true, env: {}, webhookStatus: STATUS, pool: { query: async () => { queried++; return { rows: [] }; } } });
+    // Other checks read the pool too (the go-live and backup checks, cycle-8 E4a);
+    // the webhook status must not be read again.
+    const r = await oc.getOperatorChecks({ cachedOnly: true, env: {}, webhookStatus: STATUS, pool: { query: async (sql) => { if (/webhook/i.test(sql)) queried++; return { rows: [] }; } } });
     const plaidCheck = r.checks.find((c) => c.id === "webhooks:plaid");
     assert.equal(plaidCheck.status, "warn");
     assert.equal(r.checks.find((c) => c.id === "webhooks:teller").status, "info");

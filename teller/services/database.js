@@ -949,6 +949,9 @@ async function runMigrationsOnce() {
     // VPS move: deploy/vps/backup.sh stamps each verified nightly backup here;
     // with SERVER_BACKUPS=true Operator Checks reads it (services/hosting.js).
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_backup_at TIMESTAMPTZ");
+    // Cycle-8 E4a (ST5): db-backup.yml stamps it too, so a Render deployment sees
+    // its backups without a GitHub token — 'server' (backup.sh) or 'github'.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_backup_source TEXT");
     // Roadmap T2.2 L2: the low projected cash alert (services/cash-alerts.js) —
     // off by default; the alert's dedup state and the last evaluation time.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_enabled BOOLEAN NOT NULL DEFAULT false");

@@ -12,12 +12,24 @@ to the "none in progress" state.
 Cycle: 8
 Phase: implement
 Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
-Updated: 2026-10-29
+Updated: 2026-10-30
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E4a (DONE, 2026-10-30) — ST5:** block `.cycle/blocks/8-e4a-broad-implement.md`.
+  - **Shipped:** token-free go-live checks in Operator Checks (goLiveChecks: Teller cert missing while enrollments
+    exist, the shared database, PUBLIC_URL's shape, API_KEY / SHELL_SECRET strength, Plaid env ↔ secret and sandbox with
+    real items, the Teller webhook secret's parts; the cert's expiry in localChecks), and the backup record: db-backup.yml
+    stamps last_backup_at + last_backup_source='github' after verifying, backup.sh 'server', backupCheck (local:backup)
+    runs whenever the GitHub checks are off, reset-fresh keeps the record.
+  - **Decision detail:** localChecks stays pure (the cert-missing check needs the DB, so it lives in goLiveChecks under
+    the same id); a failed stamp is a workflow warning, not a failed job; no check probes the network.
+  - **Verified:** npm test 3108/3109 (14 new; e1a pre-existing, date); contract 323/325 (3 new; cash-alerts-l2 and
+    persistent "GET /api/calendar projects recurring todos" pre-existing, date); e2e 74/74. Mutations red.
+  - **Where I left off:** E4a committed and pushed. Next: `/sync-docs`, `/broad-implement E4b`, `/sync-docs`, then E5,
+    then `/reflect`.
 - **Cycle-8 E3e (DONE, 2026-10-29) — ST2 complete, E3 complete:** block `.cycle/blocks/8-e3e-broad-implement.md`.
   - **Shipped:** Per-sistant's notification check names each entry's item (a linked task's key; housing_due's
     housing:<month of its due date>), marks notify:false an item Perfin pushed (push_state sent) in the last 12 h —

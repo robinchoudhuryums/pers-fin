@@ -10,6 +10,11 @@
 //   - bank webhooks (roadmap T2.1 W6, services/webhook-status.js): Plaid
 //     connections not registered at the current address (warn), Plaid / Teller
 //     webhooks off or quiet for 7 days (info);
+//   - go-live (cycle-8 E4a, ST5 — token-free): the Teller cert missing while
+//     Teller connections exist or close to expiry, the two databases shared on
+//     purpose, PUBLIC_URL's shape, API_KEY / SHELL_SECRET strength, the Plaid
+//     credentials for PLAID_ENV, the Teller webhook secret, and the last backup
+//     recorded in user_settings (backup.sh or db-backup.yml) — never a value;
 //   - Knowledge: an index built under older vault parsing rules
 //     (Per-sistant's user_settings.vault_parse_version < VAULT_PARSE_VERSION),
 //     read-only through the wired Per-sistant pool (INV-25).
@@ -43,17 +48,32 @@ async function refreshGithub(opts = {}) {
   return githubInFlight;
 }
 
-function localChecks(env = process.env) {
+const CERT_EXPIRY_WARN_MS = 30 * 24 * 60 * 60 * 1000;
+const CERT_FIX = "Teller dashboard → Certificates → create a new certificate; set TELLER_CERT / TELLER_KEY (base64) on Render.";
+
+function localChecks(env = process.env, now = Date.now()) {
   const checks = [];
   try {
     const { tellerCertStatus } = require("./teller-api");
     const cert = tellerCertStatus();
     if (cert.configured) {
-      checks.push(cert.compromised
-        ? { id: "local:teller-cert", label: "Teller certificate", status: "fail",
-            detail: "The Teller certificate in use is the one exposed in git history — generate a new one in the Teller dashboard and update TELLER_CERT / TELLER_KEY.",
-            fix: "Teller dashboard → Certificates → create a new certificate; set TELLER_CERT / TELLER_KEY (base64) on Render." }
-        : { id: "local:teller-cert", label: "Teller certificate", status: "ok", detail: "Not the certificate exposed in git history.", fix: null });
+      const expires = cert.expires_at ? new Date(cert.expires_at).getTime() : NaN;
+      const day = Number.isFinite(expires) ? new Date(expires).toISOString().slice(0, 10) : null;
+      if (cert.compromised) {
+        checks.push({ id: "local:teller-cert", label: "Teller certificate", status: "fail",
+          detail: "The Teller certificate in use is the one exposed in git history — generate a new one in the Teller dashboard and update TELLER_CERT / TELLER_KEY.",
+          fix: CERT_FIX });
+      } else if (Number.isFinite(expires) && expires <= now) {
+        // Cycle-8 E4a (ST5): an expired certificate fails every Teller call.
+        checks.push({ id: "local:teller-cert", label: "Teller certificate", status: "fail",
+          detail: `The Teller certificate expired on ${day} — every Teller sync fails until it is replaced.`, fix: CERT_FIX });
+      } else if (Number.isFinite(expires) && expires - now <= CERT_EXPIRY_WARN_MS) {
+        checks.push({ id: "local:teller-cert", label: "Teller certificate", status: "warn",
+          detail: `The Teller certificate expires on ${day}.`, fix: CERT_FIX });
+      } else {
+        checks.push({ id: "local:teller-cert", label: "Teller certificate", status: "ok",
+          detail: "Not the certificate exposed in git history" + (day ? `; valid until ${day}.` : "."), fix: null });
+      }
     }
   } catch (e) { console.error("operator-checks cert check failed:", e.message); }
 
@@ -118,27 +138,172 @@ async function knowledgeCheck(persistentPool) {
   }
 }
 
-// With SERVER_BACKUPS=true the backups are taken on the server by
-// deploy/vps/backup.sh, which stamps user_settings.last_backup_at after each
-// verified run. Same 36h limit as the GitHub backup check; needs no GitHub
-// token. Omitted when SERVER_BACKUPS is off (the GitHub check covers backups).
-async function serverBackupCheck(pool, env = process.env, now = Date.now()) {
-  if (!hosting.serverBackups(env)) return null;
-  const id = "local:server-backup";
+// The last backup recorded in user_settings.last_backup_at — stamped after each
+// verified run by deploy/vps/backup.sh (last_backup_source 'server') and, since
+// cycle-8 E4a (ST5), by .github/workflows/db-backup.yml ('github'). Runs with
+// SERVER_BACKUPS=true, and whenever the GitHub checks are off (no token) — so a
+// Render deployment sees its backups without a token. With a token and no
+// SERVER_BACKUPS the GitHub backup check is the one (no duplicate). Same 36h
+// limit as the GitHub check.
+const BACKUP_SOURCE_WORDS = { server: "on the server", github: "GitHub Actions" };
+
+async function backupCheck(pool, env = process.env, now = Date.now()) {
+  const onServer = hosting.serverBackups(env);
+  if (!onServer && githubOps._config(env).configured) return null;
+  const id = "local:backup";
   const label = "Database backup";
-  const fix = "On the server: run /opt/pers-fin/backup.sh by hand and check its log, and that /etc/cron.d/pers-fin-backup exists (deploy/vps/RUNBOOK.md → Backups).";
+  const fix = onServer
+    ? "On the server: run /opt/pers-fin/backup.sh by hand and check its log, and that /etc/cron.d/pers-fin-backup exists (deploy/vps/RUNBOOK.md → Backups)."
+    : "Set the NEON_DATABASE_URL and BACKUP_ENCRYPTION_PASSPHRASE repository secrets, enable the Database Backup workflow (Actions → Database Backup → Enable workflow) and run it once.";
   if (!pool) return { id, label, status: "unknown", detail: "Couldn't read the backup record (no database connection).", fix: null };
   try {
-    const r = await pool.query("SELECT last_backup_at FROM user_settings WHERE id = 1");
-    const at = r.rows[0] && r.rows[0].last_backup_at;
-    if (!at) return { id, label, status: "fail", detail: "No on-server backup has been recorded yet — there may be no backup of either database.", fix };
+    const r = await pool.query("SELECT last_backup_at, last_backup_source FROM user_settings WHERE id = 1");
+    const row = r.rows[0] || {};
+    const at = row.last_backup_at;
+    if (!at) return { id, label, status: "fail", detail: "No backup has been recorded yet — there may be no backup of either database.", fix };
     const age = now - new Date(at).getTime();
     const hours = Math.round(age / 3600000);
-    if (age > githubOps.BACKUP_MAX_AGE_MS) return { id, label, status: "fail", detail: `The last on-server backup is ${hours}h old.`, fix };
-    return { id, label, status: "ok", detail: `Last on-server backup ${hours}h ago.`, fix: null };
+    const where = BACKUP_SOURCE_WORDS[row.last_backup_source] ? ` (${BACKUP_SOURCE_WORDS[row.last_backup_source]})` : "";
+    if (age > githubOps.BACKUP_MAX_AGE_MS) return { id, label, status: "fail", detail: `The last backup${where} is ${hours}h old.`, fix };
+    return { id, label, status: "ok", detail: `Last backup ${hours}h ago${where}.`, fix: null };
   } catch (e) {
     return { id, label, status: "unknown", detail: "Couldn't read the backup record: " + e.message, fix: null };
   }
+}
+
+// Go-live checks (cycle-8 E4a, ST5): the deployment's own setup, read from the
+// environment and the databases only — no network, no token, never a secret's
+// value (a threshold is named, a value never). Each part is fail-soft.
+const API_KEY_MIN = 24;
+const SHELL_SECRET_MIN = 32;
+const TELLER_WEBHOOK_SECRET_MIN = 16;
+const PLAID_SECRET_VARS = { production: "PLAID_SECRET_PROD", development: "PLAID_SECRET_DEV", sandbox: "PLAID_SECRET_SANDBOX" };
+
+async function countRows(pool, sql) {
+  if (!pool) return null;
+  try {
+    const r = await pool.query(sql);
+    return Number(r.rows[0] && r.rows[0].n) || 0;
+  } catch (e) {
+    console.error("operator-checks go-live read failed:", e.message);
+    return null;
+  }
+}
+
+async function goLiveChecks({ pool = null, persistentPool = null, env = process.env } = {}) {
+  const checks = [];
+  const set = (name) => String(env[name] || "").trim();
+
+  // The Teller cert missing while Teller connections exist (localChecks covers
+  // a configured cert — compromised / expired / expiring).
+  try {
+    const cert = require("./teller-api").tellerCertStatus();
+    if (!cert.configured) {
+      const n = await countRows(pool, "SELECT COUNT(*)::int AS n FROM teller_enrollments WHERE status <> 'SUSPENDED'");
+      if (n > 0) {
+        checks.push({ id: "local:teller-cert", label: "Teller certificate", status: "fail",
+          detail: `${n} Teller connection(s) exist but no Teller certificate is configured — every Teller sync fails.`,
+          fix: "Set TELLER_CERT / TELLER_KEY (base64 of certificate.pem / private_key.pem) on Render, or TELLER_CERT_PATH / TELLER_KEY_PATH." });
+      }
+    }
+  } catch (e) { console.error("operator-checks cert check failed:", e.message); }
+
+  // The two databases (under the shell only — a Per-sistant pool is wired).
+  if (persistentPool) {
+    try {
+      const { sameDatabase } = require("../../shell/boot-checks");
+      const perfin = set("NEON_DATABASE_URL");
+      const persistent = set("PERSISTENT_DATABASE_URL");
+      const shared = !persistent || (perfin && sameDatabase(perfin, persistent));
+      checks.push(shared
+        ? { id: "local:databases", label: "App databases", status: "warn",
+            detail: "Perfin and Per-sistant share one database (ALLOW_SHARED_DATABASE) — their settings and their AI budgets are one row.",
+            fix: "Give Per-sistant its own database: set PERSISTENT_DATABASE_URL to it and remove ALLOW_SHARED_DATABASE." }
+        : { id: "local:databases", label: "App databases", status: "ok", detail: "Perfin and Per-sistant use separate databases.", fix: null });
+    } catch (e) { console.error("operator-checks database check failed:", e.message); }
+  }
+
+  // PUBLIC_URL's shape.
+  const pub = set("PUBLIC_URL");
+  if (!pub) {
+    checks.push({ id: "local:public-url", label: "Public address", status: "info",
+      detail: "PUBLIC_URL isn't set — bank webhooks are off and links in emails use RENDER_EXTERNAL_URL (or none).",
+      fix: "Set PUBLIC_URL to the app's https address (e.g. https://app.example.com) when you want bank webhooks." });
+  } else {
+    let problem = null;
+    let origin = null;
+    try {
+      const u = new URL(pub);
+      origin = u.origin;
+      if (u.protocol !== "https:") problem = "doesn't start with https://";
+      else if (u.username || u.password) problem = "carries a user name or password";
+      else if ((u.pathname && u.pathname !== "/") || u.search || u.hash) problem = "has a path, query or fragment — it must be the site's origin only";
+    } catch {
+      problem = "isn't a valid URL";
+    }
+    checks.push(problem
+      ? { id: "local:public-url", label: "Public address", status: "warn", detail: `PUBLIC_URL ${problem}.`,
+          fix: "Set PUBLIC_URL to the app's https origin, e.g. https://app.example.com (no path, no trailing route)." }
+      : { id: "local:public-url", label: "Public address", status: "ok", detail: `PUBLIC_URL is ${origin}.`, fix: null });
+  }
+
+  // API_KEY — the GitHub backstops (daily sync, weekly reconcile, Knowledge
+  // reindex, Job Radar) reach the app with it.
+  const apiKey = set("API_KEY");
+  checks.push(!apiKey
+    ? { id: "local:api-key", label: "API key", status: "warn",
+        detail: "API_KEY isn't set — the GitHub backstop workflows (daily sync, weekly reconcile) can't reach the app.",
+        fix: "Set API_KEY on Render to a long random value (openssl rand -hex 32) and the same value as the API_KEY repository secret." }
+    : apiKey.length < API_KEY_MIN
+      ? { id: "local:api-key", label: "API key", status: "warn", detail: `API_KEY is shorter than ${API_KEY_MIN} characters.`,
+          fix: "Replace it with a long random value (openssl rand -hex 32) on Render and in the API_KEY repository secret." }
+      : { id: "local:api-key", label: "API key", status: "ok", detail: "API_KEY is set.", fix: null });
+
+  // SHELL_SECRET (the shell refuses to boot without it, so only its strength).
+  const shellSecret = set("SHELL_SECRET");
+  if (shellSecret) {
+    checks.push(shellSecret.length < SHELL_SECRET_MIN
+      ? { id: "local:shell-secret", label: "Session signing secret", status: "warn",
+          detail: `SHELL_SECRET is shorter than ${SHELL_SECRET_MIN} characters — session cookies are signed with it.`,
+          fix: "Set SHELL_SECRET to openssl rand -hex 32 on Render (everyone signs in again)." }
+      : { id: "local:shell-secret", label: "Session signing secret", status: "ok", detail: "SHELL_SECRET is long enough.", fix: null });
+  }
+
+  // Plaid: the secret for PLAID_ENV, and sandbox while real connections exist.
+  if (set("PLAID_CLIENT_ID")) {
+    const plaidEnv = (set("PLAID_ENV") || "sandbox").toLowerCase();
+    const secretVar = PLAID_SECRET_VARS[plaidEnv];
+    if (!secretVar) {
+      checks.push({ id: "local:plaid-config", label: "Plaid configuration", status: "warn",
+        detail: "PLAID_ENV isn't production, development or sandbox — the sandbox secret is used.",
+        fix: "Set PLAID_ENV=production (with PLAID_SECRET_PROD) for real bank connections." });
+    } else if (!set(secretVar)) {
+      checks.push({ id: "local:plaid-config", label: "Plaid configuration", status: "fail",
+        detail: `PLAID_ENV is ${plaidEnv} but ${secretVar} isn't set — Plaid calls use the wrong secret and fail.`,
+        fix: `Set ${secretVar} on Render (Plaid dashboard → Keys).` });
+    } else {
+      const good = plaidEnv === "sandbox"
+        ? await countRows(pool, "SELECT COUNT(*)::int AS n FROM plaid_items WHERE status = 'GOOD'")
+        : 0;
+      checks.push(good > 0
+        ? { id: "local:plaid-config", label: "Plaid configuration", status: "warn",
+            detail: `PLAID_ENV is sandbox while ${good} Plaid connection(s) exist — real banks need production.`,
+            fix: "Set PLAID_ENV=production and PLAID_SECRET_PROD on Render." }
+        : { id: "local:plaid-config", label: "Plaid configuration", status: "ok", detail: `PLAID_ENV is ${plaidEnv} and its secret is set.`, fix: null });
+    }
+  }
+
+  // The Teller webhook secret's strength (present / absent is webhooks:teller).
+  const tws = set("TELLER_WEBHOOK_SECRET");
+  if (tws) {
+    const parts = tws.split(",").map((p) => p.trim()).filter(Boolean);
+    checks.push(parts.length === 0 || parts.some((p) => p.length < TELLER_WEBHOOK_SECRET_MIN)
+      ? { id: "local:teller-webhook-secret", label: "Teller webhook secret", status: "warn",
+          detail: `A TELLER_WEBHOOK_SECRET value is shorter than ${TELLER_WEBHOOK_SECRET_MIN} characters — use the secret the Teller dashboard shows.`,
+          fix: "Copy the webhook signing secret from the Teller dashboard into TELLER_WEBHOOK_SECRET (comma-separate two during a rotation)." }
+      : { id: "local:teller-webhook-secret", label: "Teller webhook secret", status: "ok", detail: "TELLER_WEBHOOK_SECRET is set.", fix: null });
+  }
+  return checks;
 }
 
 // opts: { pool, persistentPool, force, cachedOnly, env, fetchImpl,
@@ -156,7 +321,10 @@ async function getOperatorChecks(opts = {}) {
     ? { configured: gh.result.configured, ok: gh.result.ok, reason: gh.result.reason, checked_at: new Date(gh.at).toISOString(), pending: false }
     : { configured: githubOps._config(env).configured, ok: false, reason: null, checked_at: null, pending: true };
   const checks = [...(gh ? gh.result.checks : []), ...localChecks(env)];
-  const sb = await serverBackupCheck(opts.pool, env);
+  try {
+    checks.push(...await goLiveChecks({ pool: opts.pool, persistentPool: opts.persistentPool, env }));
+  } catch (e) { console.error("operator-checks go-live checks failed:", e.message); }
+  const sb = await backupCheck(opts.pool, env);
   if (sb) checks.push(sb);
   // Bank webhooks (roadmap T2.1 W6) — needs the database; fail-soft (the
   // status reader logs and leaves a failed part empty).
@@ -241,7 +409,8 @@ module.exports = {
   notifyIfChanged,
   localChecks,
   knowledgeCheck,
-  serverBackupCheck,
+  goLiveChecks,
+  backupCheck,
   CACHE_TTL_MS,
   // exported for tests
   _failingSignature: failingSignature,
