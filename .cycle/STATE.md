@@ -22,8 +22,10 @@ implement and reflect sessions only set Phase.)
   (Perfin's covered check = Per-sistant's openLinkedItems; a detached task counts as open), A6 (a held Perfin push
   counts as Perfin's), A5 (queryPersistentStats = /api/stats' SQL), A4 (the widget's next_expected as text). npm test
   3172 (one IPC flake), contract 339, e2e 91. Net −1 (no fix reachable this month; A6's quiet-until-expiry).
-  - **Where I left off:** S4-4 committed and pushed on the branch with S4-2 / S4-3 (none PR'd yet). Next: `/sync-docs`
-    for S4-4, then `/broad-implement S4-5`, or a PR for S4-2..S4-4 first.
+  - **Where I left off:** S4-4 and its `/sync-docs` committed and pushed on the branch with S4-2 / S4-3 (none PR'd yet;
+    CLAUDE.md / README / apps/per-sistant/CLAUDE.md: the shared open-task predicate, held pushes, the stats SQL, the
+    widget's date, INV-153 wording, the audit #4 entry with the S4-4 follow-ons, counts 3171 / 174 files / contract 339).
+    Next: `/broad-implement S4-5`, or a PR for S4-2..S4-4 first.
 - **S4-3 (DONE, 2026-11-02) — forecast, freshness & restore:** block `.cycle/blocks/8-s4-3-broad-implement.md`. S1 (the
   forecast's TRIMmed merchant key), S3 (one window for the totals and forecast_items), S6 (the cash alert gates on the
   oldest bank-synced balance), S4 (Sync Health's sync-age warnings follow the connections), S5 (per-row restorable +
