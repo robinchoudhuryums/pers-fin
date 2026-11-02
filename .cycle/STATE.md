@@ -10,7 +10,7 @@ to the "none in progress" state.
 ## Current Cycle
 
 Cycle: 8
-Phase: implement
+Phase: reflect
 Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
 Updated: 2026-11-02
 
@@ -18,6 +18,13 @@ Updated: 2026-11-02
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 REFLECT (2026-11-02):** block `.cycle/blocks/8-a-reflect.md`, metrics row appended. Net +1 = 13 production
+  fixes − 12 new failure modes; 19 capabilities; 54 defensive. Corrected the summaries' 15 fixes (E1 FO-b/FO-f and E5b
+  fixed this cycle's own unshipped work — none of cycle 8 is on main) and their failure modes (Batch 4 F1's stall removed
+  by E2c; E2b's serialized jobs added). INV-155..157 candidates (job-runner claim, shared-database refusal, Settings save
+  result through every wrapper) — not yet in the library.
+  - **Where I left off:** cycle 8 reflected. Next: merge the branch to main (86 commits — nothing from cycle 8 is
+    deployed), add INV-155..157 to CLAUDE.md, then a Seams & Invariants audit or the next /broad-scan (CYCLE OPEN → 9).
 - **Test-sync after E5 (2026-11-02):** npm test 3130/3130 (was 3126/3127). Fixed three date-dependent tests
   (category C): tests/cycle8-e1a.test.js pins "today" to 2026-05-10; tests/contract/cash-alerts-l2 seeds the last
   charge on the same day of the latest earlier month that has it (checked against cadence.seriesOccurrences for every
@@ -2299,7 +2306,7 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 0 (Seams & Invariants audit #3, 2026-10-22 — record below; audit #2 June 2026 below it.)
+- **Subsystem cycles since last Seams audit:** 1 (cycle 8 reflected 2026-11-02; Seams & Invariants audit #3, 2026-10-22 — record below; audit #2 June 2026 below it.)
 
 ### Seams & Invariants audit #3 (2026-10-22 — counter reset to 0)
 Four parallel read-only reviews (cross-app, client↔server, ops, shared truth + mounts), each finding
