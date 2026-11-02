@@ -1408,40 +1408,52 @@ shell/
                                  poolsShareDatabase (true / false / null — a failed
                                  read is unknown, never shared)
   views/
-    login.ejs                  — PIN form + biometric button (feature-detected)
-    landing.ejs                — Tile picker (the home-screen app's start page), one
-                                 status line per tile (design D7)
+    login.ejs                  — The opening screen (direction D: light + instrument):
+                                 clock readout, the dial around the app icon, a
+                                 monospace status line and a glass keypad. The
+                                 keypad posts the PIN as JSON to POST /login
+                                 (handleLogin answers { ok, redirect } / { error }
+                                 to a JSON body — a plain form post still
+                                 redirects / renders); each digit lights an
+                                 inner tick, a refused PIN shakes the dial red
+                                 with the server's message, a correct PIN (or a
+                                 biometric login) plays the unlock — the outer
+                                 tick ring spins two fast turns and settles, the
+                                 keypad falls away, a gold line sweeps — then
+                                 navigates to the server's same-origin path.
+                                 Without JS: the plain PIN field + Continue
+    landing.ejs                — Tile picker (the home-screen app's start page) on
+                                 the same backdrop, glass tiles, one status line
+                                 per tile (design D7)
   public/
-    landing.css                — Shell-only styles
+    landing.css                — Shell-only styles (login + landing)
     manifest.json              — Unified PWA manifest (mask-crop PNG icons,
                                  not the placeholder SVG it had originally)
-    transition.css             — Per-sistant entry transition (landing tile +
-                                 Perfin nav's cross-app icon). Scoped under
-                                 .atrans-*; cosmic star/nebula backdrop +
-                                 particle-canvas mode styles.
-    transition.js              — Auto-init module: scans for [data-atrans]
-                                 triggers, binds click→activate→navigate.
-                                 Primary effect: particle assembly/disassembly
-                                 of the PWA icon — samples the overlay's
-                                 .atrans-art <img> via canvas getImageData
-                                 (96×96 grid → ~2.5px particles, capped at
-                                 7500 with uniform thinning, dpr-aware up to
-                                 3x) that fly in to assemble the icon, then
-                                 the REAL image crossfades in at full
-                                 resolution (drawImage sharpen — the finale
-                                 is never just the particle mosaic), holds,
-                                 and bursts apart as the image fades back out
-                                 (assemble 950ms / hold 430ms / disperse
-                                 520ms; navigates ~90ms before the end).
-                                 Honors prefers-reduced-motion (instant
-                                 navigation); falls back to the original CSS
-                                 mask reveal if the image isn't ready or the
-                                 canvas is tainted. HYBRID by device
-                                 (prefersLightTransition): desktop (fine
-                                 pointer + wide viewport) runs the particle
-                                 assembly; mobile/touch (coarse pointer OR
-                                 ≤768px) takes the lighter CSS mask reveal —
-                                 the particle field felt heavy on phones.
+    transition.css             — The shell dial and backdrop shared by the login,
+                                 the landing page and the Per-sistant entry
+                                 overlay: .shell-light (a gold light at --lx /
+                                 --ly), .shell-flare, .shell-grain (inline SVG
+                                 noise), .shell-scan, .dial-* (outer 120 ticks
+                                 drifting once a minute, 48 inner progress ticks,
+                                 the arc; is-checking / is-error), and the unlock
+                                 under .is-unlocking (dial-burst: 0 → 734° → 720°
+                                 in 1.05 s, drift paused, ring gold, dial swells).
+                                 Reduced motion: no animation.
+    transition.js              — window.ShellDial (mount(el) builds the dial SVG
+                                 into a [data-dial] element and returns
+                                 setProgress / setState; ticks; reducedMotion)
+                                 and the Per-sistant entry: a click on a
+                                 [data-atrans="dial"] link (the landing tile,
+                                 Perfin's nav cross-app icon) shows #atrans-dial,
+                                 fills the ticks (~260 ms), spins the ring and
+                                 navigates ~950 ms later (straight away under
+                                 prefers-reduced-motion); a bfcache restore
+                                 clears the overlay. CSS-driven, so phones run
+                                 the same effect (it replaced the starfield +
+                                 particle-assembly transition)
+    shell-page.js              — The login / landing clock readout and the light
+                                 following the pointer (external — the landing
+                                 page has no inline script)
     perfin-materialize.css     — Iron Man helmet stroke-draw + fill + pulse
                                  ring + particle burst + HUD scan animation
                                  (Perfin entry from landing tile + Per-sistant
@@ -1541,9 +1553,14 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3188 tests as of latest); use
+  Perfin and Per-sistant test files (3202 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3188 tests across 176 test files (incl.
+  Current count: 3202 tests across 177 test files (incl.
+  `tests/opening-screen.test.js` — the opening screen (direction D): POST /login's JSON answer to the keypad
+  (ok + the safeReturnTo'd redirect, 401 / 429 errors, a form post still redirecting / rendering), transition.js run in
+  a vm over a fake DOM (the dial's 120 / 48 ticks and arc, setProgress, the entry overlay's fill → spin → navigate,
+  reduced motion), login.ejs's keypad script in a vm (digits light the dial, Go posts JSON, a refused PIN's message and
+  reset, the unlock navigating to a same-origin path only) and the views / CSS (no starfield left, the spin keyframes);
   `tests/seams-audit-4-s5.test.js` — Seams & Invariants audit #4, S4-5: Settings' saveField in a vm (a refused or
   failed save puts back the value loadSettings marked, a saved change becomes the stored one, every change binding on it)
   (C2), the emergency-fund note beside the projection (C3), the summary reload un-hiding the cards and a failed reload
@@ -2825,7 +2842,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 91 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN — the dial shaking red / spinning up before Per-sistant loads — the dial lighting a step per digit, post-login default, Perfin's cross-app link opening Per-sistant through the dial overlay), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 93 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
 a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back, and Settings → Quiet Hours & Muting (cycle-8 E3c): quiet hours and a mute saved and read back, and Per-sistant's Settings link to it, and the nav sync badge (cycle-8 E4b): its level class and aria-label, and a click landing on Sync Health). Since cycle-8 E5a (ST4) `e2e/behaviour.spec.js` holds BEHAVIOUR tests: each does one key action on the page and checks the new state on the page, in the API and after a reload, then puts it back (through the app's own undo where there is one) — Activity rename + note, reimbursed, a duplicate deleted and brought back by the toast's Undo, Review Uncategorized Apply (no rule with Remember off), a manual bill marked paid on the Calendar and unmarked, a budget's rollover on and off, a rent payment recorded and undone, a subscription cancelled and restored, and (E5b) a credit score logged and removed, the theme switched (and still applied after a reload without the browser's copy), a dashboard widget switched off and on, a Settings switch whose save is refused going back while a saved one stays (the 400 routed with `page.route`), and Mark all read on the bell, and (E5c, Per-sistant) a note pinned through its dialog and unpinned, a todo's subtask ticked and the todo completed — the toast's Undo reopening it — completed again, reopened and unticked, today's habit marked done (the streak 1 → 2, the week grid) and unmarked, and a Job Radar listing saved (Saved view) and unsaved; each acts only on rows it creates under a unique "E5 … <tag>" name (its own "E5 Wallet" manual account) — the bell test's one unread notification and the job test's one listing are inserted straight into the databases (no route creates either) and, like the habit (the API only archives one), deleted directly afterwards, the listing's source trust put back. The login / page-problem helpers live in `e2e/helpers.js`; the seed runs once per run (`ensureSeeded` in seed.js — both spec files call it); the config runs ONE worker (`workers: 1`) so the behaviour file never runs beside the click sweep. The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
@@ -4175,12 +4192,12 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   30 s old (cycle-8 F33).
 - **Tile-click + cross-app transition animations (unified shell)**: the
   same Iron Man materialize plays when entering Perfin from the landing
-  tile or from Per-sistant's nav cross-app icon; a parallel cosmic mask-
-  crop reveal (scan-line + nebula + rising particles) plays when entering
-  Per-sistant from the landing tile or Perfin's nav cross-app icon.
-  Implemented as shared shell static modules (`shell/public/
+  tile or from Per-sistant's nav cross-app icon; entering Per-sistant from
+  the landing tile or Perfin's nav cross-app icon plays the shell dial's
+  unlock — the same spin as a correct PIN on the login (the opening screen,
+  direction D). Implemented as shared shell static modules (`shell/public/
   perfin-materialize.{css,js}` and `transition.{css,js}`) wired via
-  `data-perfin-materialize` / `data-atrans="cosmic"` attributes.
+  `data-perfin-materialize` / `data-atrans="dial"` attributes.
 - **Branding (Perfin)**: Iron Man helmet logo (SVG traced from PNG) — nav
   bar icon (CSS mask), standalone Perfin PWA icon, login animation source.
 - **Branding (unified shell PWA)**: mask-crop PNG (1024×1024). Served from
@@ -4952,7 +4969,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3188 tests passing across 176 test files (Perfin 2445 + Per-sistant 743), plus the real-Postgres route contract suite (340 tests; CI `migrations` job, `npm run test:contract`) and 91 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
+- 3202 tests passing across 177 test files (Perfin 2459 + Per-sistant 743), plus the real-Postgres route contract suite (340 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands

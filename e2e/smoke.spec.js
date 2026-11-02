@@ -26,12 +26,27 @@ test("unauthenticated visit redirects to the PIN login", async ({ page }) => {
 test("wrong PIN shows an error and does not authenticate", async ({ page }) => {
   await loginWithPin(page, "000000");
   await expect(page.locator("body")).toContainText(/incorrect pin/i);
+  // The dial shakes red and the page stays put (the keypad posts JSON).
+  await expect(page.locator("#login-dial")).toHaveClass(/is-error/);
+  await expect(page.locator("#dial-status")).toHaveClass(/is-error/);
+  await expect(page).toHaveURL(/\/login/);
 });
 
 test("correct PIN lands directly in Per-sistant (landing skipped by default)", async ({ page }) => {
   await loginWithPin(page, PIN);
+  // The opening screen's unlock: the outer ring spins up before the page moves.
+  await expect(page.locator("body")).toHaveClass(/is-unlocking/);
+  await expect(page.locator("#dial-status")).toHaveText(/unlocked/i);
   await expect(page).toHaveURL(/\/per-sistant/);
   await expect(page.locator(".sidebar-brand")).toContainText(/per-sistant/i);
+});
+
+test("the dial lights a step per digit", async ({ page }) => {
+  await page.goto("/login");
+  await expect(page.locator("#login-dial .dial-svg")).toBeVisible();
+  await expect(page.locator("#dial-status")).toHaveText(/enter pin/i);
+  for (const d of "246") await page.locator('.pin-key[data-digit="' + d + '"]').click();
+  await expect(page.locator("#dial-status")).toHaveText(/3 digits/i);
 });
 
 test.describe("authenticated", () => {
@@ -53,6 +68,14 @@ test.describe("authenticated", () => {
     await expect(page.locator("h1")).toContainText(/transactions/i);
     await expect(page.locator("table.txn-compact")).toBeAttached();
     await expect(page.locator("#result-count")).toContainText(/transactions found/i, { timeout: 15000 });
+  });
+
+  test("Perfin's cross-app link opens Per-sistant through the dial", async ({ page }) => {
+    await page.goto("/perfin/dashboard");
+    await page.locator("#cross-app-link").click();
+    await expect(page.locator("#atrans-dial")).toHaveClass(/active/);
+    await expect(page.locator("#atrans-dial")).toHaveClass(/is-unlocking/);
+    await page.waitForURL(/\/per-sistant/);
   });
 
   test("landing tile picker is still reachable at /", async ({ page }) => {

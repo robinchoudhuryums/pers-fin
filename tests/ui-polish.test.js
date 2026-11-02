@@ -145,9 +145,10 @@ describe("GET /api/spending-categories", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Login defaults to Per-sistant + particle-assembly transition
+// Login defaults to Per-sistant. (The entry transition is now the shell dial —
+// its behaviour is pinned in tests/opening-screen.test.js.)
 // ---------------------------------------------------------------------------
-describe("post-login default + icon particle transition", () => {
+describe("post-login default", () => {
   it("successful auth lands in Per-sistant (landing still served at /)", () => {
     const auth = read("shell", "middleware", "auth.js");
     assert.match(auth, /DEFAULT_POST_LOGIN = "\/per-sistant"/);
@@ -156,46 +157,5 @@ describe("post-login default + icon particle transition", () => {
     // the same destination as the PIN path.
     assert.match(login, /window\.location\.href = \(rtEl && rtEl\.value\) \|\| '\/per-sistant';/,
       "biometric path must match the PIN path's default destination");
-  });
-
-  it("transition samples the icon image into particles (assemble/hold/disperse)", () => {
-    const js = read("shell", "public", "transition.js");
-    assert.match(js, /getImageData/, "pixel-samples the .atrans-art icon");
-    assert.match(js, /ASSEMBLE_MS = 950, HOLD_MS = 430, DISPERSE_MS = 520/);
-    assert.match(js, /startParticleAssembly\(overlay, navigate\)/);
-    assert.match(js, /data\[i \+ 3\] < 110/, "transparent pixels skipped");
-  });
-
-  it("renders hi-fi: fine grid, 3x backing store, full-res image sharpen", () => {
-    const js = read("shell", "public", "transition.js");
-    assert.match(js, /GRID = 96/, "fine sampling grid (~2.5px particles, not ~4px)");
-    assert.match(js, /devicePixelRatio \|\| 1, 3\)/, "dpr cap raised to 3 for retina phones");
-    assert.match(js, /ctx\.drawImage\(img, 0, 0, SIZE, SIZE\)/,
-      "the real icon crossfades in at full resolution — the finale is never just the particle mosaic");
-    assert.match(js, /MAX_PARTICLES = 7500/, "frame-budget cap with uniform thinning");
-    assert.match(js, /particleDim/, "particles dim while the sharp image owns the frame");
-  });
-
-  it("respects prefers-reduced-motion and keeps the CSS-reveal fallback", () => {
-    const js = read("shell", "public", "transition.js");
-    assert.match(js, /prefers-reduced-motion: reduce.*matches.*return navigate\(\)/s);
-    assert.match(js, /setTimeout\(navigate, 1350\)/,
-      "tainted-canvas / unloaded-image path falls back to the original reveal");
-  });
-
-  it("is a hybrid: particles on desktop, the lighter CSS reveal on mobile/touch", () => {
-    const js = read("shell", "public", "transition.js");
-    assert.match(js, /function prefersLightTransition\(\)/, "device gate exists");
-    assert.match(js, /\(pointer: coarse\)/, "coarse pointer → light transition");
-    assert.match(js, /\(max-width: 768px\)/, "narrow viewport → light transition");
-    // The gate short-circuits the particle engine before it ever runs.
-    assert.match(js, /prefersLightTransition\(\) \|\| !startParticleAssembly\(overlay, navigate\)/,
-      "mobile takes the CSS mask-reveal path; desktop still tries particles");
-  });
-
-  it("particle mode hides the mask-reveal art via CSS", () => {
-    const css = read("shell", "public", "transition.css");
-    assert.match(css, /\.atrans-canvas \{ position: relative; z-index: 3/);
-    assert.match(css, /\.atrans-overlay\.atrans--particles \.atrans-art-wrap,\n\.atrans-overlay\.atrans--particles \.atrans-ring \{ display: none; \}/);
   });
 });

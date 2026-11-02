@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Sign In</title>
-  <meta name="theme-color" content="#0c0e14">
+  <meta name="theme-color" content="#0a0907">
   <link rel="manifest" href="/manifest.json">
   <!-- Home-screen icons: served from the shell at root paths so iOS's
        "Add to Home Screen" picks them up even from /login (pre-auth).
@@ -16,52 +16,86 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="stylesheet" href="/shell-static/landing.css">
+  <link rel="stylesheet" href="/shell-static/landing.css?v=3">
+  <link rel="stylesheet" href="/shell-static/transition.css?v=3">
 </head>
 <body class="login-body">
-  <div class="cosmic-bg" aria-hidden="true">
-    <div class="cosmic-nebula"></div>
-    <div class="cosmic-stars" id="cosmic-stars"></div>
-  </div>
+  <div class="shell-light" id="shell-light" aria-hidden="true"></div>
+  <div class="shell-flare" aria-hidden="true"></div>
+  <div class="shell-grain" aria-hidden="true"></div>
+  <div class="shell-scan" aria-hidden="true"></div>
   <main class="login-card">
-    <div class="login-glyph"><img src="/android-chrome-512x512.png?v=2" alt="" aria-hidden="true" width="64" height="64"></div>
-    <h1>Welcome</h1>
-    <p class="subtitle">Enter your PIN to continue.</p>
+    <h1 class="sr-only">Sign in</h1>
+    <p class="shell-readout" id="shell-clock" aria-hidden="true"></p>
+    <!-- The dial: transition.js draws its rings around the icon; the inner
+         ticks light one step per digit, and on a correct PIN the outer ring
+         spins up before the page moves on. -->
+    <div id="login-dial" data-dial><img src="/android-chrome-192x192.png?v=2" alt="" aria-hidden="true" width="60" height="60"></div>
+    <p class="dial-status" id="dial-status" aria-live="polite">Enter PIN</p>
     <% if (error) { %>
-      <div class="login-error" role="alert"><%= error %></div>
+      <p class="login-error" id="login-error" role="alert"><%= error %></p>
     <% } %>
-    <form id="login-form" method="POST" action="/login" autocomplete="off">
-      <!-- Real PIN field — the only credential the form posts. On JS-capable
-           browsers setupPinPad() hides it (+ the Continue button) and reveals
-           the keypad below, writing taps straight into this input. With JS off
-           it stays a normal numeric field, so login still works. -->
-      <input
-        type="password"
-        name="pin"
-        inputmode="numeric"
-        pattern="[0-9]*"
-        autofocus
-        required
-        aria-label="PIN"
-        class="pin-input"
-        id="pin-input"
-      >
-      <% if (typeof returnTo !== 'undefined' && returnTo) { %>
-        <%# PSC-9: the page the user was sent here from; safeReturnTo-validated server-side %>
-        <input type="hidden" name="return_to" id="return-to" value="<%= returnTo %>">
-      <% } %>
-      <button type="submit" class="btn primary" id="continue-btn">Continue</button>
-      <div class="pin-pad-wrap" id="pin-pad-wrap" hidden>
-        <div class="pin-dots" id="pin-dots"></div>
-        <div class="pin-pad" id="pin-pad"></div>
-      </div>
-    </form>
-    <button type="button" id="biometric-btn" class="btn biometric-btn" style="display:none;">
-      Use Biometric
-    </button>
-    <div id="biometric-status"></div>
+    <div class="pin-panel">
+      <form id="login-form" method="POST" action="/login" autocomplete="off">
+        <!-- Real PIN field — the only credential the form posts. On JS-capable
+             browsers setupPinPad() hides it (+ the Continue button) and reveals
+             the keypad below, which sends the PIN as JSON so the dial can
+             answer before the page changes. With JS off it stays a normal
+             numeric field and the form posts as before. -->
+        <input
+          type="password"
+          name="pin"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          autofocus
+          required
+          aria-label="PIN"
+          class="pin-input"
+          id="pin-input"
+        >
+        <% if (typeof returnTo !== 'undefined' && returnTo) { %>
+          <%# PSC-9: the page the user was sent here from; safeReturnTo-validated server-side %>
+          <input type="hidden" name="return_to" id="return-to" value="<%= returnTo %>">
+        <% } %>
+        <button type="submit" class="btn primary" id="continue-btn">Continue</button>
+        <div class="pin-pad-wrap" id="pin-pad-wrap" hidden>
+          <div class="pin-pad" id="pin-pad"></div>
+        </div>
+      </form>
+      <button type="button" id="biometric-btn" class="text-btn" style="display:none;">Use biometric</button>
+    </div>
   </main>
+  <script src="/shell-static/transition.js?v=3"></script>
+  <script src="/shell-static/shell-page.js?v=3" defer></script>
   <script nonce="<%= nonce %>">
+    // The dial's side of the page: the status readout and the unlock. Both the
+    // keypad and the biometric path finish through unlock(), so every sign-in
+    // ends the same way — the outer ring spins up, the panel falls away, then
+    // the page navigates (straight away under prefers-reduced-motion).
+    var loginUi = (function () {
+      var statusEl = document.getElementById('dial-status');
+      var dial = window.ShellDial ? window.ShellDial.mount(document.getElementById('login-dial')) : null;
+      var UNLOCK_NAVIGATE_MS = 1150;
+      function setStatus(text, tone) {
+        if (!statusEl) return;
+        statusEl.textContent = text;
+        statusEl.className = 'dial-status' + (tone ? ' is-' + tone : '');
+      }
+      function clearServerError() {
+        var e = document.getElementById('login-error');
+        if (e) e.parentNode.removeChild(e);
+      }
+      function unlock(navigate) {
+        setStatus('Unlocked', 'ok');
+        if (dial) { dial.setState(null); dial.setProgress(1); }
+        var reduce = window.ShellDial && window.ShellDial.reducedMotion();
+        if (reduce || !dial) return navigate();
+        document.body.classList.add('is-unlocking');
+        setTimeout(navigate, UNLOCK_NAVIGATE_MS);
+      }
+      return { dial: dial, setStatus: setStatus, clearServerError: clearServerError, unlock: unlock };
+    })();
+
     // Helpers — base64url ↔ Uint8Array. WebAuthn responses use base64url.
     function b64uToBuf(s) {
       var pad = '===='.slice(0, (4 - s.length % 4) % 4);
@@ -93,9 +127,10 @@
 
     document.getElementById('biometric-btn').addEventListener('click', async function() {
       var btn = this;
-      var status = document.getElementById('biometric-status');
       btn.disabled = true;
-      status.textContent = 'Waiting for biometric…';
+      loginUi.clearServerError();
+      loginUi.setStatus('Waiting for biometric');
+      if (loginUi.dial) loginUi.dial.setState('checking');
       try {
         // Step 1: get challenge + allow-list from server.
         var optsRes = await fetch('/api/shell/webauthn/authenticate-options', { method: 'POST' });
@@ -137,55 +172,39 @@
           var verr = await verifyRes.json().catch(function() { return {}; });
           throw new Error(verr.error || 'Verification failed');
         }
-        status.textContent = 'Verified. Redirecting…';
         var rtEl = document.getElementById('return-to');
-        window.location.href = (rtEl && rtEl.value) || '/per-sistant';
+        loginUi.unlock(function () {
+          window.location.href = (rtEl && rtEl.value) || '/per-sistant';
+        });
       } catch (e) {
-        status.textContent = 'Biometric login failed: ' + (e.message || e);
+        if (loginUi.dial) loginUi.dial.setState(null);
+        loginUi.setStatus('Biometric login failed: ' + (e.message || e), 'error');
         btn.disabled = false;
       }
     });
   </script>
   <script nonce="<%= nonce %>">
-    // Cosmic starfield — inject twinkling stars into the backdrop. Sizes/
-    // positions/delays randomized so the field doesn't pulse in unison. CSS
-    // handles the twinkle (and silences it under prefers-reduced-motion).
-    (function populateStars() {
-      var box = document.getElementById('cosmic-stars');
-      if (!box) return;
-      var html = '';
-      for (var i = 0; i < 54; i++) {
-        var x = (Math.random() * 100).toFixed(2);
-        var y = (Math.random() * 100).toFixed(2);
-        var size = (Math.random() * 1.8 + 1).toFixed(2);
-        var delay = (Math.random() * 2.6).toFixed(2);
-        var dur = (Math.random() * 1.8 + 1.8).toFixed(2);
-        html += '<span style="left:' + x + '%;top:' + y + '%;width:' + size +
-                'px;height:' + size + 'px;animation-delay:' + delay +
-                's;animation-duration:' + dur + 's;"></span>';
-      }
-      box.innerHTML = html;
-    })();
-
     // Numeric PIN pad — progressive enhancement. Replaces the text input with a
-    // keypad that writes into the same #pin-input and submits the same form.
-    // Fixed 8-dot masked display (length-agnostic, like Perfin's pad). Physical
-    // keyboard digits / Backspace / Enter work too.
+    // keypad that writes into the same #pin-input. The inner dial ticks light
+    // one step per digit (8 steps — a mask, not a limit). Go sends the PIN as
+    // JSON to the same POST /login: a correct PIN plays the unlock, a refused
+    // one shakes the dial and shows why. Physical keyboard digits / Backspace /
+    // Enter work too.
     (function setupPinPad() {
       var form = document.getElementById('login-form');
       var input = document.getElementById('pin-input');
       var wrap = document.getElementById('pin-pad-wrap');
       var continueBtn = document.getElementById('continue-btn');
-      var dotsEl = document.getElementById('pin-dots');
       var padEl = document.getElementById('pin-pad');
-      if (!form || !input || !wrap || !dotsEl || !padEl) return;
+      if (!form || !input || !wrap || !padEl) return;
 
-      var DOTS = 8;
-      // IF-6: the dots are a fixed-width mask, not a limit — a PIN longer
-      // than 8 digits used to be impossible to type on the pad. 64 is just a
+      var STEPS = 8;
+      // IF-6: the dial is a fixed-width mask, not a limit — a PIN longer than
+      // 8 digits used to be impossible to type on the pad. 64 is just a
       // runaway guard.
       var MAX_PIN = 64;
       var pin = '';
+      var busy = false;
 
       // Swap the plain field for the pad.
       input.style.display = 'none';
@@ -193,29 +212,63 @@
       if (continueBtn) continueBtn.style.display = 'none';
       wrap.hidden = false;
 
-      var dh = '';
-      for (var i = 0; i < DOTS; i++) dh += '<div class="pin-dot" id="pd-' + i + '"></div>';
-      dotsEl.innerHTML = dh;
-
       var ph = '';
       [1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(function (n) {
         ph += '<button class="pin-key" type="button" data-digit="' + n + '">' + n + '</button>';
       });
-      ph += '<button class="pin-key fn" type="button" data-action="back" aria-label="Delete">&#9003;</button>';
+      ph += '<button class="pin-key fn" type="button" data-action="back" aria-label="Delete last digit">' +
+            '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1z"/><path d="M17 9l-5 6M12 9l5 6"/></svg></button>';
       ph += '<button class="pin-key" type="button" data-digit="0">0</button>';
-      ph += '<button class="pin-key fn go" type="button" data-action="go">Go</button>';
+      ph += '<button class="pin-key fn go" type="button" data-action="go" aria-label="Unlock">' +
+            '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></button>';
       padEl.innerHTML = ph;
 
-      function render() {
-        for (var j = 0; j < DOTS; j++) {
-          var d = document.getElementById('pd-' + j);
-          if (d) d.className = 'pin-dot' + (j < pin.length ? ' filled' : '');
-        }
+      function render(keepStatus) {
         input.value = pin;
+        if (loginUi.dial) loginUi.dial.setProgress(Math.min(pin.length, STEPS) / STEPS);
+        if (!keepStatus) loginUi.setStatus(pin.length ? pin.length + (pin.length === 1 ? ' digit' : ' digits') : 'Enter PIN');
       }
-      function add(n) { if (pin.length >= MAX_PIN) return; pin += n; render(); }
-      function back() { pin = pin.slice(0, -1); render(); }
-      function go() { if (pin.length) form.submit(); }
+      function add(n) { if (pin.length >= MAX_PIN) return; if (busy) return; loginUi.clearServerError(); pin += n; render(); }
+      function back() { if (busy) return; pin = pin.slice(0, -1); render(); }
+
+      // A same-origin path only (the server already ran safeReturnTo).
+      function safeDest(p) {
+        return (typeof p === 'string' && /^\/(?!\/)/.test(p) && p.indexOf('\\') === -1) ? p : '/per-sistant';
+      }
+      function refuse(message) {
+        busy = false;
+        if (loginUi.dial) loginUi.dial.setState('error');
+        loginUi.setStatus(message, 'error');
+        // The message stays until the next key; the dial resets after the shake.
+        setTimeout(function () {
+          pin = '';
+          render(true);
+          if (loginUi.dial) loginUi.dial.setState(null);
+        }, 800);
+      }
+      function go() {
+        if (!pin.length || busy) return;
+        busy = true;
+        loginUi.setStatus('Checking');
+        if (loginUi.dial) loginUi.dial.setState('checking');
+        var rtEl = document.getElementById('return-to');
+        fetch('/login', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ pin: pin, return_to: rtEl ? rtEl.value : undefined }),
+        }).then(function (r) {
+          return r.json().catch(function () { return null; }).then(function (d) {
+            if (r.ok && d && d.ok) {
+              loginUi.unlock(function () { window.location.href = safeDest(d.redirect); });
+              return;
+            }
+            refuse((d && d.error) || (r.status === 429 ? 'Too many attempts, please try again later.' : 'Sign-in failed.'));
+          });
+        }).catch(function () {
+          refuse("Couldn't reach the server. Try again.");
+        });
+      }
 
       padEl.addEventListener('click', function (e) {
         var b = e.target.closest('button');
@@ -237,7 +290,17 @@
         else if (e.key === 'Backspace') { e.preventDefault(); back(); }
         else if (e.key === 'Enter') { e.preventDefault(); go(); }
       });
+      // A server-rendered error (the form post without JavaScript, or a
+      // lockout) keeps its own line; the readout starts at "Enter PIN".
       render();
+
+      // Back / forward cache: a page restored after an unlock would still be
+      // mid-spin with the keypad hidden.
+      window.addEventListener('pageshow', function (ev) {
+        if (!ev.persisted) return;
+        document.body.classList.remove('is-unlocking');
+        busy = false; pin = ''; render();
+      });
     })();
   </script>
 </body>
