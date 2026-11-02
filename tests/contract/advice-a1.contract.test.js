@@ -68,8 +68,13 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
   it("the plan: the whole recommendation to the highest-APR carried card", async () => {
     const plan = await advice.getAdvicePlan(pool, { today });
     assert.equal(plan.ok, true);
+    // The card purchases (Amex $85 five days back, the store card's $11.50 twenty days
+    // back) are spending too: early in a month they fall in the last completed month.
+    // The Visa interest line is a bank charge NOT_TRANSFER leaves out.
+    const back = (n) => require("../../teller/services/cadence").addDaysStr(today, -n);
+    const extra = (k) => [[85, back(5)], [11.5, back(20)]].filter(([, d]) => d.slice(0, 7) === k).reduce((s, [a]) => s + a, 0);
     assert.deepEqual(plan.surplus.months.map((m) => [m.month, m.income, m.spending, m.net, m.ok]),
-      keys.map((k) => [k, 5000, 3000, 2000, true]));
+      keys.map((k) => [k, 5000, 3000 + extra(k), 2000 - extra(k), true]));
     const byName = Object.fromEntries(plan.debts.map((d) => [d.name, d]));
     assert.equal(byName.Visa.carry_reason, "interest_charged");
     assert.equal(byName["Store card"].carry_reason, "interest_charged");

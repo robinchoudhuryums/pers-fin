@@ -14,7 +14,17 @@ const { SKIP, perfinDb, perfinApp } = require("./_setup");
 describe("Webhooks W1 on real Postgres", { skip: SKIP }, () => {
   let pool;
   const q = (s, p) => pool.query(s, p);
-  const settle = () => new Promise((r) => setTimeout(r, 50));
+  // Wait for the detached handlers: the route answers 200 before its handler runs,
+  // so poll until no recent row is still received / processing (a fixed 50 ms
+  // sleep lost the race on a slow CI runner). Old seeded rows are left out.
+  const settle = async (ms = 3000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const n = (await pool.query("SELECT count(*)::int AS n FROM webhook_events WHERE status IN ('received', 'processing') AND received_at > now() - interval '1 hour'")).rows[0].n;
+      if (n === 0 || Date.now() > end) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
   const verifier = (key) => ({
     configured: () => true,
     verify: async () => ({ ok: true, dedupeKey: key, event: { type: "TRANSACTIONS", code: "SYNC_UPDATES_AVAILABLE", subject: "item-1" } }),
