@@ -943,6 +943,7 @@
         var horizonSel = document.getElementById('cash-alert-horizon');
         horizonSel.value = String(s.cash_alert_horizon_days || 14);
         if (horizonSel.value !== String(s.cash_alert_horizon_days || 14)) horizonSel.value = '14';
+        markSavedFields();
         document.getElementById('payday-alert-toggle').checked = !!s.payday_alerts_enabled;
         document.getElementById('advice-alert-toggle').checked = !!s.advice_alerts_enabled;
         renderCashAlertLast(s);
@@ -1078,6 +1079,27 @@
     async function saveToggle(box, key) {
       var want = box.checked;
       if (!(await updateSetting(key, want))) box.checked = !want;
+    }
+    // Seams audit #4 C2: the same for a select / text / number box — a save the
+    // server refused or that never reached it puts back the stored value (it kept
+    // the refused one, showing a setting that wasn't saved). The stored value is
+    // data-saved: set by loadSettings (markSavedFields), moved on by each save.
+    var SAVED_FIELDS = ['theme-select', 'months-select', 'timeout-input', 'shell-idle-input',
+      'model-select', 'cadence-select', 'zip-input', 'partner-name-input', 'keepalive-start',
+      'keepalive-end', 'keepalive-tz', 'pyramid-source-select', 'pyramid-color-select',
+      'csv-reminder-days', 'sheets-interval-select', 'auto-sync-interval-select',
+      'weekly-digest-day-select', 'cash-alert-horizon'];
+    function markSavedFields() {
+      SAVED_FIELDS.forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.setAttribute('data-saved', el.value);
+      });
+    }
+    async function saveField(el, key, value) {
+      var before = el.getAttribute('data-saved');
+      if (await updateSetting(key, value)) { el.setAttribute('data-saved', el.value); return true; }
+      if (before !== null) el.value = before;
+      return false;
     }
     // Monthly AI budget cap — dollars in the input, cents over the wire.
     (function wireBudgetCap() {
@@ -1869,19 +1891,19 @@
 
     // --- Bind all event handlers (CSP-safe, no inline attributes) ---
     bindEvents([
-      ['theme-select', 'change', function() { updateSetting('theme', this.value); }],
-      ['months-select', 'change', function() { updateSetting('dashboard_months', parseInt(this.value)); }],
-      ['timeout-input', 'change', function() { updateSetting('session_timeout_minutes', parseInt(this.value)); }],
-      ['shell-idle-input', 'change', function() { updateSetting('shell_idle_timeout_minutes', parseInt(this.value)); }],
+      ['theme-select', 'change', function() { saveField(this, 'theme', this.value); }],
+      ['months-select', 'change', function() { saveField(this, 'dashboard_months', parseInt(this.value)); }],
+      ['timeout-input', 'change', function() { saveField(this, 'session_timeout_minutes', parseInt(this.value)); }],
+      ['shell-idle-input', 'change', function() { saveField(this, 'shell_idle_timeout_minutes', parseInt(this.value)); }],
       ['logout-btn', 'click', logout],
       ['logout-all-btn', 'click', logoutEverywhere],
       ['biometric-register-btn', 'click', registerBiometric],
       ['insights-toggle', 'change', function() { saveToggle(this, 'insights_enabled'); }],
       ['insights-btn', 'click', generateInsights],
-      ['model-select', 'change', function() { updateSetting('insights_model', this.value); }],
-      ['cadence-select', 'change', function() { updateSetting('insights_cadence_days', parseInt(this.value)); }],
-      ['zip-input', 'change', function() { updateSetting('zip_code', this.value); }],
-      ['partner-name-input', 'change', function() { updateSetting('partner_name', this.value); }],
+      ['model-select', 'change', function() { saveField(this, 'insights_model', this.value); }],
+      ['cadence-select', 'change', function() { saveField(this, 'insights_cadence_days', parseInt(this.value)); }],
+      ['zip-input', 'change', function() { saveField(this, 'zip_code', this.value); }],
+      ['partner-name-input', 'change', function() { saveField(this, 'partner_name', this.value); }],
       ['reset-btn', 'click', resetContext],
       ['rebuild-btn', 'click', rebuildContext],
       ['categorize-btn', 'click', runCategorize],
@@ -1889,27 +1911,27 @@
       ['push-btn', 'click', togglePush],
       ['test-push-btn', 'click', testPush],
       ['keepalive-toggle', 'change', function() { saveToggle(this, 'keep_alive_enabled'); }],
-      ['keepalive-start', 'change', function() { updateSetting('keep_alive_start', parseInt(this.value)); }],
-      ['keepalive-end', 'change', function() { updateSetting('keep_alive_end', parseInt(this.value)); }],
-      ['keepalive-tz', 'change', function() { updateSetting('keep_alive_timezone', this.value); }],
-      ['pyramid-source-select', 'change', function() { updateSetting('pyramid_data_source', this.value); }],
-      ['pyramid-color-select', 'change', function() { updateSetting('pyramid_color_mode', this.value); }],
+      ['keepalive-start', 'change', function() { saveField(this, 'keep_alive_start', parseInt(this.value)); }],
+      ['keepalive-end', 'change', function() { saveField(this, 'keep_alive_end', parseInt(this.value)); }],
+      ['keepalive-tz', 'change', function() { saveField(this, 'keep_alive_timezone', this.value); }],
+      ['pyramid-source-select', 'change', function() { saveField(this, 'pyramid_data_source', this.value); }],
+      ['pyramid-color-select', 'change', function() { saveField(this, 'pyramid_color_mode', this.value); }],
       ['snapshot-btn', 'click', saveSnapshot],
       ['csv-reminder-toggle', 'change', function() { saveToggle(this, 'csv_reminder_enabled'); }],
-      ['csv-reminder-days', 'change', function() { updateSetting('csv_reminder_days', parseInt(this.value)); }],
+      ['csv-reminder-days', 'change', function() { saveField(this, 'csv_reminder_days', parseInt(this.value)); }],
       ['sheets-auto-toggle', 'change', function() { saveToggle(this, 'sheets_auto_sync_enabled'); }],
-      ['sheets-interval-select', 'change', function() { updateSetting('sheets_auto_sync_interval', this.value); }],
+      ['sheets-interval-select', 'change', function() { saveField(this, 'sheets_auto_sync_interval', this.value); }],
       ['auto-sync-toggle', 'change', function() { saveToggle(this, 'auto_sync_enabled'); }],
-      ['auto-sync-interval-select', 'change', function() { updateSetting('auto_sync_interval_hours', parseInt(this.value)); }],
+      ['auto-sync-interval-select', 'change', function() { saveField(this, 'auto_sync_interval_hours', parseInt(this.value)); }],
       ['sync-notif-toggle', 'change', function() { saveToggle(this, 'sync_notifications_enabled'); }],
       ['weekly-digest-toggle', 'change', function() { saveToggle(this, 'weekly_digest_enabled'); }],
-      ['weekly-digest-day-select', 'change', function() { updateSetting('weekly_digest_day', parseInt(this.value)); }],
+      ['weekly-digest-day-select', 'change', function() { saveField(this, 'weekly_digest_day', parseInt(this.value)); }],
       ['daily-digest-toggle', 'change', function() { saveToggle(this, 'daily_digest_enabled'); }],
       ['critical-alert-toggle', 'change', function() { saveToggle(this, 'critical_alert_emails_enabled'); }],
       ['cash-alert-toggle', 'change', function() { saveToggle(this, 'cash_alert_enabled'); }],
       ['payday-alert-toggle', 'change', function() { saveToggle(this, 'payday_alerts_enabled'); }],
       ['advice-alert-toggle', 'change', function() { saveToggle(this, 'advice_alerts_enabled'); }],
-      ['cash-alert-horizon', 'change', function() { updateSetting('cash_alert_horizon_days', parseInt(this.value, 10)); }],
+      ['cash-alert-horizon', 'change', function() { saveField(this, 'cash_alert_horizon_days', parseInt(this.value, 10)); }],
       ['cash-alert-threshold-save', 'click', function() {
         var n = parseAmountInput(document.getElementById('cash-alert-threshold').value);
         if (!isFinite(n) || n < 0) { showMsg('Enter a floor of $0 or more', false); return; }
