@@ -69,13 +69,17 @@ async function openSettings(page) {
 }
 const settingsOf = (req) => apiJson(req, "/perfin/api/settings");
 
-// The one row in Perfin's database no route can create: a notification is only
-// written by sendToAll from a job or a sync (E5b, plan decision 2).
-async function perfinDb(fn) {
-  const db = new Client({ connectionString: dbUrl("perfin_e2e") });
+// For the rows no route can create or remove: a notification (written only by
+// sendToAll, E5b), a Job Radar listing (only the boards add them) and a habit
+// (the API only archives one) — E5 plan decision 2.
+async function inDb(name, fn) {
+  const db = new Client({ connectionString: dbUrl(name) });
   await db.connect();
   try { return await fn(db); } finally { await db.end(); }
 }
+const perfinDb = (fn) => inDb("perfin_e2e", fn);
+const persistentDb = (fn) => inDb("persistent_e2e", fn);
+const idOf = (row) => Number(row.id || (row.todo && row.todo.id) || (row.habit && row.habit.id));
 
 test.describe("key actions change what they say they change", () => {
   test.beforeAll(async ({ browser }) => {
@@ -596,6 +600,204 @@ test.describe("key actions change what they say they change", () => {
     } finally {
       // Its own row — removed (the others it marked read stay read).
       await perfinDb((db) => db.query("DELETE FROM notification_log WHERE id = $1", [id]));
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 14 ────────────────────────────────────────────────────────────────────────
+  test("Per-sistant Notes: pinning a note puts it first with its badge, and unpinning takes it off", async ({ page }) => {
+    const problems = watch(page);
+    const t = tagOf();
+    const title = `E5 Note ${t}`;
+    const note = await apiSend(page.request, "post", "/per-sistant/api/notes", { title, content: `A behaviour-test note ${t}.` });
+    const id = idOf(note);
+    const noteOf = async () => (await apiJson(page.request, "/per-sistant/api/notes")).find((n) => Number(n.id) === id);
+    const grid = page.locator("#notes-grid");
+    const cardOf = () => grid.getByRole("button", { name: `Open note: ${title}` });
+    const setPinned = async (on) => {
+      await cardOf().click();
+      const box = page.locator("#n-pinned");
+      await expect(page.locator("#note-modal")).toHaveClass(/\bactive\b/);
+      if (on) await box.check(); else await box.uncheck();
+      await page.locator("#save-note-btn").click();
+      await expect(page.locator("#note-modal")).not.toHaveClass(/\bactive\b/);
+    };
+    try {
+      await page.goto("/per-sistant/notes");
+      await expect(cardOf()).not.toContainText("Pinned");
+      await setPinned(true);
+      // (a) the grid re-reads: the badge, and first in the grid (pinned sort first).
+      await expect(cardOf()).toContainText("Pinned");
+      await expect(grid.locator(".note-card").first()).toHaveAttribute("aria-label", `Open note: ${title}`);
+      // (b) the API.
+      expect((await noteOf()).pinned).toBe(true);
+      // (c) after a reload, and the dialog shows it ticked.
+      await page.reload();
+      await expect(grid.locator(".note-card").first()).toHaveAttribute("aria-label", `Open note: ${title}`);
+      await expect(cardOf()).toContainText("Pinned");
+      // Put back through the dialog.
+      await setPinned(false);
+      await expect(cardOf()).not.toContainText("Pinned");
+      expect((await noteOf()).pinned).toBe(false);
+    } finally {
+      // Its own note — to the trash and out of it.
+      await apiSend(page.request, "delete", `/per-sistant/api/notes/${id}`);
+      await apiSend(page.request, "delete", `/per-sistant/api/trash/note/${id}`);
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 15 ────────────────────────────────────────────────────────────────────────
+  test("Per-sistant To-Dos: ticking a subtask and completing the task stick, Undo reopens it, and unticking puts both back", async ({ page }) => {
+    const problems = watch(page);
+    const t = tagOf();
+    const title = `E5 Task ${t}`;
+    const step = `E5 step ${t}`;
+    const id = idOf(await apiSend(page.request, "post", "/per-sistant/api/todos", { title, priority: "low", horizon: "short" }));
+    await apiSend(page.request, "post", `/per-sistant/api/todos/${id}/subtasks`, { title: step });
+    const todoOf = async () => (await apiJson(page.request, "/per-sistant/api/todos")).find((x) => Number(x.id) === id);
+    const subOf = async () => (await apiJson(page.request, `/per-sistant/api/todos/${id}/subtasks`))[0];
+    const item = page.locator(`#todo-list .todo-item[data-id="${id}"]`);
+    const taskCheck = item.getByRole("checkbox", { name: `Complete: ${title}` });
+    const stepCheck = item.getByRole("checkbox", { name: `Subtask done: ${step}` });
+    try {
+      await page.goto("/per-sistant/todos");
+      await expect(stepCheck).toHaveAttribute("aria-checked", "false");
+      // The subtask: (a) ticked with the progress at 100%, (b) the API.
+      await stepCheck.click();
+      await expect(stepCheck).toHaveAttribute("aria-checked", "true");
+      await expect(item).toContainText("1/1 subtasks");
+      await expect(item).toContainText("100%");
+      await expect.poll(async () => (await subOf()).completed).toBe(true);
+
+      // Completing the task: it leaves the Pending list and the toast offers Undo.
+      await taskCheck.click();
+      await expect(item).toHaveCount(0);
+      const undoToast = page.locator("#undo-toast");
+      await expect(undoToast).toContainText("Task completed");
+      expect((await todoOf()).completed).toBe(true);
+      await undoToast.getByRole("button", { name: "Undo" }).click();
+      await expect(taskCheck).toHaveAttribute("aria-checked", "false");
+      expect((await todoOf()).completed).toBe(false);
+
+      // Again, then (c) after a reload it is under Completed, its subtask still ticked.
+      await taskCheck.click();
+      await expect(item).toHaveCount(0);
+      await expect.poll(async () => (await todoOf()).completed).toBe(true);
+      await page.reload();
+      await expect(page.locator("#todo-list")).not.toContainText(title);
+      await page.locator("#filter-status").selectOption("done");
+      await expect(taskCheck).toHaveAttribute("aria-checked", "true");
+      await expect(stepCheck).toHaveAttribute("aria-checked", "true");
+      // Put back on the page: reopen it there, then untick the subtask.
+      await taskCheck.click();
+      await expect(item).toHaveCount(0);
+      expect((await todoOf()).completed).toBe(false);
+      await page.locator("#filter-status").selectOption("pending");
+      await expect(taskCheck).toHaveAttribute("aria-checked", "false");
+      await stepCheck.click();
+      await expect(stepCheck).toHaveAttribute("aria-checked", "false");
+      await expect.poll(async () => (await subOf()).completed).toBe(false);
+    } finally {
+      await apiSend(page.request, "delete", `/per-sistant/api/todos/${id}`);
+      await apiSend(page.request, "delete", `/per-sistant/api/trash/todo/${id}`);
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 16 ────────────────────────────────────────────────────────────────────────
+  test("Per-sistant Health: marking today's habit done fills today's cell and lengthens the streak, and unmarking undoes both", async ({ page }) => {
+    const problems = watch(page);
+    const t = tagOf();
+    const name = `E5 Stretch ${t}`;
+    const today = ymd(0);
+    const id = idOf(await apiSend(page.request, "post", "/per-sistant/api/habits", { name, kind: "boolean", schedule: "daily" }));
+    // Yesterday logged: a 1-day streak that today's log makes 2.
+    await apiSend(page.request, "post", `/per-sistant/api/habits/${id}/log`, { date: ymd(-1) });
+    const habitOf = async () => ((await apiJson(page.request, "/per-sistant/api/habits")).habits || []).find((h) => Number(h.id) === id);
+    const row = page.locator("#today-list > div", { hasText: name });
+    const cell = page.locator(`#week-grid [data-action="cell"][data-id="${id}"][data-date="${today}"]`);
+    try {
+      await page.goto("/per-sistant/health");
+      await expect(row.locator(".badge.streak")).toContainText("1");
+      await row.getByRole("button", { name: "Mark done" }).click();
+      // (a) the row says done with a 2-day streak; today's cell holds the log.
+      await expect(row.getByRole("button", { name: /Done/ })).toBeVisible();
+      await expect(row.locator(".badge.streak")).toContainText("2");
+      await expect(cell).toHaveAttribute("data-value", "1");
+      // (b) the API.
+      let h = await habitOf();
+      expect(h).toMatchObject({ done_today: true, current_streak: 2 });
+      // (c) after a reload.
+      await page.reload();
+      await expect(row.getByRole("button", { name: /Done/ })).toBeVisible();
+      await expect(cell).toHaveAttribute("data-value", "1");
+      // Put back on the page.
+      await row.getByRole("button", { name: /Done/ }).click();
+      await expect(row.getByRole("button", { name: "Mark done" })).toBeVisible();
+      await expect(row.locator(".badge.streak")).toContainText("1");
+      await expect(cell).not.toHaveAttribute("data-value", "1");
+      h = await habitOf();
+      expect(h).toMatchObject({ done_today: false, current_streak: 1 });
+    } finally {
+      // Its own habit — removed with its logs (the API only archives).
+      await persistentDb((db) => db.query("DELETE FROM habits WHERE id = $1", [id]));
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  // 17 ────────────────────────────────────────────────────────────────────────
+  test("Per-sistant Job Radar: Save marks a listing saved and lists it under Saved, and Unsave returns it to the radar", async ({ page }) => {
+    const problems = watch(page);
+    const t = tagOf();
+    const title = `E5 Role ${t}`;
+    // Listings arrive only from the boards, so this one is inserted, as seed.js's is.
+    const { id, sourceId, weight } = await persistentDb(async (db) => {
+      const src = (await db.query("SELECT id, trust_weight FROM job_sources ORDER BY id LIMIT 1")).rows[0];
+      const row = (await db.query(
+        `INSERT INTO job_listings (source_id, source_job_id, content_hash, title, company, location, remote,
+                                   apply_url, apply_domain, description, fit_score, fit_rationale, trust_score, legitimacy)
+         VALUES ($1, $2, $2, $3, 'E5 Co', 'Remote', true, 'https://jobs.example.com/e5', 'example.com',
+                 'A behaviour-test listing.', 88, 'Matches the profile.', 85, 'real') RETURNING id`,
+        [src.id, `e5-${t}`, title])).rows[0];
+      return { id: Number(row.id), sourceId: src.id, weight: src.trust_weight };
+    });
+    const statusOf = async () => {
+      for (const st of ["saved", "new"]) {
+        const l = (await apiJson(page.request, `/per-sistant/api/jobs/list?status=${st}`)).listings || [];
+        if (l.some((j) => Number(j.id) === id)) return st;
+      }
+      return null;
+    };
+    const radarCard = page.locator("#jr-main .card", { hasText: title });
+    try {
+      await page.goto("/per-sistant/jobs");
+      await expect(radarCard).toBeVisible();
+      await expect(radarCard.locator(".badge", { hasText: /^saved$/ })).toHaveCount(0);
+      await radarCard.getByRole("button", { name: "Save", exact: true }).click();
+      // (a) the card is marked saved and offers Unsave.
+      await expect(radarCard.locator(".badge", { hasText: /^saved$/ })).toBeVisible();
+      await expect(radarCard.getByRole("button", { name: "Unsave" })).toBeVisible();
+      // (b) the API.
+      expect(await statusOf()).toBe("saved");
+      // (c) after a reload, and under Saved.
+      await page.reload();
+      await expect(radarCard.locator(".badge", { hasText: /^saved$/ })).toBeVisible();
+      await page.locator('#jr-views [data-view="saved"]').click();
+      const savedCard = page.locator("#jr-list .card", { hasText: title });
+      await expect(savedCard).toBeVisible();
+      // Put back on the page: Unsave from the Saved view.
+      await savedCard.getByRole("button", { name: "Unsave" }).click();
+      await expect(savedCard).toHaveCount(0);
+      expect(await statusOf()).toBe("new");
+      await page.locator('#jr-views [data-view="radar"]').click();
+      await expect(radarCard.getByRole("button", { name: "Save", exact: true })).toBeVisible();
+    } finally {
+      // Its own listing removed, and the trust nudge Save gave its source undone.
+      await persistentDb(async (db) => {
+        await db.query("DELETE FROM job_listings WHERE id = $1", [id]);
+        await db.query("UPDATE job_sources SET trust_weight = $2 WHERE id = $1", [sourceId, weight]);
+      });
     }
     expect(problems, problems.join("\n")).toEqual([]);
   });

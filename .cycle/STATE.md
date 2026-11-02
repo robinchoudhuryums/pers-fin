@@ -12,12 +12,22 @@ to the "none in progress" state.
 Cycle: 8
 Phase: implement
 Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
-Updated: 2026-10-30
+Updated: 2026-11-02
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle-8 E5c (DONE, 2026-11-02) — ST4 part 3, E5 complete:** block `.cycle/blocks/8-e5c-broad-implement.md`.
+  - **Shipped:** behaviour tests 14–17 in `e2e/behaviour.spec.js` — pin a note, complete a todo + subtask (with the
+    undo toast), log today's habit (the streak and today's cell), save a Job Radar listing (Saved view, Unsave).
+  - **Decision:** test 17 inserts its own Job Radar listing (the same kind of direct insert seed.js makes) rather than
+    acting on the seeded one, and the habit / listing tests delete their own rows directly (the API only archives a
+    habit; the click sweep would Restore an archived one); the listing's source trust_weight is put back.
+  - **Verified:** npm test 3122/3124 (e1a date failure, wider than documented; k2 hit the node:test IPC flake, passes
+    alone); e2e 91/91; behaviour 17/17 twice on one server; mutations red (pinned ignored → 14, subtask completed
+    ignored → 15, job status no-op → 17). No production bug found.
+  - **Where I left off:** E5c committed and pushed; E5 is complete. Next: `/sync-docs`, then cycle 8's `/reflect`.
 - **Cycle-8 E5b (DONE, 2026-10-30) — ST4 part 2:** block `.cycle/blocks/8-e5b-broad-implement.md`.
   - **Shipped:** behaviour tests 9–13 in `e2e/behaviour.spec.js` — a credit score logged, the theme, a dashboard widget
     switched off / on, a refused switch going back and a saved one staying (page.route 400), Mark all read (the one direct
