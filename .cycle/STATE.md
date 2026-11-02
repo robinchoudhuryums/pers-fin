@@ -26,7 +26,9 @@ implement and reflect sessions only set Phase.)
   block — red with E5b's fix reverted) and loadDuplicates' empty list (tests/roadmap-t2-5-u2 — red with E5a's fix
   reverted). Docs follow-ons for /sync-docs: the test count (3130), the three date-dependent test entries in Known
   Open Issues are closed, the Knowledge invariants' Verify paths are relative to apps/per-sistant.
-  - **Where I left off:** test-sync committed and pushed. Next: `/sync-docs`, then cycle 8's `/reflect`.
+  - **Where I left off:** test-sync and its `/sync-docs` committed and pushed (CLAUDE.md / README: 3130 tests, 91 e2e,
+    the E5c behaviour actions, INV-130's direct rows, E5 done, the closed date-dependent follow-ons, the IPC flake
+    note, the Knowledge invariants' Verify paths under apps/per-sistant/). Next: cycle 8's `/reflect`.
 - **Cycle-8 E5c (DONE, 2026-11-02) — ST4 part 3, E5 complete:** block `.cycle/blocks/8-e5c-broad-implement.md`.
   - **Shipped:** behaviour tests 14–17 in `e2e/behaviour.spec.js` — pin a note, complete a todo + subtask (with the
     undo toast), log today's habit (the streak and today's cell), save a Job Radar listing (Saved view, Unsave).
