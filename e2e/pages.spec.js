@@ -214,6 +214,9 @@ test.describe("every page loads cleanly", () => {
     await page.goto("/perfin/dashboard");
     await page.evaluate(() => { try { localStorage.removeItem("perfin_collapse_pyramid"); } catch (_) {} });
     await page.reload();
+    // Measure the rendered card, not a skeleton: the summary's render replaces the
+    // skeletons (innerHTML), and a skeleton detached mid-measure reads as null.
+    await expect(page.locator("#dash-summary-cards")).not.toHaveAttribute("aria-busy", /.*/);
     const cards = page.locator("#dash-summary-cards .dash-summary-card");
     await expect(cards.first()).toBeVisible();
     const top = await cards.first().boundingBox();
