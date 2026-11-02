@@ -51,8 +51,9 @@ function fakeDb() {
     if (/^INSERT INTO notification_log/.test(sql)) {
       if (db.insertThrows) throw new Error("insert failed");
       const [type, title, body, data, push_state, item_key = null, is_read = false] = params;
-      db.log.push({ id: db.nextId++, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
-      return { rows: [] };
+      const id = db.nextId++;
+      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
+      return { rows: [{ id }] };
     }
     if (/SET push_state = 'expired'/.test(sql)) {
       const cut = new Date(params[0]).getTime() - params[1] * 3600 * 1000;
@@ -63,9 +64,9 @@ function fakeDb() {
     if (/SELECT id, type, title, body, data, item_key FROM notification_log/.test(sql)) {
       return { rows: db.log.filter((r) => r.push_state === "held").sort((a, b) => a.created_at - b.created_at || a.id - b.id).slice(0, params[0]) };
     }
-    const m = /UPDATE notification_log SET push_state = '(\w+)' WHERE id = ANY/.exec(sql);
+    const m = /UPDATE notification_log SET push_state = '(\w+)'(?:, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state = '(\w+)'/.exec(sql);
     if (m) {
-      db.log.filter((r) => params[0].includes(r.id) && r.push_state === "held").forEach((r) => { r.push_state = m[1]; if (/is_read = true/.test(sql)) r.is_read = true; });
+      db.log.filter((r) => params[0].includes(r.id) && r.push_state === m[2]).forEach((r) => { r.push_state = m[1]; if (/is_read = true/.test(sql)) r.is_read = true; });
       return { rows: [] };
     }
     if (/SELECT endpoint, keys FROM push_subscriptions/.test(sql)) return { rows: db.subs };
@@ -121,6 +122,24 @@ describe("sendToAll", () => {
     assert.deepEqual(r, { sent: 1, failed: 0, logged: true, push_state: "sent" });
     assert.equal(db.log[0].push_state, "sent");
     assert.equal(pushed.length, 1);
+  });
+
+  it("seams audit #4 A1: no live subscription → the row says none, never sent (Per-sistant then notifies)", async () => {
+    db.subs = [];
+    const r = await notifications.sendToAll({ title: "Rent due", body: "b", tag: "housing-due-2026-11", item: "housing:2026-11" }, { now: DAY });
+    assert.deepEqual(r, { sent: 0, failed: 0, logged: true, push_state: "none" });
+    assert.equal(db.log[0].push_state, "none");
+  });
+
+  it("seams audit #4 A1: every send failing → none too; a delivered push → sent", async () => {
+    pushFails = true;
+    const r = await notifications.sendToAll({ title: "Rent due", body: "b", tag: "housing-due-2026-11" }, { now: DAY });
+    assert.equal(r.push_state, "none");
+    assert.equal(db.log[0].push_state, "none");
+    pushFails = false;
+    const r2 = await notifications.sendToAll({ title: "Rent due", body: "b", tag: "housing-due-2026-12" }, { now: DAY });
+    assert.equal(r2.push_state, "sent");
+    assert.equal(db.log[1].push_state, "sent");
   });
 
   it("in quiet hours: logged, not pushed, held; the gate opens at the end of quiet hours", async () => {
@@ -219,6 +238,15 @@ describe("releaseHeldNotifications", () => {
     assert.equal(notifications._release.state().heldPending, false);
     assert.equal((await notifications.releaseHeldNotifications({ now: new Date("2026-10-30T07:10:00Z") })).outcome, "none", "nothing twice");
     assert.equal(pushed.length, 1);
+  });
+
+  it("seams audit #4 A1: a release with no live subscription marks the holds none, not sent", async () => {
+    await hold("Low cash ahead", "cash-low", { url: "/dashboard" });
+    db.subs = [];
+    const r = await notifications.releaseHeldNotifications({ now: new Date("2026-10-30T07:05:00Z") });
+    assert.deepEqual(r, { ok: true, outcome: "none", released: 0, expired: 0 });
+    assert.equal(db.log[0].push_state, "none");
+    assert.equal(notifications._release.state().heldPending, false);
   });
 
   it("several held notifications are ONE summary push, newest first, the newest's link", async () => {

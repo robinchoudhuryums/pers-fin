@@ -103,17 +103,25 @@ jobs:
           eval "$BACKUP_FN"
           backup_db perfin "$DB_URL"
 
+      # Seams audit #4 B3: under the unified shell Per-sistant has its own
+      # database (the shell refuses to boot without one), so a missing secret
+      # means it isn't backed up. The step still passes (a standalone Perfin
+      # has no second database) but says so, and the record below names it, so
+      # Operator Checks warns instead of reporting both databases backed up.
       - name: Dump + encrypt + verify Per-sistant database
+        id: persistent
         env:
           DB_URL: ${{ secrets.PERSISTENT_DATABASE_URL }}
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
         run: |
           if [ -z "$DB_URL" ]; then
-            echo "PERSISTENT_DATABASE_URL secret not set — skipping (standalone-Perfin setup)"
+            echo "::warning::PERSISTENT_DATABASE_URL secret not set — Per-sistant's database was NOT backed up (fine only for a standalone Perfin)."
+            echo "dumped=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           eval "$BACKUP_FN"
           backup_db persistent "$DB_URL"
+          echo "dumped=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload encrypted backups
         uses: actions/upload-artifact@v4
@@ -127,12 +135,17 @@ jobs:
       # → Sync Health → Operator Checks sees it without a GitHub token. Runs only
       # after both dumps were verified and uploaded (an earlier failure stops the
       # job). Prints nothing — psql is quiet and its errors are discarded (they can
-      # name the host); a failed stamp is a warning, not a failed backup.
+      # name the host); a failed stamp is a warning, not a failed backup. The
+      # source says whether Per-sistant's database was in it (B3): 'github' for
+      # both, 'github-perfin-only' when its secret wasn't set.
       - name: Record the backup
         env:
           DB_URL: ${{ secrets.NEON_DATABASE_URL }}
+          PERSISTENT_DUMPED: ${{ steps.persistent.outputs.dumped }}
         run: |
-          if psql "$DB_URL" -qtAc "UPDATE user_settings SET last_backup_at = now(), last_backup_source = 'github' WHERE id = 1" >/dev/null 2>&1; then
+          SOURCE=github
+          [ "$PERSISTENT_DUMPED" = "true" ] || SOURCE=github-perfin-only
+          if psql "$DB_URL" -qtAc "UPDATE user_settings SET last_backup_at = now(), last_backup_source = '$SOURCE' WHERE id = 1" >/dev/null 2>&1; then
             echo "Backup recorded."
           else
             echo "::warning::Couldn't record the backup time in the database — Operator Checks will report the backup as missing."

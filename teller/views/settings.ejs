@@ -1560,16 +1560,21 @@
         '</div>';
       }).join('');
     }
-    // The limits typed into the boxes: blank → left out; anything else must be 0-1,000,000.
-    function readContribLimits(rows) {
+    // The limits typed into the boxes: blank → left out; anything else must be
+    // 0-1,000,000. Merged over `base` (the stored map — seams audit #4 C1): a
+    // limit for an account with no box this time (not listed by GET
+    // /api/investments) is kept, since the PATCH replaces the whole map.
+    function readContribLimits(rows, base) {
       var out = {};
+      Object.keys(base || {}).forEach(function (k) { out[k] = base[k]; });
       var bad = null;
       rows.querySelectorAll('input[data-contrib-key]').forEach(function (inp) {
+        var key = inp.getAttribute('data-contrib-key');
         var raw = String(inp.value || '').trim();
-        if (!raw) return;
+        if (!raw) { delete out[key]; return; }
         var n = Number(raw);
         if (!Number.isFinite(n) || n < 0 || n > 1000000) { bad = bad || inp; return; }
-        out[inp.getAttribute('data-contrib-key')] = Math.round(n * 100) / 100;
+        out[key] = Math.round(n * 100) / 100;
       });
       return { limits: out, bad: bad };
     }
@@ -1584,13 +1589,17 @@
         CONTRIB_ACCOUNTS = null;
       }
       rows.innerHTML = renderContribLimits(CONTRIB_ACCOUNTS, CONTRIB_LIMITS);
+      // No boxes → nothing to save (C1: a Save here sent {} and wiped every limit).
+      var saveBtn = document.getElementById('contrib-limit-save-btn');
+      if (saveBtn) saveBtn.disabled = !CONTRIB_ACCOUNTS;
     }
     (function wireContribLimits() {
       var saveBtn = document.getElementById('contrib-limit-save-btn');
       var rows = document.getElementById('contrib-limit-rows');
       if (!saveBtn || !rows) return;
       saveBtn.addEventListener('click', async function () {
-        var read = readContribLimits(rows);
+        if (!CONTRIB_ACCOUNTS) { showMsg('Your investment accounts couldn\'t be loaded — reload the page before saving limits.', false); return; }
+        var read = readContribLimits(rows, CONTRIB_LIMITS);
         if (read.bad) { showMsg('A contribution limit must be a number from 0 to 1,000,000.', false); read.bad.focus(); return; }
         if (saveBtn.disabled) return;
         saveBtn.disabled = true;
@@ -1607,7 +1616,7 @@
         } catch (e) {
           showMsg('Saving contribution limits: ' + e.message, false);
         } finally {
-          saveBtn.disabled = false;
+          saveBtn.disabled = !CONTRIB_ACCOUNTS;
         }
       });
     })();

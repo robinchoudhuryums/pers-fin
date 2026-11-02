@@ -196,7 +196,8 @@ describe("small fry", () => {
 
   it("data-health surfaces job heartbeats with per-job staleness", () => {
     const src = read("teller", "routes", "settings.js");
-    assert.match(src, /FROM job_runs WHERE job_name != '_watchdog'/);
+    assert.match(src, /FROM job_runs WHERE job_name = ANY\(\$1::text\[\]\)/);
+    assert.match(src, /\[Object\.keys\(jobHealth\.JOB_INTERVALS_MS\)\]/);
     assert.match(src, /jobHealth\.thresholdMs\(j\.job_name\)/);
   });
 

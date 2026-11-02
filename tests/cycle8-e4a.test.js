@@ -213,6 +213,17 @@ describe("the backup record", () => {
     assert.equal(c.id, "local:backup");
     assert.equal(c.status, "ok");
     assert.match(c.detail, /5h ago \(GitHub Actions\)/);
+    // Seams audit #4 B3: Perfin's dump alone warns under the shell, not standalone.
+    const perfinOnly = fakePool({ backup: { last_backup_at: hoursAgo(5), last_backup_source: "github-perfin-only" } });
+    c = await oc.backupCheck(perfinOnly, {}, NOW, { underShell: true });
+    assert.equal(c.status, "warn");
+    assert.match(c.detail, /Per-sistant's database was not backed up/);
+    assert.match(c.fix, /PERSISTENT_DATABASE_URL/);
+    c = await oc.backupCheck(perfinOnly, {}, NOW);
+    assert.equal(c.status, "ok");
+    assert.match(c.detail, /Perfin's database only/);
+    c = await oc.backupCheck(fakePool({ backup: { last_backup_at: hoursAgo(50), last_backup_source: "github-perfin-only" } }), {}, NOW, { underShell: true });
+    assert.equal(c.status, "fail", "an old backup is a fail first");
     c = await oc.backupCheck(fakePool({ backup: { last_backup_at: null } }), {}, NOW);
     assert.equal(c.status, "fail");
     assert.match(c.detail, /No backup has been recorded/);
@@ -245,7 +256,14 @@ describe("the backup record", () => {
     assert.ok(upload > 0 && step > upload, "after both dumps were verified and uploaded");
     const body = yml.slice(step);
     assert.match(body, /DB_URL: \$\{\{ secrets\.NEON_DATABASE_URL \}\}/);
-    assert.match(body, /psql "\$DB_URL" -qtAc "UPDATE user_settings SET last_backup_at = now\(\), last_backup_source = 'github' WHERE id = 1" >\/dev\/null 2>&1/);
+    assert.match(body, /psql "\$DB_URL" -qtAc "UPDATE user_settings SET last_backup_at = now\(\), last_backup_source = '\$SOURCE' WHERE id = 1" >\/dev\/null 2>&1/);
+    // Seams audit #4 B3: the source names whether Per-sistant's dump ran.
+    assert.match(body, /PERSISTENT_DUMPED: \$\{\{ steps\.persistent\.outputs\.dumped \}\}/);
+    assert.match(body, /SOURCE=github\n\s*\[ "\$PERSISTENT_DUMPED" = "true" \] \|\| SOURCE=github-perfin-only/);
+    const pstep = yml.slice(yml.indexOf("- name: Dump + encrypt + verify Per-sistant database"), upload);
+    assert.match(pstep, /id: persistent/);
+    assert.match(pstep, /::warning::PERSISTENT_DATABASE_URL secret not set[^\n]*\n\s*echo "dumped=false" >> "\$GITHUB_OUTPUT"\n\s*exit 0/);
+    assert.match(pstep, /backup_db persistent "\$DB_URL"\n\s*echo "dumped=true" >> "\$GITHUB_OUTPUT"/);
     assert.match(body, /::warning::/);
     assert.doesNotMatch(body, /echo[^\n]*\$DB_URL/, "the URL is never printed");
     assert.doesNotMatch(body, /exit 1/, "a failed stamp doesn't fail the backup");

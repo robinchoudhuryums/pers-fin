@@ -288,15 +288,17 @@ async function sendToAll(payload, opts = {}) {
   // recorded, or it would re-fire on the next tick (F24). A held / muted push
   // doesn't change that: the row is written the same way.
   let logged = false;
+  let rowId = null;
   try {
     // A covered row is written read — the task is the surface, so the bell's
     // unread count doesn't repeat it.
-    await pool.query(
+    const ins = await pool.query(
       `INSERT INTO notification_log (type, title, body, data, push_state, item_key, is_read)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       [payload.tag || "general", payload.title || "", payload.body || "", JSON.stringify(payload.data || {}), state, item, state === "covered"]
     );
     logged = true;
+    rowId = ins && ins.rows && ins.rows[0] ? ins.rows[0].id : null;
   } catch (err) {
     console.error("notification_log insert error:", err.message);
   }
@@ -316,6 +318,19 @@ async function sendToAll(payload, opts = {}) {
   }
   const { item: _item, ...pushPayload } = payload;
   const r = await pushToSubscribers(pushPayload);
+  // 'sent' means a device took it (seams audit #4 A1): with no live
+  // subscription — or every send failing — nothing reached anyone, and
+  // Per-sistant's check (perfinPushedItems) must not stay quiet for the item.
+  if (r.sent === 0) {
+    state = "none";
+    if (rowId != null) {
+      try {
+        await pool.query("UPDATE notification_log SET push_state = 'none' WHERE id = ANY($1::int[]) AND push_state = 'sent'", [[rowId]]);
+      } catch (err) {
+        console.error("notification_log push_state update error:", err.message);
+      }
+    }
+  }
   return { sent: r.sent, failed: r.failed, logged, push_state: state };
 }
 
@@ -385,9 +400,11 @@ async function releaseHeldNotifications({ now = new Date() } = {}) {
   if (r.error || (r.sent === 0 && r.failed > 0)) {
     return { ok: false, outcome: "failed", released: 0, expired, error: "The held notifications couldn't be pushed — they'll be retried." };
   }
-  await pool.query("UPDATE notification_log SET push_state = 'sent' WHERE id = ANY($1::int[]) AND push_state = 'held'", [ids]);
+  // No live subscription → nothing was delivered: 'none', not 'sent' (A1).
+  const delivered = r.sent > 0 ? "sent" : "none";
+  await pool.query(`UPDATE notification_log SET push_state = '${delivered}' WHERE id = ANY($1::int[]) AND push_state = 'held'`, [ids]);
   done();
-  return { ok: true, outcome: "released", released: rows.length, expired };
+  return { ok: true, outcome: delivered === "sent" ? "released" : "none", released: delivered === "sent" ? rows.length : 0, expired };
 }
 
 // Utility: has a notification with this tag been sent within the last N hours?

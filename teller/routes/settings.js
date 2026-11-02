@@ -619,8 +619,14 @@ async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
     // F8): ticks are only flushed by the activity-gated watchdog, so after
     // time away every job read as "stale" here although it had been ticking.
     await jobHealth.flush(db);
+    // Only the WATCHED jobs (JOB_INTERVALS_MS — the ones ticked on every
+    // runner check, E2b). The runner's own claim rows for anything else — the
+    // watchdog itself ("job-watchdog"), whose last_run_at is written once at
+    // its first claim and never ticked — read as permanently stale otherwise
+    // (seams audit #4 B2); '_watchdog' is the signature row.
     const jr = await db.query(
-      "SELECT job_name, last_run_at, last_status, last_error FROM job_runs WHERE job_name != '_watchdog' ORDER BY job_name"
+      "SELECT job_name, last_run_at, last_status, last_error FROM job_runs WHERE job_name = ANY($1::text[]) ORDER BY job_name",
+      [Object.keys(jobHealth.JOB_INTERVALS_MS)]
     );
     const nowMs = Date.now();
     jobs = jr.rows.map(j => ({

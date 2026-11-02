@@ -67,13 +67,35 @@ async function applyRenameRules(db = pool) {
 // is deactivated instead (the existing row wins). A forecast correction on the
 // deactivated row is carried to that existing row while it is still on the
 // default (cycle-8 E1 follow-on — it used to be lost with the old row).
+//
+// Two old keys can hold a row at the SAME cadence (a contains / starts_with
+// rule covering two raw merchants): moving both onto the new key in one UPDATE
+// hit UNIQUE (merchant_key, cadence_days) and 500'd half-way (seams audit #4
+// S2). Only ONE survivor per cadence (per cadence + direction for transfers)
+// moves — the row carrying user state first (cancelled, dismissed, notes, a
+// forecast setting), then the most recently updated; the rest stay on their
+// old key and are deactivated below like any other displaced row.
+const SUB_SURVIVORS = `
+  SELECT DISTINCT ON (ds.cadence_days) ds.id FROM detected_subscriptions ds
+  WHERE ds.merchant_key = ANY($1::text[])
+    AND NOT EXISTS (SELECT 1 FROM detected_subscriptions o WHERE o.merchant_key = $2 AND o.cadence_days = ds.cadence_days)
+  ORDER BY ds.cadence_days,
+    (ds.cancelled_at IS NOT NULL OR ds.is_dismissed OR ds.notes IS NOT NULL OR ds.forecast_ignore) DESC,
+    ds.is_active DESC, ds.updated_at DESC, ds.id DESC`;
+const TRANSFER_SURVIVORS = `
+  SELECT DISTINCT ON (rt.cadence_days, rt.direction) rt.id FROM recurring_transfers rt
+  WHERE rt.merchant_key = ANY($1::text[])
+    AND NOT EXISTS (SELECT 1 FROM recurring_transfers o
+                    WHERE o.merchant_key = $2 AND o.cadence_days = rt.cadence_days AND o.direction = rt.direction)
+  ORDER BY rt.cadence_days, rt.direction,
+    (rt.is_dismissed OR rt.notes IS NOT NULL OR rt.forecast_treatment <> 'auto' OR rt.transfer_type_user_set) DESC,
+    rt.is_active DESC, rt.updated_at DESC, rt.id DESC`;
 async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
   const keys = oldKeys.filter((k) => k && k !== newKey);
   if (!keys.length) return { subscriptions: 0, transfers: 0 };
   const subs = await db.query(
     `UPDATE detected_subscriptions ds SET merchant_key = $2, display_name = $3, updated_at = now()
-     WHERE ds.merchant_key = ANY($1::text[])
-       AND NOT EXISTS (SELECT 1 FROM detected_subscriptions o WHERE o.merchant_key = $2 AND o.cadence_days = ds.cadence_days)`,
+     WHERE ds.id IN (${SUB_SURVIVORS})`,
     [keys, newKey, displayName]);
   await db.query(
     `UPDATE detected_subscriptions o SET forecast_ignore = true, updated_at = now()
@@ -87,9 +109,7 @@ async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
     [keys]);
   const transfers = await db.query(
     `UPDATE recurring_transfers rt SET merchant_key = $2, display_name = $3, updated_at = now()
-     WHERE rt.merchant_key = ANY($1::text[])
-       AND NOT EXISTS (SELECT 1 FROM recurring_transfers o
-                       WHERE o.merchant_key = $2 AND o.cadence_days = rt.cadence_days AND o.direction = rt.direction)`,
+     WHERE rt.id IN (${TRANSFER_SURVIVORS})`,
     [keys, newKey, displayName]);
   await db.query(
     `UPDATE recurring_transfers o SET forecast_treatment = old.forecast_treatment, updated_at = now()
@@ -106,9 +126,33 @@ async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
   return { subscriptions: subs.rowCount, transfers: transfers.rowCount };
 }
 
+// Run fn in ONE transaction when handed the pool (seams audit #4 S2): a rule
+// whose re-key failed used to stay stored with its rows renamed and the
+// detection rows not moved. A client (an outer transaction) or a test double
+// without connect() runs fn as it is.
+async function inTransaction(db, fn) {
+  if (typeof db.connect !== "function" || typeof db.release === "function") return fn(db);
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const out = await fn(client);
+    if (out && out.error) await client.query("ROLLBACK");
+    else await client.query("COMMIT");
+    return out;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // Create (or re-point) a rule and apply it to the past, re-key detection and
 // re-run both detectors. Returns { rule, renamed, rekeyed } or { error }.
-async function createRenameRule({ pattern, matchType = "exact", renameTo }, db = pool) {
+async function createRenameRule(args, db = pool) {
+  return inTransaction(db, (c) => createRenameRuleIn(args, c));
+}
+async function createRenameRuleIn({ pattern, matchType = "exact", renameTo }, db) {
   const type = MATCH_TYPES.includes(matchType) ? matchType : null;
   if (!type) return { error: "match_type must be exact, starts_with or contains" };
   const name = typeof renameTo === "string" ? renameTo.trim() : "";
@@ -179,19 +223,23 @@ async function redetect() {
 // PATCH /api/transactions/:id with apply_to_all — the rule is the row's RAW
 // merchant, exact match.
 async function createRuleFromTransaction(transactionId, renameTo, db = pool) {
+  const out = await inTransaction(db, (c) => createRuleFromTransactionIn(transactionId, renameTo, c));
+  if (out && !out.error) out.redetected = await redetect();
+  return out;
+}
+async function createRuleFromTransactionIn(transactionId, renameTo, db) {
   const t = await db.query(
     "SELECT COALESCE(merchant_name, name) AS raw FROM transactions WHERE transaction_id = $1",
     [transactionId]);
   if (!t.rows.length) return { error: "Transaction not found", status: 404 };
   const raw = t.rows[0].raw;
   if (!raw || !String(raw).trim()) return { error: "This transaction has no merchant to match" };
-  const out = await createRenameRule({ pattern: raw, matchType: "exact", renameTo }, db);
+  const out = await createRenameRuleIn({ pattern: raw, matchType: "exact", renameTo }, db);
   if (out.error) return out;
   // The edited row itself is now rule-renamed (deleting the rule reverts it).
   await db.query(
     "UPDATE transactions SET user_merchant_name = $2, user_merchant_rule_id = $3 WHERE transaction_id = $1",
     [transactionId, out.rule.rename_to, out.rule.id]);
-  out.redetected = await redetect();
   return out;
 }
 
@@ -241,7 +289,10 @@ router.post("/api/merchant-rename-rules/apply", async (_req, res) => {
 //   user state kept, and the caller re-runs detection.
 // - A new name on a rule that stays off is only stored.
 // Returns { rule, renamed?, reverted?, rekeyed? } or { error, status }.
-async function updateRenameRule(id, { renameTo, isActive } = {}, db = pool) {
+async function updateRenameRule(id, changes = {}, db = pool) {
+  return inTransaction(db, (c) => updateRenameRuleIn(id, changes, c));
+}
+async function updateRenameRuleIn(id, { renameTo, isActive } = {}, db) {
   if (renameTo === undefined && isActive === undefined) return { error: "Send rename_to and/or is_active", status: 400 };
   if (isActive !== undefined && typeof isActive !== "boolean") return { error: "is_active must be true or false", status: 400 };
   let name;
@@ -267,7 +318,7 @@ async function updateRenameRule(id, { renameTo, isActive } = {}, db = pool) {
     return { rule, reverted, renamed, redetect: false };
   }
   if (cur.is_active && (name === undefined || name === cur.rename_to)) return { rule: cur, renamed: 0, redetect: false };
-  const out = await createRenameRule({ pattern: cur.merchant_pattern, matchType: cur.match_type, renameTo: name === undefined ? cur.rename_to : name }, db);
+  const out = await createRenameRuleIn({ pattern: cur.merchant_pattern, matchType: cur.match_type, renameTo: name === undefined ? cur.rename_to : name }, db);
   if (out.error) return { error: out.error, status: 400 };
   return { ...out, redetect: true };
 }

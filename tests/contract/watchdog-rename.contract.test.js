@@ -123,4 +123,53 @@ describe("Subscription watchdog + rename rules on real Postgres", { skip: SKIP }
       assert.deepEqual(names, { amzn1: null, amzn2: null, amzn3: null, amzn_hand: "Gift for Sam", amzn4: "Prime Video" });
     });
   });
+
+  // Seams audit #4 S2: a rule covering two raw merchants whose detected rows
+  // share a cadence used to hit UNIQUE (merchant_key, cadence_days) after the
+  // rule was stored and the rows renamed — a 500 that left it half-applied.
+  describe("seams audit #4 S2 — two old keys at one cadence", () => {
+    const sub = (key, extra = {}) => q(
+      `INSERT INTO detected_subscriptions (merchant_key, display_name, amount, cadence_days, first_seen, last_charged,
+         next_expected, is_active, cancelled_at, notes)
+       VALUES ($1, $1, 9.99, 30, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [key, daysAgo(120), daysAgo(10), daysAgo(-20), extra.active ?? true, extra.cancelled || null, extra.notes || null])
+      .then((r) => r.rows[0].id);
+
+    it("one survivor per cadence moves, the row with user state first; the rest are deactivated — a 200", async () => {
+      await tx("sp_us", "SPOTIFY USA", 9.99, daysAgo(10));
+      await tx("sp_ab", "SPOTIFY AB", 9.99, daysAgo(11));
+      const kept = await sub("SPOTIFY USA", { active: false, cancelled: daysAgo(30), notes: "cancelled in Oct" });
+      const other = await sub("SPOTIFY AB");
+      const r = await supertest(app).post("/api/merchant-rename-rules")
+        .send({ merchant_pattern: "spotify", match_type: "contains", rename_to: "Spotify Premium" }).expect(200);
+      assert.deepEqual(r.body.rekeyed, { subscriptions: 1, transfers: 0 });
+      const rows = (await q(
+        "SELECT id, merchant_key, is_active, cancelled_at IS NOT NULL AS cancelled, notes FROM detected_subscriptions WHERE id = ANY($1::int[]) ORDER BY id",
+        [[kept, other]])).rows;
+      assert.deepEqual(rows, [
+        { id: kept, merchant_key: "Spotify Premium", is_active: false, cancelled: true, notes: "cancelled in Oct" },
+        { id: other, merchant_key: "SPOTIFY AB", is_active: false, cancelled: false, notes: null },
+      ]);
+      const names = (await q("SELECT user_merchant_name FROM transactions WHERE transaction_id IN ('sp_us', 'sp_ab')")).rows.map((x) => x.user_merchant_name);
+      assert.deepEqual(names, ["Spotify Premium", "Spotify Premium"]);
+    });
+
+    it("a failure part-way leaves nothing behind: no rule, no renamed rows, the detection rows as they were", async () => {
+      await tx("hb1", "HBO MAX", 15.99, daysAgo(10));
+      const hbo = await sub("HBO MAX");
+      await q(`CREATE OR REPLACE FUNCTION s4_boom() RETURNS trigger LANGUAGE plpgsql AS $$
+               BEGIN RAISE EXCEPTION 'boom'; END $$`);
+      await q("CREATE TRIGGER s4_boom BEFORE UPDATE ON recurring_transfers FOR EACH STATEMENT EXECUTE FUNCTION s4_boom()");
+      try {
+        await supertest(app).post("/api/merchant-rename-rules")
+          .send({ merchant_pattern: "HBO MAX", match_type: "exact", rename_to: "Max" }).expect(500);
+      } finally {
+        await q("DROP TRIGGER s4_boom ON recurring_transfers");
+      }
+      assert.equal((await q("SELECT count(*)::int AS n FROM merchant_rename_rules WHERE merchant_pattern = 'HBO MAX'")).rows[0].n, 0);
+      assert.equal((await q("SELECT user_merchant_name FROM transactions WHERE transaction_id = 'hb1'")).rows[0].user_merchant_name, null);
+      assert.deepEqual((await q("SELECT merchant_key, is_active FROM detected_subscriptions WHERE id = $1", [hbo])).rows[0],
+        { merchant_key: "HBO MAX", is_active: true });
+    });
+  });
 });

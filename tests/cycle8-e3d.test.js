@@ -39,16 +39,17 @@ function fakeDb() {
     if (/SELECT notify_quiet_hours, notify_muted_types FROM user_settings/.test(sql)) return { rows: [db.prefs] };
     if (/^INSERT INTO notification_log/.test(sql)) {
       const [type, title, body, data, push_state, item_key, is_read] = params;
-      db.log.push({ id: db.nextId++, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
-      return { rows: [] };
+      const id = db.nextId++;
+      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
+      return { rows: [{ id }] };
     }
     if (/SET push_state = 'expired'/.test(sql)) return { rows: [] };
     if (/SELECT id, type, title, body, data, item_key FROM notification_log/.test(sql)) {
       return { rows: db.log.filter((r) => r.push_state === "held") };
     }
-    const m = /UPDATE notification_log SET push_state = '(\w+)'(, is_read = true)? WHERE id = ANY/.exec(sql);
+    const m = /UPDATE notification_log SET push_state = '(\w+)'(, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state = '(\w+)'/.exec(sql);
     if (m) {
-      db.log.filter((r) => params[0].includes(r.id) && r.push_state === "held").forEach((r) => { r.push_state = m[1]; if (m[2]) r.is_read = true; });
+      db.log.filter((r) => params[0].includes(r.id) && r.push_state === m[3]).forEach((r) => { r.push_state = m[1]; if (m[2]) r.is_read = true; });
       return { rows: [] };
     }
     if (/SELECT endpoint, keys FROM push_subscriptions/.test(sql)) return { rows: db.subs };
