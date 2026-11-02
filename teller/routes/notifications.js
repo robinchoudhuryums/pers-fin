@@ -246,7 +246,12 @@ async function pushToSubscribers(payload) {
 // key without "perfin:", e.g. "housing:2026-11") is COVERED while that task is
 // open: the task is the surface, so the row is logged read and not pushed.
 // Read through the shell-wired Per-sistant pool; standalone (no pool) or a
-// failed read → not covered, so the push goes out.
+// failed read → not covered, so the push goes out. "Open" is Per-sistant's own
+// predicate (services/linked-tasks.openLinkedItems — not completed, not trashed;
+// a task you reopened by hand still counts), the one its notification check and
+// briefing use, so the two apps never disagree about the same task (seams audit
+// #4 A2: this read also required NOT source_detached, so a hand-reopened rent
+// task hid Per-sistant's reminder while Perfin still pushed).
 const ITEM_RE = /^[a-z][a-z-]*:[A-Za-z0-9._:-]{1,160}$/;
 function itemKey(item) {
   // Without the "perfin:" prefix — the lookup adds it.
@@ -258,12 +263,9 @@ async function itemCovered(item) {
   try { pp = require("./persistent").getEmbeddedPersistentPool(); } catch { pp = null; } // no Per-sistant wiring → standalone
   if (!pp) return false;
   try {
-    const r = await pp.query(
-      `SELECT 1 FROM todos WHERE source_key = $1 AND NOT completed
-          AND deleted_at IS NULL AND NOT source_detached LIMIT 1`,
-      ["perfin:" + item]
-    );
-    return r.rows.length > 0;
+    const { openLinkedItems } = require("../../apps/per-sistant/services/linked-tasks");
+    // openLinkedItems is fail-soft itself (logs, empty set).
+    return (await openLinkedItems(pp, [item])).has(item);
   } catch (err) {
     console.error("linked task lookup for a notification failed:", err.message);
     return false;
