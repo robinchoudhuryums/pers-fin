@@ -24,7 +24,8 @@ implement and reflect sessions only set Phase.)
   (contribution-limits Save refused without accounts, merged over the stored map). npm test 3135, contract 330, e2e 91.
   Net +1. Operator: set the PERSISTENT_DATABASE_URL repository secret.
   - **Where I left off:** S4-1 committed and pushed on the branch (not yet merged to main). Next: PR + merge (B2's clock),
-    then `/broad-implement S4-2`; `/sync-docs` for the doc items in the block.
+    then `/broad-implement S4-2`. `/sync-docs` done (CLAUDE.md / README: counts 3135 / contract 330, A1 / B2 / S2 /
+    B3 / C1 in their sections, INV-124 + INV-153 wording, an audit #4 entry in Known Open Issues with the operator step).
 - **Audit #4 fix plan (2026-11-02):** `.cycle/plan-seams4.md` — the 24 findings in five broad-implement batches:
   S4-1 live-deploy hotfixes (A1, B2, S2, B3, C1) → S4-2 scheduler & operator hardening (B1, B5, B6, B4, A3) →
   S4-3 forecast / freshness / restore (S1, S3, S6, S4, S5) → S4-4 cross-app notification seam (A2, A6, A5, A4) →
