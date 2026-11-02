@@ -23,8 +23,11 @@ implement and reflect sessions only set Phase.)
   projection), C4 (a summary reload un-hides the cards; a failed reload keeps them), C5 ("Since you last looked" through
   fmt + the money classes), C6 (Per-sistant's heatmap on the APP_TIMEZONE day). npm test 3189 (one IPC flake), contract
   340, e2e 91. Net +2 (C5, C6). Audit #4's five batches are all done.
-  - **Where I left off:** S4-5 committed and pushed on the branch with S4-2..S4-4 (none PR'd yet). Next: `/sync-docs`
-    (add INV-157; the audit #4 entry → all batches done; counts), then `/test-sync` / `/reflect`, or a PR for S4-2..S4-5.
+  - **Where I left off:** S4-5 and its `/sync-docs` committed and pushed on the branch with S4-2..S4-4 (none PR'd yet;
+    CLAUDE.md: the audit #4 entry → every batch done + S4-5 follow-ons, saveField in the Settings layout, the summary
+    reload, the whats-new money classes, INV-148 wording, new INV-157, counts 3188 / 176 files / Perfin 2445 +
+    Per-sistant 743 / contract 340; README counts; apps/per-sistant/CLAUDE.md: the heatmap's APP_TIMEZONE day).
+    Next: `/reflect` for audit #4 (or `/test-sync`), or a PR for S4-2..S4-5.
 - **S4-4 (DONE, 2026-11-02) — cross-app notification seam:** block `.cycle/blocks/8-s4-4-broad-implement.md`. A2
   (Perfin's covered check = Per-sistant's openLinkedItems; a detached task counts as open), A6 (a held Perfin push
   counts as Perfin's), A5 (queryPersistentStats = /api/stats' SQL), A4 (the widget's next_expected as text). npm test

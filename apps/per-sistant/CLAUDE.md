@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 740 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b/x3a/x3b + seams-audit-3 + design-d1 + design-d6 + broad-scan-c8-batch5/batch6/batch7/batch8 + cycle8-e3c/e3e + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 743 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b/x3a/x3b + seams-audit-3 + seams-audit-4-s5 + design-d1 + design-d6 + broad-scan-c8-batch5/batch6/batch7/batch8 + cycle8-e3c/e3e + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -295,6 +295,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `tests/roadmap-t2-4-x1b.test.js` — roadmap T2.4 X1b pins (8): the per-field refresh over the shared fake pool (`tests/_linked-tasks-fake.js`), `linkedTaskChip` run in a vm from the emitted bundle (base joined, escaping, unsafe urls / bases as text, new tab for an http(s) base), pageHead's `LINKED_APP_BASES`, the chip wiring and bundles parsing
 - `tests/roadmap-t2-4-x1a.test.js` — roadmap T2.4 X1a pins (16): the sync over a fake pool (create once + announce, re-run no-op, close / reopen, detached and trashed rows left alone, only listed kinds closed, bad keys / fields refused without closing), ensureLinkedTask, db/030 idempotent. The database-backed half is the root `tests/contract/linked-tasks.contract.test.js`
 - `tests/roadmap-t1-batchc.test.js` — roadmap T1.5 Batch C pins (11): loadEmailAttachments (order + shape, a legacy disk file, a missing file, the 20MB cap, none), both senders' wiring, Send Now's 400 without a claim, the Emails page's error line + Retry, the AI routes' 501 (a 400 still first), the Review page's AI gate. The database-backed half is the root `tests/contract/persistent-batchc.contract.test.js`
+- `tests/seams-audit-4-s5.test.js` — Seams & Invariants audit #4 S4-5 pins (3): `heatmapTimezone` (APP_TIMEZONE, an unknown zone → UTC), the heatmap SQL bucketing `completed_at AT TIME ZONE $2` as a text day, GET /api/analytics passing the zone (C6). The Perfin side is the root `tests/seams-audit-4-s5.test.js`; the database-backed half is the root `tests/contract/seams4-s4-5.contract.test.js`
 - `tests/seams-audit-3.test.js` — Seams & Invariants audit #3 pins (6): the Knowledge finance snapshot listing a charge due today and today+14 by APP_TIMEZONE calendar date (a DATE value printed as its own day), the service worker's `!r.redirected` guard + `per-sistant-v9`, `knowledge-reindex.yml`'s 409 skip + count-only failure line, the standalone `/api/login` digest compare. The Perfin side is the root `tests/seams-audit-3.test.js`
 - `tests/scan-oct-batch20.test.js` — cycle-7 Batch 20 pins (7, ST3): `withPending` run in a vm from the emitted bundle (busy + restore, single-flight, restore on a throw, lists / null / an already-disabled button), the hand-rolled-toggle guard (shrinking KNOWN_GAPS, empty) and each migrated action's key. Destructive static buttons and the microphone buttons carry `data-e2e-skip`, which the root `e2e/pages.spec.js` click sweep honors — mark any new destructive, off-app or device-permission control the same way
 - `tests/scan-oct-batch17.test.js` — cycle-7 Batch 17 pins (3): db/029 + the exported constant, a successful full sync stamps the version, an incremental or failed sync doesn't. The database-backed half is the root `tests/contract/operator-checks.contract.test.js`
@@ -330,7 +331,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (740 tests)
+# Run tests (743 tests)
 npm test
 
 # Pages
@@ -590,7 +591,10 @@ GET    /sw.js               # Service worker
   the weekly review's upcoming list, AI parse-todo dates and the Knowledge
   upcoming-fact reminders (F131). The Health and Analytics heatmaps key each cell by calendar day (`parseCalDate` /
   `ymdOfLocal`; Health's grid anchored on the APP_TIMEZONE today — cycle-8 F48: the
-  grid used `toISOString()` on a local date, a day ahead west of UTC in the evening).
+  grid used `toISOString()` on a local date, a day ahead west of UTC in the evening). The
+  Analytics heatmap's day itself is the APP_TIMEZONE day of the completion
+  (`(completed_at AT TIME ZONE tz)::date`, `heatmapTimezone` — an unknown zone → UTC; seams
+  audit #4 C6 — `DATE(completed_at)` bucketed it on the UTC day).
   (Residual: the SQL `CURRENT_DATE` range windows are still UTC — cosmetic 1-day
   edge only.)
 - `VOYAGE_API_KEY` — Voyage AI key for Knowledge embeddings (optional). Without
