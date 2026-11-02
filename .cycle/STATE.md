@@ -18,6 +18,12 @@ Updated: 2026-11-02
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Audit #4 fix plan (2026-11-02):** `.cycle/plan-seams4.md` — the 24 findings in five broad-implement batches:
+  S4-1 live-deploy hotfixes (A1, B2, S2, B3, C1) → S4-2 scheduler & operator hardening (B1, B5, B6, B4, A3) →
+  S4-3 forecast / freshness / restore (S1, S3, S6, S4, S5) → S4-4 cross-app notification seam (A2, A6, A5, A4) →
+  S4-5 UI (C2, C3, C4, C5, C6). PR #134 merged (24f7ddd) — cycle 8 is deployed; branch restarted from main.
+  - **Where I left off:** plan written. Next: `/broad-implement S4-1` (B2's false Sync Health warning is ~36 h
+    from the deploy).
 - **Cycle-8 REFLECT (2026-11-02):** block `.cycle/blocks/8-a-reflect.md`, metrics row appended. Net +1 = 13 production
   fixes − 12 new failure modes; 19 capabilities; 54 defensive. Corrected the summaries' 15 fixes (E1 FO-b/FO-f and E5b
   fixed this cycle's own unshipped work — none of cycle 8 is on main) and their failure modes (Batch 4 F1's stall removed
