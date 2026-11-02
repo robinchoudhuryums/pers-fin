@@ -144,6 +144,14 @@ describe("GET /api/data-health", () => {
       if (/FROM user_settings/.test(sql)) {
         return { rows: [{ last_txn_sync_at: new Date(), last_balance_sync_at: new Date(), last_auto_sync_at: new Date(), insights_last_run: new Date(), last_reconcile_at: new Date(), last_backup_at: new Date(), last_backup_source: "github" }] };
       }
+      // The connections read (services/freshness.js): each synced just now —
+      // since seams audit #4 S4 the sync-age warnings follow them.
+      if (/UNION ALL/.test(sql) && /last_synced_at/.test(sql)) {
+        return { rows: [
+          { provider: "teller", id: 1, institution_name: "Chase", status: "GOOD", last_synced_at: new Date() },
+          { provider: "plaid", id: 2, institution_name: "Capital One", status: "GOOD", last_synced_at: new Date() },
+        ] };
+      }
       if (/FROM teller_enrollments/.test(sql)) return { rows: [{ total: 1, disconnected: 0 }] };
       if (/FROM plaid_items/.test(sql)) return { rows: [{ total: 1, not_good: 0 }] };
       if (/FROM notification_log/.test(sql)) return { rows: [] };

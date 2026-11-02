@@ -161,7 +161,7 @@ describe("FAN-5 / DD-4 — cash-flow forecast", () => {
     await supertest(mountApp("../teller/routes/spending-analytics")).get("/api/cash-flow?days=30").expect(200);
     const avgQueries = sqls.filter(s => /INTERVAL '60 days'/.test(s) && /daily_total/.test(s));
     assert.equal(avgQueries.length, 2);
-    for (const q of avgQueries) assert.match(q, /NOT EXISTS \(\s*SELECT 1 FROM detected_subscriptions ds[\s\S]*ds\.merchant_key = COALESCE\(t\.user_merchant_name, t\.merchant_name, LOWER/);
+    for (const q of avgQueries) assert.match(q, /NOT EXISTS \(\s*SELECT 1 FROM detected_subscriptions ds[\s\S]*ds\.merchant_key = TRIM\(COALESCE\(t\.user_merchant_name, t\.merchant_name, LOWER/);
   });
 
   it("starting balance counts depository, non-investment accounts only (FAN-5)", async () => {

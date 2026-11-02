@@ -698,6 +698,16 @@ function newBatchId() {
 }
 const CURSOR_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z)\|(.+)$/;
 
+// Why restoreDeleted would refuse this row, in its order — null when it would
+// bring it back (or, for a legacy tombstone, lift it): the bank removed it
+// (cycle-8 F6), a legacy manual entry exists nowhere else, or the snapshot's
+// account is no longer linked.
+function unrestorableReason(x, source) {
+  if (x.bank_removed) return "removed_by_bank";
+  if (!x.has_snapshot) return source === "manual" ? "never" : null;
+  return x.account_linked ? null : "account_gone";
+}
+
 // GET /api/deleted-transactions?limit=&before= — newest first. `before` is the
 // `next` cursor of the previous page.
 router.get("/api/deleted-transactions", async (req, res) => {
@@ -714,6 +724,7 @@ router.get("/api/deleted-transactions", async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT d.transaction_id, d.deleted_at, d.source, d.batch_id, (d.snapshot IS NOT NULL) AS has_snapshot,
+              (d.bank_removed_at IS NOT NULL) AS bank_removed, (la.id IS NOT NULL) AS account_linked,
               to_char(d.deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at,
               d.snapshot->'row'->>'date' AS date,
               COALESCE(d.snapshot->'row'->>'user_merchant_name', d.snapshot->'row'->>'merchant_name',
@@ -731,13 +742,17 @@ router.get("/api/deleted-transactions", async (req, res) => {
     const page = r.rows.slice(0, limit);
     const items = page.map((x) => {
       const source = x.has_snapshot ? x.source : legacySource(x.transaction_id);
+      const reason = unrestorableReason(x, source);
       return {
         transaction_id: x.transaction_id,
         deleted_at: x.deleted_at,
         source,
         legacy: !x.has_snapshot,
-        // A legacy manual entry exists nowhere else, so nothing can bring it back.
-        restorable: x.has_snapshot || source !== "manual",
+        // restoreDeleted's own refusals, per row (seams audit #4 S5 — the
+        // batch count already applied them, the row flag didn't, so Settings
+        // offered a Restore the server then refused).
+        restorable: reason === null,
+        unrestorable_reason: reason,
         date: x.date || null,
         merchant: x.merchant || null,
         amount: x.amount === null || x.amount === undefined ? null : Number(x.amount),
@@ -939,6 +954,7 @@ module.exports.merchantsSimilar = merchantsSimilar;
 // Roadmap T2.5 U1 test seams.
 module.exports.restoreDeleted = restoreDeleted;
 module.exports.legacySource = legacySource;
+module.exports.unrestorableReason = unrestorableReason;
 module.exports.SOURCE_SQL = SOURCE_SQL;
 module.exports.newBatchId = newBatchId;
 module.exports.BATCH_ID_RE = BATCH_ID_RE;

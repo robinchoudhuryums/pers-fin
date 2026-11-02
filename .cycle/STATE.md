@@ -18,6 +18,12 @@ Updated: 2026-11-02
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **S4-3 (DONE, 2026-11-02) — forecast, freshness & restore:** block `.cycle/blocks/8-s4-3-broad-implement.md`. S1 (the
+  forecast's TRIMmed merchant key), S3 (one window for the totals and forecast_items), S6 (the cash alert gates on the
+  oldest bank-synced balance), S4 (Sync Health's sync-age warnings follow the connections), S5 (per-row restorable +
+  unrestorable_reason). npm test 3164, contract 335, e2e 91. Net +2.
+  - **Where I left off:** S4-3 committed and pushed on the branch with S4-2 (neither PR'd yet). Next: `/sync-docs` for
+    S4-3, a PR for S4-2 + S4-3, then `/broad-implement S4-4`.
 - **S4-2 (DONE, 2026-11-02) — scheduler & operator hardening:** block `.cycle/blocks/8-s4-2-broad-implement.md`. B1 (a
   deadline per scheduled run + the runner's queries; Plaid 90 s timeout), B5 (shutdown waits ≤ 7 s for the running job), B6
   (auto-sync stamps its start time), B4 (no PIN length in the operator check), A3 (database identity compared at boot and in

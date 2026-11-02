@@ -2179,8 +2179,11 @@
           + (d.splits_count ? ' · ' + esc(String(d.splits_count)) + ' split' + (d.splits_count === 1 ? '' : 's') : '');
         label = merchant + (d.date ? ' on ' + fmtDate(d.date) : '');
       }
+      var why = d.unrestorable_reason === 'removed_by_bank' ? 'Your bank has since removed this transaction — it can\'t be restored.'
+        : d.unrestorable_reason === 'account_gone' ? 'Its account is no longer connected — it can\'t be restored.'
+        : 'A manual entry deleted before undelete existed — it can\'t be restored.';
       var action = d.restorable === false
-        ? '<span style="margin-left:8px;">A manual entry deleted before undelete existed — it can\'t be restored.</span>'
+        ? '<span style="margin-left:8px;">' + why + '</span>'
         : '<button class="btn" data-restore-deleted="' + esc(id) + '" aria-label="Restore ' + esc(label) + '" style="margin-left:8px;">Restore</button>';
       return '<li style="margin:8px 0;">' + what
         + '<div style="font-size:12px;margin-left:16px;">Deleted ' + esc(d.deleted_at ? new Date(d.deleted_at).toLocaleString() : '')

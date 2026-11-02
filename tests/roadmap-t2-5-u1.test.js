@@ -234,7 +234,7 @@ describe("T2.5 U1 — the list", () => {
       return { rows: [
         { transaction_id: "txn_abc", deleted_at: "2026-10-01T10:00:00.000Z", source: "teller", has_snapshot: true,
           cursor_at: "2026-10-01T10:00:00.123456Z", date: "2026-09-14", merchant: "Starbucks", amount: "42.50",
-          account_name: "Checking", splits_count: 2 },
+          account_name: "Checking", splits_count: 2, bank_removed: false, account_linked: true },
         { transaction_id: "manual_1_x", deleted_at: "2026-09-30T10:00:00.000Z", source: null, has_snapshot: false,
           cursor_at: "2026-09-30T10:00:00.000001Z", date: null, merchant: null, amount: null, account_name: null, splits_count: 0 },
         { transaction_id: "extra", deleted_at: "2026-09-29T10:00:00.000Z", source: null, has_snapshot: false, cursor_at: "x" },
@@ -249,11 +249,13 @@ describe("T2.5 U1 — the list", () => {
     assert.equal(res.body.items.length, 2);
     assert.deepEqual(res.body.items[0], {
       transaction_id: "txn_abc", deleted_at: "2026-10-01T10:00:00.000Z", source: "teller", legacy: false, restorable: true,
+      unrestorable_reason: null,
       date: "2026-09-14", merchant: "Starbucks", amount: 42.5, account_name: "Checking", splits_count: 2, batch_id: null,
     });
     assert.equal(res.body.items[1].legacy, true);
     assert.equal(res.body.items[1].source, "manual");
     assert.equal(res.body.items[1].restorable, false);
+    assert.equal(res.body.items[1].unrestorable_reason, "never");
     assert.equal(res.body.items[1].amount, null);
     assert.equal(res.body.next, "2026-09-30T10:00:00.000001Z|manual_1_x");
 
