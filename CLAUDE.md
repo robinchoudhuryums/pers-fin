@@ -321,7 +321,13 @@ teller/
                            internal | user_internal | user_ignored);
                            projectCashFlow bills only `bills` and returns both as
                            `forecast_items` (each bill's occurrences, projected
-                           total and next date in the window)
+                           total and next date in the window — the projection's
+                           window, today+1 … today+days, so a bill due today is in
+                           neither: seams audit #4 S3). A transaction's merchant key
+                           is DETECT_KEY_T — merchant-rename.js's TRIMmed DETECT_KEY,
+                           the detectors' own key (S1: an untrimmed copy let a
+                           subscription whose bank name ends in a space be billed AND
+                           averaged)
     cash-alerts.js       — The low projected cash alert (roadmap T2.2 L2):
                            runCashAlerts(pool, { now, today, deps }), run hourly
                            by the "cash-alerts" away job. Off by default (and then
@@ -331,7 +337,12 @@ teller/
                            last_txn_sync_at, last_balance_sync_at, a Plaid item's /
                            Teller enrollment's last_synced_at) is newer than
                            cash_alerts_checked_at or on a new local day; never on
-                           balances older than 36 h (STALE_BALANCE_HOURS) or none;
+                           balances older than 36 h (STALE_BALANCE_HOURS) or none —
+                           every bank-synced spendable account's balance must be
+                           fresh (SYNCED_WITH_BALANCE: Teller or a GOOD Plaid item,
+                           with a balance; the oldest of them and any never stamped —
+                           seams audit #4 S6, it read the newest only); with none of
+                           those (manual / CSV only) the newest balance decides;
                            projects cash_alert_horizon_days with getCashFlowForecast
                            and notifies on the first day below cash_alert_threshold
                            ("Low cash ahead", tag cash-low, /dashboard) + the opt-in
@@ -1526,9 +1537,14 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3149 tests as of latest); use
+  Perfin and Per-sistant test files (3164 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3149 tests across 172 test files (incl.
+  Current count: 3164 tests across 173 test files (incl.
+  `tests/seams-audit-4-s3.test.js` — Seams & Invariants audit #4, S4-3: the forecast's merchant key equal to
+  merchant-rename's TRIMmed DETECT_KEY (S1), a bill due today in neither forecast_items nor the totals (S3), the cash
+  alert skipping on an old or unknown bank-synced balance while manual-only uses the newest (S6), syncAgeIssues — one
+  warning per stale connection, re-auth / disconnected ones not repeated, the global balance stamp only with a Teller
+  connection, the global stamps without connections (S4) — and unrestorableReason + Settings' words (S5);
   `tests/seams-audit-4.test.js` — Seams & Invariants audit #4, S4-2: the PIN check never naming the length (B4),
   waitForJobs run in a vm from shell/index.js (done / error / a run that never settles timing out) and shutdown awaiting
   it before the pools close (B5), the auto-sync start stamp and its slack (B6), the long jobs' 30-minute deadlines and
@@ -2631,8 +2647,10 @@ shell/
   and a suspended enrollment never counted; a re-auth code → reason reauth; data-health listing the same connections).
   Since seams audit #4 S4-2, seams4-s4-2 (one scratch database under localhost and 127.0.0.1 read as one database by
   the boot identity check — the URL check alone says two — the scratch and admin databases as two, an unreachable one
-  as unknown).
-  332 tests, run
+  as unknown). Since S4-3, seams4-s4-3 (a "HULU " subscription billed and out of the spending average; a 72-hour-old
+  bank-synced balance beside a fresh one skipping the cash alert, an unstamped one too, a manual account ignored; each
+  deleted row's restorable and reason agreeing with the restore route).
+  335 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3715,7 +3733,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   spendable cash is projected to fall below a floor (`cash_alert_threshold`, default
   $500) within a look-ahead (`cash_alert_horizon_days`, 7–60, default 14), plus the
   opt-in critical-alert email. Checked hourly when new bank data arrived, else once a
-  local day; never on balances more than 36 hours old. Once per breach, again when it
+  local day; never while any bank-synced checking / savings balance is more than 36 hours old
+  (seams audit #4 S6 — one fresh account no longer hides another's stale one). Once per breach, again when it
   moves 3+ days earlier or after 72 hours; recovery is silent, and a dip that returns
   within 72 h of the last alert is held too unless it is 3+ days earlier (cycle-8 F11).
   Changing a Cash Alerts setting or an account floor makes the next hourly check run
@@ -4337,7 +4356,12 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   one with `plaid_items.last_error_code` set — BSI-10; that issue carries
   `link: "/accounts"`, which Sync Health and the dashboard strip render as a link
   to the Re-authenticate button — G3), a derived
-  `issues[]` list (disconnected links, stale balances, never-synced, plus the
+  `issues[]` list (disconnected links, stale balances, never-synced — with bank
+  connections, one "<bank> (Plaid|Teller) hasn't synced in over 24h" per connection whose own
+  `last_synced_at` is stale, the badge's rule (`syncAgeIssues`, seams audit #4 S4: the global
+  stamps a webhook sync never moves made a webhook-only setup read stale here); the global
+  balance warning only while a Teller connection exists; the global stamps only without
+  connections — plus the
   per-item errors from the most recent sync run — see `last_sync_result` below),
   scheduled jobs whose last run FAILED (jobs[].last_status / last_error — F8)
   and the operator checks' warnings (cycle-7 G1 + ST4 — tagged `source:'operator'`
@@ -4902,7 +4926,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3149 tests passing across 172 test files (Perfin 2409 + Per-sistant 740), plus the real-Postgres route contract suite (332 tests; CI `migrations` job, `npm run test:contract`) and 91 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
+- 3164 tests passing across 173 test files (Perfin 2424 + Per-sistant 740), plus the real-Postgres route contract suite (335 tests; CI `migrations` job, `npm run test:contract`) and 91 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5084,7 +5108,9 @@ DELETE /api/transactions/:id # delete a single transaction (deduplication tool);
 GET  /api/deleted-transactions # deleted transactions, newest first (query: limit 1-200
                             # default 50, before = the previous page's `next`) →
                             # { items: [{ transaction_id, deleted_at, source, legacy,
-                            # restorable, date, merchant, amount, account_name,
+                            # restorable, unrestorable_reason (removed_by_bank |
+                            # account_gone | never | null — restore's refusals, per row,
+                            # seams audit #4 S5), date, merchant, amount, account_name,
                             # splits_count, batch_id }], next, batches: [{ batch_id, count,
                             # deleted_at, restorable }] } — every Resolve batch still holding a
                             # row (restorable: not bank-removed, its account still linked),
@@ -7481,9 +7507,9 @@ SX3-pinned — the Sheets Income tab.
 watched jobs, S2 rename-rule re-key one survivor per cadence in one transaction, B3 a Perfin-only backup warns under
 the shell, C1 the contribution-limits Save) and S4-2 (B1 a deadline per scheduled run + a 90 s Plaid timeout, B5
 shutdown waits for the running job, B6 auto-sync stamps its start time, B4 no PIN length in the operator check, A3 the
-databases' identity compared at boot) are done. Open: S4-3 (S1 the forecast's merchant key isn't trimmed; S3 a bill due today is listed but not
-projected; S6 the cash alert's stale gate reads the newest balance; S4 data-health's sync warnings read the global
-stamps; S5 a deleted row's `restorable` ignores the bank-removed / gone-account rules), S4-4 (A2 the two apps'
+databases' identity compared at boot) and S4-3 (S1 the forecast's TRIMmed merchant key, S3 one window for the totals
+and forecast_items, S6 the cash alert gates on the oldest bank-synced balance, S4 Sync Health's sync warnings follow the
+connections, S5 per-row restorable + unrestorable_reason) are done. Open: S4-4 (A2 the two apps'
 "open linked task" predicates differ on source_detached; A6 a held push isn't counted by Per-sistant's check; A5
 queryPersistentStats counts auto-closed tasks; A4 the Perfin widget sends a Date), S4-5 (C2 a refused select / number
 save keeps the refused value; C3 the emergency-fund note dropped beside a projection; C4 the summary cards stay hidden
@@ -7493,7 +7519,10 @@ backup; a rename re-key keeps only the survivor's user state (a displaced row's 
 when the survivor has its own); a rename rule's transaction holds its rows' locks until COMMIT. S4-2 follow-ons: a
 run past its deadline is abandoned, not stopped (its writes still land), and a sync that legitimately takes over 30
 minutes is recorded as a failed run; there is no heartbeat check for the runner itself no longer checking (a check can't
-hang any more — its queries have deadlines). OPERATOR: set the
+hang any more — its queries have deadlines). S4-3 follow-ons: a bank-synced account whose balance stops updating (a
+closed account still linked) keeps the low cash alert skipped until it syncs or is removed — there is no "leave this
+account out" control; the link exchanges don't stamp a connection's last_synced_at, so a newly linked bank shows "has
+no complete sync recorded yet" in Sync Health until the next scheduled sync. OPERATOR: set the
 `PERSISTENT_DATABASE_URL` repository secret for Database Backup (Operator Checks warns until a backup dumps both).
 
 **Cycle 8 (late-Oct 2026 broad scan) — open until their batches run** (the scan's
@@ -8389,10 +8418,10 @@ INV-141 | Bank webhooks are visible without ever exposing a payload: GET /api/da
 INV-140 | A Teller webhook is a trigger, not data: transactions.processed syncs only the enrollment(s) it names (by enrollment id or its transactions' account ids — never a SUSPENDED one) through the same syncOneTellerEnrollment the scheduled sync loops, coalesced per enrollment, recording nothing global (the enrollment's last_synced_at only), then ONE runPostSyncSteps; enrollment.disconnected changes only a GOOD enrollment and notifies once per transition | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w5.test.js + tests/contract/webhooks-w5.contract.test.js
 INV-139 | Plaid webhooks are opt-in by PUBLIC_URL alone (hosting.webhookBaseUrl — never RENDER_EXTERNAL_URL): without it no link token carries a webhook and registration is a 400; a clean sync never clears a webhook's advance warning (PENDING_EXPIRATION / PENDING_DISCONNECT — setPlaidItemErrorCode keepWarnings), only a re-authentication does; an ITEM ERROR sets the signal only for a re-auth code | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w4.test.js + tests/contract/webhooks-w4.contract.test.js
 INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs only the named GOOD item, through the same syncOnePlaidItem the scheduled sync loops, under withPlaidTxnLock and coalesced per item (a request during its run → one more round, never a parallel walk); it records nothing global (no last_txn_sync_at / last_sync_result — the item's last_synced_at only, stamped when the walk reached the end of the cursor) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w3.test.js + tests/contract/webhooks-w3.contract.test.js
-INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit — the landed check's tag looked up in notification_log across its 24 h overlap, cycle-8 F51, on an id watermark since E2c) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4 + tests/contract/c8-batch4 + tests/contract/txn-watermark-e2c
+INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low alert while any bank-synced spendable balance is older than 36 h or unknown (seams audit #4 S6) and no account-floor alert on that account's balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit — the landed check's tag looked up in notification_log across its 24 h overlap, cycle-8 F51, on an id watermark since E2c) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4 + tests/contract/c8-batch4 + tests/contract/txn-watermark-e2c
 INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included — and a routes/ai.js feature then answers 422 { ai_refusal }, never an empty 200, cycle-8 F24); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4 + apps/per-sistant/tests/broad-scan-c8-batch6 (F24)
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
-INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4), all under one batch_id, and a batch restore runs each row through the same restore in one transaction — a refused row stays deleted (cycle-8 E1c); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3 + tests/cycle8-e1c.test.js + tests/contract/resolve-undo-e1c
+INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4), all under one batch_id, and a batch restore runs each row through the same restore in one transaction — a refused row stays deleted (cycle-8 E1c); the list's per-row restorable applies the same refusals (seams audit #4 S5); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3 + tests/cycle8-e1c.test.js + tests/contract/resolve-undo-e1c
 INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js
 INV-147 | The dashboard summary has one definition per figure, each the helper its own screen uses — net worth = the latest net_worth_snapshots row (written only through getNetWorth); spending = getBudgetStatus (GET /api/budgets); lowest cash = getCashFlowForecast (GET /api/cash-flow); bills due = getBillsDue (the /api/forecast charges via forecastCharges + the bill calendar's manualBillOccurrences, less bill_payments); rent owed = getHousingOwed (the ledger's ledgerTotals, payee-scoped); uncategorized = countUncategorized (/api/categorize/status); Sync Health = gatherDataHealth (/api/data-health) — no figure is re-derived in routes/dashboard-summary.js; every part is fail-soft with a fixed sentence and the page still loads when the whole request fails; attention links are same-app paths joined with withBase; the shell landing page's Perfin line reads the same gatherDashboardSummary in-process (its parts option — rent / bills / uncategorized only), never an HTTP self-fetch | Subsystem: Financial Analytics / Web UI | Verify: tests/design-d3.test.js + tests/design-d7.test.js + tests/contract/dashboard-summary.contract.test.js + e2e/pages.spec.js
 INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only. Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
@@ -8404,7 +8433,7 @@ INV-152 | A "what's new since the last check" read over transactions never skips
 INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push — 'sent' only once a device received it, 'none' when nothing was delivered (seams audit #4 A1); a held push is released once quiet hours end — marked sent only after the push reached a device, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d); Per-sistant's check marks notify:false an item Perfin pushed (push_state sent) in the last 12 hours, still listed, and housing_due steps aside only for its own month's open task (cycle-8 E3e) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js + apps/per-sistant/tests/cycle8-e3e.test.js + tests/contract/notify-e3e.contract.test.js
 INV-155 | A scheduled job runs when it is due and once across processes: services/job-runner.js claims it with a conditional UPSERT of job_runs.last_ran_at (≥ 90% of the cadence old — a failed claim runs it anyway), checks a when() gate in memory before any query, runs due jobs one at a time; every run has a deadline (register timeoutMs, else 15 min; the runner's own queries 1 min) — past it the run is reported through onTimeout as a failed outcome, abandoned and never started again until it has settled (seams audit #4 B1) | Subsystem: Platform, Shell & Auth | Verify: tests/cycle8-e2a.test.js + tests/cycle8-e2b.test.js + tests/seams-audit-4.test.js + tests/contract/job-runner-e2a + scheduler-e2b
 INV-156 | Under the shell the two apps never share a database unless ALLOW_SHARED_DATABASE=true: start() refuses PERSISTENT_DATABASE_URL unset or naming the same host + port + database (sharedDatabaseProblem) and, before either app migrates, two pools whose database identity (name, oid, server start time) is the same (sharedDatabaseIdentityProblem — an unreadable identity is unknown, never shared); Operator Checks' local:databases applies both | Subsystem: Platform, Shell & Auth | Verify: tests/broad-scan-c8-batch1.test.js + tests/seams-audit-4.test.js + tests/contract/seams4-s4-2
-INV-154 | Freshness has one definition — services/freshness.js (readConnections / overallFreshness / connectionFreshness) behind Sync Health's connection list (gatherDataHealth), GET /api/data-freshness and the nav badge; the badge never shows a fresher age than the oldest active bank connection's own last_synced_at, a connection needing re-authentication or disconnected makes it stale ("Reconnect <bank>"), and the global user_settings stamps are read only when no connection exists; colour comes from a level class, never an inline style (cycle-8 E4b) | Subsystem: Settings, Notifications & Cross-app / Web UI | Verify: tests/cycle8-e4b.test.js + tests/contract/operator-freshness-e4b + e2e/pages.spec.js
+INV-154 | Freshness has one definition — services/freshness.js (readConnections / overallFreshness / connectionFreshness) behind Sync Health's connection list (gatherDataHealth), GET /api/data-freshness and the nav badge; the badge never shows a fresher age than the oldest active bank connection's own last_synced_at, a connection needing re-authentication or disconnected makes it stale ("Reconnect <bank>"), and the global user_settings stamps are read only when no connection exists — Sync Health's "haven't synced" warnings included (seams audit #4 S4); colour comes from a level class, never an inline style (cycle-8 E4b) | Subsystem: Settings, Notifications & Cross-app / Web UI | Verify: tests/cycle8-e4b.test.js + tests/seams-audit-4-s3.test.js + tests/contract/operator-freshness-e4b + e2e/pages.spec.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
