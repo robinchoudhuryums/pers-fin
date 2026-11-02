@@ -1580,9 +1580,11 @@
     function adviceEmergency(e) {
       if (!e) return '';
       var covered = e.months_covered == null ? '\u2014' : esc(String(e.months_covered));
+      // Seams audit #4 C3: the plan's note ("It comes after your high-interest debt
+      // is paid off.") goes with the projection — it was dropped whenever both were set.
       var sub = e.reached ? 'Reached.'
-        : e.projection ? 'At this pace, reached around ' + esc(adviceMonth(e.projection.month)) + '.'
-        : esc(e.note || '');
+        : [e.projection ? 'At this pace, reached around ' + esc(adviceMonth(e.projection.month)) + '.' : '',
+           esc(e.note || '')].filter(Boolean).join(' ');
       return '<div class="advice-ef"><div>Emergency fund: ' + covered + ' of ' + esc(String(e.target_months)) +
         ' months of spending (' + fmt(e.have) + ' of ' + fmt(e.target) + ')</div>' +
         '<progress max="100" value="' + esc(String(e.pct)) + '" aria-label="Emergency fund: ' + esc(String(e.pct)) + '% of the target"></progress>' +
@@ -1702,6 +1704,10 @@
       if (errors.length) html += errors.map(function (e) { return '<div class="note">' + esc(e.error) + '</div>'; }).join('');
       return html;
     }
+    // Seams audit #4 C4: the summary is re-read after a forecast change (E1b). A
+    // successful reload shows the cards again after a failed first load, and a failed
+    // RELOAD keeps the summary already on the page (with a toast) — it used to hide it.
+    var summaryShown = false;
     async function loadDashboardSummary() {
       var cards = document.getElementById('dash-summary-cards');
       var att = document.getElementById('dash-attention');
@@ -1714,7 +1720,16 @@
         var s = await res.json();
         cards.innerHTML = renderSummaryCards(s);
         body.innerHTML = renderAttention(s.attention);
+        cards.hidden = false;
+        att.hidden = false;
+        errEl.hidden = true;
+        errEl.textContent = '';
+        summaryShown = true;
       } catch (e) {
+        if (summaryShown) {
+          showMsg('The summary couldn\'t be refreshed \u2014 it shows the last figures loaded.', false);
+          return;
+        }
         cards.hidden = true;
         att.hidden = true;
         errEl.textContent = 'The summary couldn\'t be loaded \u2014 the rest of the dashboard is below.';
@@ -2574,6 +2589,28 @@
       load(12);
     })();
 
+    // One "Since you last looked" balance row. Seams audit #4 C5: amounts through fmt
+    // ("-$24.29", thousands separators — it printed "$-24.29") and the money colours
+    // (INV-148): money in is green (.amt-in), a debt that rose is red (.amt-bad), a
+    // falling cash balance or a debt paid down the default colour (it painted every
+    // unfavourable move red); a cash balance below $0 is red. Card / loan balances are
+    // amounts OWED, so the server's `favorable` already flips for them (DD-6).
+    function whatsNewBalanceRow(bc) {
+      var delta = parseFloat(bc.delta) || 0;
+      var good = (typeof bc.favorable === 'boolean') ? bc.favorable : delta >= 0;
+      var cls = bc.is_debt ? (good ? '' : 'amt-bad') : (good ? 'amt-in' : '');
+      var sgn = delta >= 0 ? '+' : '-';
+      function bal(v) {
+        var n = parseFloat(v) || 0;
+        var t = fmt(n);
+        return !bc.is_debt && n < 0 ? '<span class="amt-bad">' + t + '</span>' : t;
+      }
+      return '<div style="font-size:12px;color:var(--text-muted);">' +
+        esc(bc.account_name || ('Account #' + bc.source_id)) +
+        ' <span' + (cls ? ' class="' + cls + '"' : '') + '>' + sgn + fmt(Math.abs(delta)) + (bc.is_debt ? ' owed' : '') + '</span>' +
+        ' <span>(' + bal(bc.baseline_balance) + ' \u2192 ' + bal(bc.current_balance) + ')</span>' +
+      '</div>';
+    }
     // S3: "What's new since last visit" widget. Reads /api/whats-new (which
     // honors last_dashboard_view_at) and POSTs /seen on first render so the
     // window slides forward. Auto-hides when there's nothing new.
@@ -2607,16 +2644,7 @@
         if ((data.balance_changes || []).length) {
           html.push('<div><strong style="font-size:12px;color:var(--text-secondary);">Balance changes</strong>');
           for (var i = 0; i < Math.min(5, data.balance_changes.length); i++) {
-            var bc = data.balance_changes[i];
-            var sgn = bc.delta >= 0 ? '+' : '-';
-            // Card/loan balances are amounts OWED — an increase is bad (DD-6).
-            var good = (typeof bc.favorable === 'boolean') ? bc.favorable : bc.delta >= 0;
-            var col = good ? 'var(--green)' : 'var(--red)';
-            html.push('<div style="font-size:12px;color:var(--text-muted);">' +
-              esc(bc.account_name || ('Account #' + bc.source_id)) +
-              ' <span style="color:' + col + ';">' + sgn + '$' + Math.abs(bc.delta).toFixed(2) + (bc.is_debt ? ' owed' : '') + '</span>' +
-              ' <span style="color:var(--text-muted);">($' + bc.baseline_balance.toFixed(2) + ' → $' + bc.current_balance.toFixed(2) + ')</span>' +
-            '</div>');
+            html.push(whatsNewBalanceRow(data.balance_changes[i]));
           }
           html.push('</div>');
         }
@@ -2625,8 +2653,8 @@
           for (var j = 0; j < Math.min(5, data.subscriptions.length); j++) {
             var s = data.subscriptions[j];
             html.push('<div style="font-size:12px;color:var(--text-muted);">' + esc(s.display_name) +
-              ' <span style="color:var(--yellow);">$' + parseFloat(s.amount).toFixed(2) + '</span>' +
-              ' every ' + s.cadence_days + 'd</div>');
+              ' <span>' + fmt(s.amount) + '</span>' +
+              ' every ' + esc(String(s.cadence_days)) + 'd</div>');
           }
           html.push('</div>');
         }

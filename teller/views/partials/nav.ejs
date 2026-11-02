@@ -23,7 +23,7 @@
       <a href="<%= __basePath %>/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
 <% if (__embedded) { %>
-    <a href="/per-sistant" class="cross-app-link" id="cross-app-link" data-atrans="cosmic" title="Switch to Per-sistant" aria-label="Switch to Per-sistant" style="display:inline-flex;align-items:center;justify-content:center;padding:4px;border:1px solid var(--border);border-radius:6px;margin-right:8px;line-height:0;">
+    <a href="/per-sistant" class="cross-app-link" id="cross-app-link" data-atrans="dial" title="Switch to Per-sistant" aria-label="Switch to Per-sistant" style="display:inline-flex;align-items:center;justify-content:center;padding:4px;border:1px solid var(--border);border-radius:6px;margin-right:8px;line-height:0;">
       <img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true" width="22" height="22" style="display:block;object-fit:contain;">
     </a>
     <%# Roadmap T2.4 X3b: one search across both apps lives in Per-sistant (under the shell only). %>
@@ -67,22 +67,16 @@
 <% }); %>
   </nav>
 <% if (__embedded) { %>
-  <!-- Cross-app cosmic transition overlay (Perfin → Per-sistant). Decorations
-       are populated by transition.js on init. The cross-app link gets a
-       data-atrans="cosmic" attribute below to bind the click handler. -->
-  <div class="atrans-overlay atrans--cosmic" id="atrans-cosmic" aria-hidden="true">
-    <div class="atrans-particles"></div>
-    <div class="atrans-stage">
-      <div class="atrans-stars"></div>
-      <div class="atrans-nebula"></div>
-      <div class="atrans-ring"></div>
-      <div class="atrans-art-wrap">
-        <div class="atrans-art"><img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true"></div>
-        <div class="atrans-scanline"></div>
-      </div>
-    </div>
+  <!-- Cross-app transition overlay (Perfin → Per-sistant): the shell dial
+       spins up before Per-sistant loads. transition.js builds the dial and
+       binds the link above (data-atrans="dial"). -->
+  <div class="atrans-overlay" id="atrans-dial" aria-hidden="true">
+    <div class="shell-grain"></div>
+    <div class="shell-scan"></div>
+    <div data-dial><img src="/android-chrome-192x192.png?v=2" alt="" width="60" height="60"></div>
+    <div class="dial-status is-ok">Per-sistant</div>
   </div>
-  <script src="/shell-static/transition.js?v=2" defer></script>
+  <script src="/shell-static/transition.js?v=3" defer></script>
 <% } %>
   <!-- Notification backdrop (dim layer behind the panel on mobile bottom-sheet). -->
   <div id="notif-backdrop" class="notif-backdrop" hidden></div>

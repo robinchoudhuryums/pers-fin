@@ -543,6 +543,46 @@ router.get("/api/data-freshness", async (_req, res) => {
   }
 });
 
+// The "haven't synced in 24 h" warnings (seams audit #4 S4). With bank
+// connections they follow the connections, like the nav badge (INV-154): a
+// webhook sync stamps only its connection's last_synced_at, never the global
+// stamps, so those read stale while the data is minutes old. One warning per
+// connection whose own sync is 24 h+ old or was never completed — not one that
+// needs re-authentication or is disconnected (counted above). A Plaid item's
+// sync refreshes its balances; a Teller enrollment's doesn't, so the global
+// balance stamp still counts while a Teller connection exists. With no
+// connection (CSV / manual only) or a failed read, the global stamps as before.
+function syncAgeIssues({ connections, connectionsRead, freshness, settings: s }) {
+  const issues = [];
+  const list = connectionsRead && Array.isArray(connections) ? connections : [];
+  if (list.length) {
+    for (const c of list) {
+      if (c.status === "NEEDS_REAUTH" || c.status === "DISCONNECTED") continue;
+      const ls = c.last_synced || {};
+      if (ls.level !== "stale") continue;
+      const who = `${c.institution || "A bank connection"} (${c.provider === "plaid" ? "Plaid" : "Teller"})`;
+      issues.push({
+        severity: "warning",
+        message: ls.timestamp ? `${who} hasn't synced in over 24h.` : `${who} has no complete sync recorded yet.`,
+        link: "/settings#sync-health",
+      });
+    }
+    if (list.some((c) => c.provider === "teller") && s.last_balance_sync_at && freshness.balances.level === "stale") {
+      issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
+    }
+    return issues;
+  }
+  if (!s.last_txn_sync_at && !s.last_auto_sync_at) {
+    issues.push({ severity: "info", message: "No transaction sync has run yet." });
+  } else if (freshness.transactions.level === "stale") {
+    issues.push({ severity: "warning", message: "Transactions haven't synced in over 24h." });
+  }
+  if (s.last_balance_sync_at && freshness.balances.level === "stale") {
+    issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
+  }
+  return issues;
+}
+
 // GET /api/data-health — operator-facing health surface. Aggregates per-source
 // freshness, provider connection status, recent sync-related notifications, and
 // a derived issues[] list so silent degradation (disconnected links, stale
@@ -578,18 +618,22 @@ async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
     insights: ageInfo(s.insights_last_run),
   };
 
+  // Per-connection freshness (roadmap T2.1 W6): when each Teller enrollment /
+  // Plaid item last synced completely (its own last_synced_at — W3 / W5). Read
+  // through services/freshness.js, the one definition the nav badge and
+  // /api/data-freshness share (cycle-8 E4b).
+  let connections = [];
+  let connectionsRead = false;
+  try {
+    connections = await freshnessSvc.readConnections(db, now);
+    connectionsRead = true;
+  } catch (e) { console.error("data-health connections read failed:", e.message); }
+
   const issues = [];
   if (t.disconnected > 0) issues.push({ severity: "warning", message: `${t.disconnected} Teller enrollment(s) disconnected — re-link in Accounts.` });
   // Fixed in place on the Accounts page (Link update mode, cycle-7 G3).
   if (p.not_good > 0) issues.push({ severity: "warning", message: `${p.not_good} Plaid item(s) need re-authentication — open Accounts → Re-authenticate.`, link: "/accounts" });
-  if (!s.last_txn_sync_at && !s.last_auto_sync_at) {
-    issues.push({ severity: "info", message: "No transaction sync has run yet." });
-  } else if (freshness.transactions.level === "stale") {
-    issues.push({ severity: "warning", message: "Transactions haven't synced in over 24h." });
-  }
-  if (s.last_balance_sync_at && freshness.balances.level === "stale") {
-    issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
-  }
+  issues.push(...syncAgeIssues({ connections, connectionsRead, freshness, settings: s }));
   // Per-item errors from the most recent sync run (addition D) — these are the
   // silent ones: a `decryption_failed` does NOT mark an enrollment
   // DISCONNECTED (INV-22), so it wouldn't show above. Surface each explicitly.
@@ -674,15 +718,6 @@ async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
       }
     }
   }
-
-  // Per-connection freshness (roadmap T2.1 W6): when each Teller enrollment /
-  // Plaid item last synced completely (its own last_synced_at — W3 / W5). Read
-  // through services/freshness.js, the one definition the nav badge and
-  // /api/data-freshness share (cycle-8 E4b).
-  let connections = [];
-  try {
-    connections = await freshnessSvc.readConnections(db, now);
-  } catch (e) { console.error("data-health connections read failed:", e.message); }
 
   let operatorChecks = null;
   try {
@@ -1017,3 +1052,4 @@ module.exports.sanitizeBoolMap = sanitizeBoolMap;
 module.exports.recordSheetsSyncResult = recordSheetsSyncResult;
 module.exports.normalizePersistentUrl = normalizePersistentUrl;
 module.exports.gatherDataHealth = gatherDataHealth;
+module.exports.syncAgeIssues = syncAgeIssues;

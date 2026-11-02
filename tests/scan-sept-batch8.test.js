@@ -264,7 +264,9 @@ describe("DD-5 / DD-6 — balance deltas", () => {
 
   it("the dashboard widget uses favorable for colour and shows a minus sign", () => {
     const src = read("teller", "views", "dashboard.ejs");
-    assert.match(src, /var sgn = bc\.delta >= 0 \? '\+' : '-';/);
-    assert.match(src, /var good = \(typeof bc\.favorable === 'boolean'\) \? bc\.favorable : bc\.delta >= 0;/);
+    // Seams audit #4 C5: the row moved into whatsNewBalanceRow (fmt + the money
+    // classes — tests/seams-audit-4-s5.test.js runs it).
+    assert.match(src, /var sgn = delta >= 0 \? '\+' : '-';/);
+    assert.match(src, /var good = \(typeof bc\.favorable === 'boolean'\) \? bc\.favorable : delta >= 0;/);
   });
 });

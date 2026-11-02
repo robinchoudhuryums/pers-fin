@@ -64,8 +64,11 @@ function fakePersistent(open = new Set(), { throws = false } = {}) {
   pp.query = async (sql, params) => {
     pp.calls.push([sql, params]);
     if (throws) throw new Error("persistent down");
-    assert.match(sql, /FROM todos WHERE source_key = \$1 AND NOT completed\s+AND deleted_at IS NULL AND NOT source_detached/);
-    return { rows: open.has(params[0]) ? [{ "?column?": 1 }] : [] };
+    // Per-sistant's own predicate (services/linked-tasks.openLinkedItems —
+    // seams audit #4 A2: no source_detached filter).
+    assert.match(sql, /FROM todos\s+WHERE source_key = ANY\(\$1::text\[\]\) AND NOT completed AND deleted_at IS NULL/);
+    assert.doesNotMatch(sql, /source_detached/);
+    return { rows: params[0].filter((k) => open.has(k)).map((source_key) => ({ source_key })) };
   };
   return pp;
 }
@@ -110,7 +113,7 @@ describe("sendToAll with an item (cycle-8 E3d)", () => {
     assert.deepEqual(r, { sent: 0, failed: 0, logged: true, push_state: "covered" });
     assert.deepEqual(pushed, []);
     assert.deepEqual(db.log.map((l) => [l.type, l.push_state, l.item_key, l.is_read]), [["housing-due-2026-11", "covered", "housing:2026-11", true]]);
-    assert.deepEqual(pp.calls.map((c) => c[1]), [["perfin:housing:2026-11"]]);
+    assert.deepEqual(pp.calls.map((c) => c[1]), [[["perfin:housing:2026-11"]]]);
   });
 
   it("the task closed (or never made): pushed, item_key still stored, the push payload without `item`", async () => {
@@ -129,7 +132,7 @@ describe("sendToAll with an item (cycle-8 E3d)", () => {
     try { assert.equal((await notifications.sendToAll(rent(), NOW())).push_state, "sent"); }
     finally { console.error = ce; }
     assert.equal(pushed.length, 1);
-    assert.ok(errs.some((e) => /linked task lookup for a notification failed: persistent down/.test(e)));
+    assert.ok(errs.some((e) => /linked task lookup failed: persistent down/.test(e)));
   });
 
   it("standalone (no Per-sistant pool): pushed, no lookup", async () => {

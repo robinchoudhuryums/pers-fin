@@ -72,6 +72,14 @@ function isInternalMove(tr) {
 // credit of the same amount within 5 days on another linked account matching
 // `destination` (an SQL condition on la2). The transfer's rows are found by
 // the transfer detector's own merchant key.
+// The detectors' merchant key for a row `t` — TRIMmed like theirs (they trim in
+// JS before storing merchant_key), so a merchant name with a trailing space
+// ("HULU ") still matches its detected row's "HULU" (seams audit #4 S1: without the TRIM a subscription's charges
+// stayed in the spending average AND were billed, and the mirrored-credit test
+// never found its transfer's rows). The same expression as merchant-rename.js
+// DETECT_KEY.
+const DETECT_KEY_T = "TRIM(COALESCE(t.user_merchant_name, t.merchant_name, LOWER(REGEXP_REPLACE(t.name, '[^a-zA-Z0-9 ]', '', 'g'))))";
+
 function mirroredCredit(destination) {
   return `EXISTS (
         SELECT 1 FROM transactions t
@@ -79,7 +87,7 @@ function mirroredCredit(destination) {
         JOIN transactions t2 ON t2.account_id <> t.account_id AND t2.pending = false
           AND t2.amount = -t.amount AND t2.date BETWEEN t.date - 5 AND t.date + 5
         JOIN linked_accounts la2 ON la2.account_id = t2.account_id
-        WHERE COALESCE(t.user_merchant_name, t.merchant_name, LOWER(REGEXP_REPLACE(t.name, '[^a-zA-Z0-9 ]', '', 'g'))) = rt.merchant_key
+        WHERE ${DETECT_KEY_T} = rt.merchant_key
           AND t.amount > 0 AND t.pending = false AND t.date = rt.last_transferred
           AND la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}
           AND ${destination}
@@ -156,7 +164,7 @@ async function getCashFlowInputs(pool, { today = todayStr() } = {}) {
         SELECT 1 FROM detected_subscriptions ds
         WHERE ds.is_active = true AND ds.is_dismissed = false AND ds.cancelled_at IS NULL
           AND ds.next_expected IS NOT NULL
-          AND ds.merchant_key = COALESCE(t.user_merchant_name, t.merchant_name, LOWER(REGEXP_REPLACE(t.name, '[^a-zA-Z0-9 ]', '', 'g')))
+          AND ds.merchant_key = ${DETECT_KEY_T}
       )`;
 
   // Average daily discretionary spending (last 60 days, excluding subscription
@@ -238,11 +246,15 @@ function projectCashFlow(inputs, { days }) {
   }));
 
   // Occurrences step by CALENDAR MONTH for month-scale cadences (DC-9) — a
-  // fixed 30-day step drifted and could double-bill a month.
+  // fixed 30-day step drifted and could double-bill a month. The window is the
+  // projection's, today+1 … today+days: seriesOccurrences includes today, which
+  // "What's in this forecast" used to count while the totals and the lowest day
+  // (they start tomorrow) left it out (seams audit #4 S3) — a bill due today is
+  // in neither; today's balance holds it once it posts.
   const billSchedule = bills.map(b => ({
     name: b.display_name,
     amount: parseFloat(b.amount),
-    dates: new Set(seriesOccurrences(b.last_date, b.next_expected, b.cadence_days, today, end)),
+    dates: new Set(seriesOccurrences(b.last_date, b.next_expected, b.cadence_days, today, end).filter((d) => d > today)),
   }));
   // What the schedule held and what it left out (E1a) — the dashboard's
   // "What's in this forecast" list.
@@ -339,4 +351,4 @@ async function getCashFlowForecast(pool, { days, today = todayStr() } = {}) {
   return projectCashFlow(await getCashFlowInputs(pool, { today }), { days });
 }
 
-module.exports = { getCashFlowInputs, projectCashFlow, firstBelow, getCashFlowForecast, isCardAutopay, isInternalMove, transferTreatment, classifyBills, CARD_PAYMENT_RE, CADENCE_DAYS };
+module.exports = { getCashFlowInputs, projectCashFlow, firstBelow, getCashFlowForecast, isCardAutopay, isInternalMove, transferTreatment, classifyBills, CARD_PAYMENT_RE, CADENCE_DAYS, DETECT_KEY_T };

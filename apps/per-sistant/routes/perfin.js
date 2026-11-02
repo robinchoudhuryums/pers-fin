@@ -57,8 +57,12 @@ module.exports = function ({ pool, config }) {
     const perfinPool = req.app.get("perfinPool");
     if (perfinPool) {
       try {
+        // next_expected as its 'YYYY-MM-DD' text (seams audit #4 A4): Perfin's
+        // pool returns a DATE as node-pg's local-midnight Date, which
+        // JSON-serializes in UTC — a day early on a server east of UTC (cycle-8
+        // F52's Per-sistant-side rule, applied to a read through perfinPool).
         const result = await perfinPool.query(`
-          SELECT display_name, amount, cadence_days, next_expected
+          SELECT display_name, amount, cadence_days, next_expected::text AS next_expected
           FROM detected_subscriptions
           WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
         `);

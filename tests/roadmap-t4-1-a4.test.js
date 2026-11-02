@@ -296,7 +296,7 @@ describe("T4.1 A4 — the advice-plan away job", () => {
     assert.equal(jobHealth.JOB_INTERVALS_MS["advice-plan"], 60 * 60 * 1000);
     const src = read("teller/startup.js");
     // Cycle-8 E2b: scheduled by the job runner, hourly, with no activity gate.
-    assert.deepEqual(scheduled("advice-plan"), { name: "advice-plan", everyMs: 60 * 60 * 1000, gated: false });
+    assert.deepEqual(scheduled("advice-plan"), { name: "advice-plan", everyMs: 60 * 60 * 1000, gated: false, timeoutMs: 15 * 60 * 1000 });
     assert.match(src, /\["advice-plan", runAdvicePlanTick\],/);
     const body = src.slice(src.indexOf("async function runAdvicePlanTick"), src.indexOf("async function runLinkedTasksTick"));
     assert.doesNotMatch(body, /isUserActive/);

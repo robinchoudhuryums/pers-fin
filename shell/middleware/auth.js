@@ -255,17 +255,30 @@ function loginReturnTo(target) {
   return t === DEFAULT_POST_LOGIN ? "" : t;
 }
 
+// The login page's keypad posts JSON so it can play the dial's unlock spin
+// before it navigates (and shake it on a refused PIN without a reload); a form
+// post without JavaScript still gets the rendered page. Same checks, same
+// cookie, same delay either way — only the shape of the answer differs.
+function wantsJson(req) {
+  return !!(req.is && req.is("application/json"));
+}
+function loginFailure(req, res, status, error, returnTo) {
+  if (wantsJson(req)) return res.status(status).json({ error });
+  return renderLogin(res, status, error, returnTo);
+}
+
 async function handleLogin(req, res) {
-  const submitted = String(req.body.pin || "");
+  const body = req.body || {};
+  const submitted = String(body.pin || "");
   const expected = process.env.SHELL_PIN || "";
-  const returnTo = req.body.return_to;
+  const returnTo = body.return_to;
 
   const lockedMs = pinLockedForMs();
   if (lockedMs) {
     // Even a correct PIN is refused while locked — otherwise the lockout would
     // not stop a distributed guesser.
     const mins = Math.ceil(lockedMs / 60000);
-    return renderLogin(res, 429, `Too many failed attempts. PIN login is locked for ${mins} more minute${mins === 1 ? "" : "s"} — use biometric login or try later.`, returnTo);
+    return loginFailure(req, res, 429, `Too many failed attempts. PIN login is locked for ${mins} more minute${mins === 1 ? "" : "s"} — use biometric login or try later.`, returnTo);
   }
 
   // Digest compare (safeEqual): the old padded-buffer compare checked the
@@ -277,7 +290,7 @@ async function handleLogin(req, res) {
 
   if (!matches) {
     recordPinFailure();
-    return setTimeout(() => renderLogin(res, 401, "Incorrect PIN.", returnTo), FAIL_DELAY_MS);
+    return setTimeout(() => loginFailure(req, res, 401, "Incorrect PIN.", returnTo), FAIL_DELAY_MS);
   }
 
   // A throw here (e.g. SHELL_SECRET unset — the boot check normally prevents
@@ -288,14 +301,16 @@ async function handleLogin(req, res) {
     setSessionCookie(res, idleMs);
   } catch (err) {
     console.error("Shell login error:", err.message);
-    return renderLogin(res, 500, "Login is unavailable — the server is misconfigured.", returnTo);
+    return loginFailure(req, res, 500, "Login is unavailable — the server is misconfigured.", returnTo);
   }
 
   // Allow ?return_to=/perfin/today on the form so a redirected request
   // bounces back to where the user wanted to go after login. safeReturnTo
   // rejects scheme-relative ("//evil.com") and backslash targets so the
   // auth endpoint can't be turned into an open redirect (F17).
-  res.redirect(safeReturnTo(req.body.return_to));
+  const target = safeReturnTo(returnTo);
+  if (wantsJson(req)) return res.json({ ok: true, redirect: target });
+  res.redirect(target);
 }
 
 // Default post-login destination. The tile-picker landing (still served at

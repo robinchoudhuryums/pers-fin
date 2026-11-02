@@ -2,6 +2,15 @@ const express = require("express");
 
 const { serverError } = require("../errors");
 
+// Seams audit #4 C6: the heatmap's day is the APP_TIMEZONE calendar day of the
+// completion (DATE(completed_at) bucketed in the database's zone — UTC — so an
+// evening completion west of UTC landed on tomorrow, off the grid). An unknown zone
+// falls back to UTC rather than failing the query.
+function heatmapTimezone(want = process.env.APP_TIMEZONE || "UTC") {
+  try { new Intl.DateTimeFormat("en-US", { timeZone: want }); return want; } catch { return "UTC"; } // invalid zone → UTC
+}
+const HEATMAP_SQL = `SELECT ((completed_at AT TIME ZONE $2)::date)::text as day, COUNT(*) as count FROM todos WHERE deleted_at IS NULL AND completed = true AND NOT auto_closed AND completed_at >= $1 GROUP BY 1 ORDER BY 1`;
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -40,7 +49,7 @@ module.exports = function ({ pool }) {
         pool.query(`SELECT title, streak_count, best_streak, recurrence_rule FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND streak_count > 0 ORDER BY streak_count DESC LIMIT 5`),
         pool.query(`SELECT EXTRACT(DOW FROM completed_at) as dow, COUNT(*) as count FROM todos WHERE deleted_at IS NULL AND completed = true AND NOT auto_closed AND completed_at >= $1 GROUP BY dow ORDER BY dow`, [sd]),
         // Heatmap: completions per day for last 90 days
-        pool.query(`SELECT DATE(completed_at) as day, COUNT(*) as count FROM todos WHERE deleted_at IS NULL AND completed = true AND NOT auto_closed AND completed_at >= $1 GROUP BY DATE(completed_at) ORDER BY day`, [hsd]),
+        pool.query(HEATMAP_SQL, [hsd, heatmapTimezone()]),
         // Emails sent in period
         pool.query(`SELECT COUNT(*) as count FROM emails WHERE deleted_at IS NULL AND sent_at >= $1`, [sd]),
         // Notes created in period
@@ -83,3 +92,6 @@ module.exports = function ({ pool }) {
 
   return router;
 };
+
+module.exports.HEATMAP_SQL = HEATMAP_SQL;
+module.exports.heatmapTimezone = heatmapTimezone;

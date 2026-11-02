@@ -1,170 +1,134 @@
-/* Shell-only styles. Deliberately self-contained — no shared tokens
-   imported from either sub-app, since the shell sits *outside* their
-   theme/palette systems and shouldn't drift if those change. */
+/* Shell-only styles (login + landing). Deliberately self-contained — no shared
+   tokens imported from either sub-app, since the shell sits *outside* their
+   theme/palette systems and shouldn't drift if those change. The dial (and its
+   ring field), the grain and the unlock sweep live in transition.css, which
+   both pages load too (opening-screen direction D: light + instrument). */
 
 * { box-sizing: border-box; }
 body {
   margin: 0;
   font-family: Inter, system-ui, -apple-system, sans-serif;
-  background: #0c0e14;
-  color: #eaeaea;
+  background: #0a0907;
+  color: #f4eee6;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
 }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.shell-readout { margin: 0; font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; letter-spacing: 1.6px; text-transform: uppercase; color: rgba(244,238,230,0.74);
+  white-space: pre; min-height: 16px; }
 
 /* --- Login screen ---------------------------------------------------------- */
-.login-body { display: flex; align-items: center; justify-content: center; padding: 24px; min-height: 100vh; position: relative; z-index: 1; }
-
-/* Cosmic nebula/starfield backdrop (matches shell transition.css palette:
-   purple #a88cdc / gold #d4a574 / teal glow over a near-black base). Fixed
-   behind the card; the stars are injected by login.ejs and twinkle via CSS. */
-.cosmic-bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
-  background: radial-gradient(ellipse at center, #0c0e14 0%, #060709 78%); }
-.cosmic-nebula { position: absolute; inset: -10%;
-  background:
-    radial-gradient(circle at 28% 32%, rgba(168,140,220,0.30) 0%, transparent 55%),
-    radial-gradient(circle at 72% 66%, rgba(212,165,116,0.22) 0%, transparent 55%),
-    radial-gradient(circle at 50% 50%, rgba(95,191,191,0.10) 0%, transparent 72%);
-  animation: cosmic-drift 22s ease-in-out infinite; }
-@keyframes cosmic-drift {
-  0%, 100% { transform: scale(1) translate(0, 0); opacity: 0.9; }
-  50%      { transform: scale(1.08) translate(1.5%, -1.5%); opacity: 1; }
-}
-.cosmic-stars { position: absolute; inset: 0; }
-.cosmic-stars span { position: absolute; display: block; border-radius: 50%;
-  background: #f3ece0; box-shadow: 0 0 6px rgba(212,165,116,0.7); opacity: 0.5;
-  animation: cosmic-twinkle 2.6s ease-in-out infinite; }
-@keyframes cosmic-twinkle { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.95; } }
-
+.login-body { min-height: 100vh; }
 .login-card {
-  background: #14161e;
-  border: 1px solid #232634;
-  border-radius: 12px;
-  padding: 32px;
-  max-width: 360px;
-  width: 100%;
-  position: relative;
-  z-index: 1;
-  text-align: center;
-  box-shadow: 0 24px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(168,140,220,0.06);
-  animation: login-card-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; align-items: center;
+  width: 100%; max-width: 380px; min-height: 100vh; margin: 0 auto;
+  padding: 48px 20px 28px;
 }
+.login-card .dial { margin-top: 22px; }
+.login-card .dial-status { margin-top: 10px; }
+.login-error { margin: 8px 0 0; font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; letter-spacing: 0.4px; color: #f08a8a; text-align: center; max-width: 320px; line-height: 1.5; }
+
+/* The glass panel that holds the keypad (and, without JavaScript, the PIN
+   field + Continue). It falls away when the dial starts to spin. */
+.pin-panel {
+  margin-top: 20px; width: 100%;
+  padding: 16px 14px 8px; border-radius: 28px;
+  background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.09), 0 30px 80px rgba(0,0,0,0.45);
+  -webkit-backdrop-filter: blur(26px) saturate(140%); backdrop-filter: blur(26px) saturate(140%);
+  display: flex; flex-direction: column; align-items: center;
+  transition: opacity 0.4s ease, transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  /* backwards, not both: a held end state would override the unlock fade. */
+  animation: login-card-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.is-unlocking .pin-panel { opacity: 0; transform: scale(0.96) translateY(10px); pointer-events: none; }
 @keyframes login-card-in {
   from { opacity: 0; transform: translateY(14px) scale(0.985); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
-/* Branding glyph (PWA mask-crop icon) atop the card. */
-.login-glyph { margin: 0 auto 16px; width: 64px; height: 64px;
-  animation: login-glyph-in 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both; }
-.login-glyph img { width: 64px; height: 64px; border-radius: 16px; display: block;
-  box-shadow: 0 0 24px rgba(168,140,220,0.35), 0 0 48px rgba(212,165,116,0.18); }
-@keyframes login-glyph-in {
-  from { opacity: 0; transform: translateY(-10px) scale(0.9); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-.login-card h1 { margin: 0 0 6px; font-weight: 400; font-size: 24px; }
-.login-card .subtitle { margin: 0 0 24px; font-size: 13px; color: #8a8e99; font-weight: 300; }
-.login-error {
-  background: rgba(235, 107, 107, 0.1);
-  border: 1px solid #663333;
-  color: #eb6b6b;
-  padding: 10px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  margin-bottom: 16px;
-}
+#login-form { width: 100%; display: flex; flex-direction: column; align-items: center; }
 .pin-input {
   width: 100%;
   padding: 12px 14px;
   font-size: 18px;
   letter-spacing: 8px;
   text-align: center;
-  border: 1px solid #232634;
-  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
   background: transparent;
-  color: #eaeaea;
+  color: #f4eee6;
   font-family: inherit;
   margin-bottom: 12px;
 }
-.pin-input:focus { outline: none; border-color: #d4a574; }
+.pin-input:focus { outline: none; border-color: #e2b98a; }
 
-/* Numeric PIN pad (progressive enhancement — revealed by login.ejs JS, which
-   hides the text input + Continue button on capable browsers). Mirrors Perfin's
-   standalone pad: fixed 8-dot masked display + 3x4 keypad. */
-.pin-dots { display: flex; justify-content: center; gap: 12px; margin: 4px 0 22px; }
-.pin-dot { width: 13px; height: 13px; border-radius: 50%;
-  border: 2px solid #2d3140; transition: background 0.15s ease, border-color 0.15s ease; }
-.pin-dot.filled { background: #d4a574; border-color: #d4a574; animation: dot-pop 0.18s ease; }
-.pin-dot.error { background: #eb6b6b; border-color: #eb6b6b; }
-@keyframes dot-pop { 0% { transform: scale(0.7); } 100% { transform: scale(1); } }
-.pin-dots.shake { animation: pin-shake 0.4s ease; }
-@keyframes pin-shake {
-  10%, 90% { transform: translateX(-1px); }
-  20%, 80% { transform: translateX(2px); }
-  30%, 50%, 70% { transform: translateX(-4px); }
-  40%, 60% { transform: translateX(4px); }
+/* Numeric keypad (progressive enhancement — revealed by login.ejs, which hides
+   the PIN field + Continue on capable browsers). Round glass keys, monospace
+   digits; delete and unlock are plain glyph keys. */
+.pin-pad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 8px; width: 270px; max-width: 100%; }
+.pin-key {
+  justify-self: center; width: 66px; height: 66px; border-radius: 50%;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 22px; font-weight: 300; color: #f4eee6;
+  background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.09);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 252px; margin: 0 auto; }
-.pin-key { padding: 16px 0; font-size: 22px; font-weight: 300; font-family: inherit;
-  border: 1px solid #232634; border-radius: 10px; background: transparent; color: #eaeaea;
-  cursor: pointer; -webkit-tap-highlight-color: transparent; transition: border-color 0.12s ease, transform 0.06s ease; }
-.pin-key:hover { border-color: #d4a574; }
-.pin-key:active { background: rgba(212,165,116,0.12); transform: scale(0.95); }
-.pin-key.fn { font-size: 16px; font-weight: 400; color: #8a8e99; }
-.pin-key.fn.go { color: #d4a574; font-size: 15px; letter-spacing: 0.5px; text-transform: uppercase; }
-.biometric-btn { margin-top: 12px; width: 100%; background: transparent; border: 1px solid #232634; }
-.biometric-btn:hover { border-color: #d4a574; }
-#biometric-status { margin-top: 8px; font-size: 12px; text-align: center; color: #8a8e99; }
-
-/* Respect reduced-motion: kill the ambient + entrance animation. */
-@media (prefers-reduced-motion: reduce) {
-  .cosmic-nebula, .cosmic-stars span, .login-card, .login-glyph, .pin-dot.filled, .pin-dots.shake {
-    animation: none !important;
-  }
-  .cosmic-stars span { opacity: 0.55; }
+.pin-key:hover { border-color: rgba(226,185,138,0.45); }
+.pin-key:active { background: rgba(226,185,138,0.22); border-color: rgba(226,185,138,0.6);
+  box-shadow: 0 0 18px rgba(226,185,138,0.35); }
+.pin-key.fn { background: transparent; border-color: transparent; color: rgba(244,238,230,0.8); }
+.pin-key.fn.go { color: #e2b98a; }
+.pin-key[disabled] { opacity: 0.3; cursor: default; }
+.pin-key:focus-visible, .text-btn:focus-visible, .btn:focus-visible, .tile:focus-visible, .logout-btn:focus-visible {
+  outline: 2px solid #e2b98a; outline-offset: 3px; }
+.text-btn {
+  background: transparent; border: 0; color: rgba(244,238,230,0.74);
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; letter-spacing: 1.2px; text-transform: uppercase;
+  min-height: 44px; padding: 0 16px; cursor: pointer;
 }
+.text-btn:hover { color: #f4eee6; }
+.text-btn[disabled] { opacity: 0.5; cursor: default; }
 
 .btn {
-  padding: 10px 16px;
-  font-size: 13px;
+  padding: 12px 16px;
+  min-height: 44px;
+  font-size: 14px;
   font-family: inherit;
-  border: 1px solid #232634;
-  border-radius: 8px;
-  background: transparent;
-  color: #eaeaea;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.05);
+  color: #f4eee6;
   cursor: pointer;
   width: 100%;
 }
-.btn.primary {
-  background: #d4a574;
-  color: #0c0e14;
-  border-color: #d4a574;
-  font-weight: 500;
-}
+.btn.primary { background: #e2b98a; color: #1a1206; border-color: #e2b98a; font-weight: 500; }
 .btn.primary:hover { filter: brightness(1.05); }
 
 /* --- Landing page ---------------------------------------------------------- */
-.landing-body { padding: 32px 24px; }
-.landing { max-width: 880px; margin: 0 auto; }
+.landing-body { min-height: 100vh; }
+.landing { position: relative; z-index: 1; max-width: 880px; margin: 0 auto; padding: 32px 24px; }
 .landing-header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 32px;
+  align-items: center;
+  margin-bottom: 40px;
 }
-.landing-header h1 { margin: 0; font-weight: 300; font-size: 22px; }
+.landing h1 { margin: 0 0 20px; font-weight: 300; font-size: 26px; letter-spacing: -0.2px; }
 .logout-form { margin: 0; }
 .logout-btn {
-  background: transparent;
-  border: 1px solid #232634;
-  color: #8a8e99;
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 11px;
-  cursor: pointer;
-  font-family: inherit;
+  background: transparent; border: 0; color: rgba(244,238,230,0.74);
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; letter-spacing: 1.2px; text-transform: uppercase;
+  min-height: 44px; padding: 0 4px; cursor: pointer;
 }
-.logout-btn:hover { color: #eaeaea; border-color: #d4a574; }
+.logout-btn:hover { color: #f4eee6; }
 
 .tiles {
   display: grid;
@@ -173,29 +137,32 @@ body {
 }
 .tile {
   display: block;
-  padding: 32px 24px;
-  background: #14161e;
-  border: 1px solid #232634;
-  border-radius: 12px;
+  padding: 26px 24px;
+  border-radius: 20px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 24px 60px rgba(0,0,0,0.35);
+  -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
   text-decoration: none;
   color: inherit;
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
-.tile:hover { border-color: #d4a574; transform: translateY(-2px); }
-.tile-icon {
-  width: 48px; height: 48px;
-  border-radius: 12px;
-  background: rgba(212, 165, 116, 0.12);
-  color: #d4a574;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 22px; font-weight: 500;
-  margin-bottom: 16px;
-}
+.tile:hover { border-color: rgba(226,185,138,0.5); transform: translateY(-2px); }
+.tile-icon { width: 48px; height: 48px; border-radius: 12px; display: block; margin-bottom: 16px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45); }
+/* Perfin's helmet (logo.svg draws in currentColor, so it is a mask). */
+.tile-icon-perfin { background: rgba(226,185,138,0.12); position: relative; }
+.tile-icon-perfin::after { content: ''; position: absolute; inset: 9px; background: #e2b98a;
+  -webkit-mask: url(/perfin/logo.svg) center / contain no-repeat; mask: url(/perfin/logo.svg) center / contain no-repeat; }
 .tile h2 { margin: 0 0 6px; font-weight: 400; font-size: 18px; }
-.tile p { margin: 0; font-size: 13px; color: #8a8e99; font-weight: 300; line-height: 1.5; }
+.tile p { margin: 0; font-size: 13px; color: rgba(244,238,230,0.74); font-weight: 300; line-height: 1.5; }
 /* Design D7: what needs a look in the app, read when the page is served. */
-.tile p.tile-status { margin-top: 12px; padding-top: 12px; border-top: 1px solid #232634;
-  color: #eaeaea; font-weight: 400; }
+.tile p.tile-status { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.10);
+  color: #f4eee6; font-weight: 400; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pin-panel, .tile { animation: none !important; transition: none !important; }
+}
 
 /* Standalone-PWA notch handling (viewport-fit=cover on login + landing):
    pad the body by the safe-area insets so content clears the iPhone status

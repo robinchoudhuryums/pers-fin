@@ -18,6 +18,39 @@ Updated: 2026-11-02
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **S4-5 (DONE, 2026-11-02) — UI correctness:** block `.cycle/blocks/8-s4-5-broad-implement.md`. C2 (a refused Settings
+  select / box save puts the stored value back — saveField + markSavedFields), C3 (the emergency-fund note beside the
+  projection), C4 (a summary reload un-hides the cards; a failed reload keeps them), C5 ("Since you last looked" through
+  fmt + the money classes), C6 (Per-sistant's heatmap on the APP_TIMEZONE day). npm test 3189 (one IPC flake), contract
+  340, e2e 91. Net +2 (C5, C6). Audit #4's five batches are all done.
+  - **Where I left off:** S4-5 and its `/sync-docs` committed and pushed on the branch with S4-2..S4-4 (none PR'd yet;
+    CLAUDE.md: the audit #4 entry → every batch done + S4-5 follow-ons, saveField in the Settings layout, the summary
+    reload, the whats-new money classes, INV-148 wording, new INV-157, counts 3188 / 176 files / Perfin 2445 +
+    Per-sistant 743 / contract 340; README counts; apps/per-sistant/CLAUDE.md: the heatmap's APP_TIMEZONE day).
+    Next: `/reflect` for audit #4 (or `/test-sync`), or a PR for S4-2..S4-5.
+- **S4-4 (DONE, 2026-11-02) — cross-app notification seam:** block `.cycle/blocks/8-s4-4-broad-implement.md`. A2
+  (Perfin's covered check = Per-sistant's openLinkedItems; a detached task counts as open), A6 (a held Perfin push
+  counts as Perfin's), A5 (queryPersistentStats = /api/stats' SQL), A4 (the widget's next_expected as text). npm test
+  3172 (one IPC flake), contract 339, e2e 91. Net −1 (no fix reachable this month; A6's quiet-until-expiry).
+  - **Where I left off:** S4-4 and its `/sync-docs` committed and pushed on the branch with S4-2 / S4-3 (none PR'd yet;
+    CLAUDE.md / README / apps/per-sistant/CLAUDE.md: the shared open-task predicate, held pushes, the stats SQL, the
+    widget's date, INV-153 wording, the audit #4 entry with the S4-4 follow-ons, counts 3171 / 174 files / contract 339).
+    Next: `/broad-implement S4-5`, or a PR for S4-2..S4-4 first.
+- **S4-3 (DONE, 2026-11-02) — forecast, freshness & restore:** block `.cycle/blocks/8-s4-3-broad-implement.md`. S1 (the
+  forecast's TRIMmed merchant key), S3 (one window for the totals and forecast_items), S6 (the cash alert gates on the
+  oldest bank-synced balance), S4 (Sync Health's sync-age warnings follow the connections), S5 (per-row restorable +
+  unrestorable_reason). npm test 3164, contract 335, e2e 91. Net +2.
+  - **Where I left off:** S4-3 and its `/sync-docs` committed and pushed on the branch with S4-2 (neither PR'd yet;
+    CLAUDE.md / README: cash-flow.js / cash-alerts.js / Sync Health / the deleted-transactions endpoint, INV-142 / 145 /
+    154 wording, the audit #4 entry with the S4-3 follow-ons, counts 3164 / 173 files / contract 335). Next: a PR for
+    S4-2 + S4-3, then `/broad-implement S4-4`.
+- **S4-2 (DONE, 2026-11-02) — scheduler & operator hardening:** block `.cycle/blocks/8-s4-2-broad-implement.md`. B1 (a
+  deadline per scheduled run + the runner's queries; Plaid 90 s timeout), B5 (shutdown waits ≤ 7 s for the running job), B6
+  (auto-sync stamps its start time), B4 (no PIN length in the operator check), A3 (database identity compared at boot and in
+  local:databases). npm test 3149, contract 332, e2e 91. Net +1.
+  - **Where I left off:** S4-2 and its `/sync-docs` committed and pushed (CLAUDE.md / README: job-runner deadlines, the
+    Plaid timeout, the shutdown wait, the auto-sync start stamp, the identity check, counts 3149 / 172 files / contract
+    332, INV-155 + INV-156 added to the library, the audit #4 entry). Next: PR + merge, then `/broad-implement S4-3`.
 - **S4-1 (DONE, 2026-11-02) — live-deploy hotfixes:** block `.cycle/blocks/8-s4-1-broad-implement.md`. A1 (push_state
   'none' when nothing was delivered), B2 (data-health reads only the watched jobs), S2 (one survivor per cadence + rename
   rules in one transaction), B3 (db-backup.yml records Perfin-only backups; Operator Checks warns under the shell), C1

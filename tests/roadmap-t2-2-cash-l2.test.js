@@ -224,7 +224,7 @@ describe("the cash-alerts job", () => {
     const body = src.slice(src.indexOf("async function runCashAlertsTick()"), src.indexOf("\n}\n", src.indexOf("async function runCashAlertsTick()")));
     assert.doesNotMatch(body, /isUserActive\(\)/);
     // Cycle-8 E2b: scheduled by the job runner, hourly, with no activity gate.
-    assert.deepEqual(scheduled("cash-alerts"), { name: "cash-alerts", everyMs: 3600e3, gated: false });
+    assert.deepEqual(scheduled("cash-alerts"), { name: "cash-alerts", everyMs: 3600e3, gated: false, timeoutMs: 15 * 60 * 1000 });
   });
 
   it("records an outcome only when it evaluated; a failure or an unlogged alert as an error", async () => {
@@ -287,7 +287,7 @@ describe("Settings — cash alert fields", () => {
       assert.match(v, new RegExp('id="' + id + '"[^>]*aria-label="'), id + " is labelled");
     }
     assert.match(v, /\['cash-alert-toggle', 'change', function\(\) \{ saveToggle\(this, 'cash_alert_enabled'\); \}\]/);
-    assert.match(v, /updateSetting\('cash_alert_horizon_days', parseInt\(this\.value, 10\)\)/);
+    assert.match(v, /saveField\(this, 'cash_alert_horizon_days', parseInt\(this\.value, 10\)\)/);
     assert.match(v, /var n = parseAmountInput\(document\.getElementById\('cash-alert-threshold'\)\.value\);[\s\S]{0,140}updateSetting\('cash_alert_threshold', n\)/);
   });
 });

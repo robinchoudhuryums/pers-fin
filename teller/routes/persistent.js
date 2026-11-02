@@ -8,6 +8,7 @@ const express = require("express");
 const crypto = require("crypto");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
+const { todayStr } = require("../services/financial-queries");
 
 // ---------------------------------------------------------------------------
 // Helper: get Per-sistant config from DB
@@ -274,10 +275,16 @@ router.post("/api/persistent/webhook/send", async (req, res) => {
 // Direct in-process queries against the Per-sistant DB — used when both apps
 // share a process (the unified shell wires `persistentPool` onto Perfin's app).
 // HTTP self-fetches were silently 401ing through the shell's auth gate.
-async function queryPersistentStats(persistentPool) {
+// Per-sistant's GET /api/stats figures, read straight from its pool (the
+// embedded fast path) — the SAME filters (seams audit #4 A5): "done" leaves out
+// a missed recurring instance and a linked task Perfin's sync closed (cycle-8
+// F18 — not your completion), and "overdue" is against the APP_TIMEZONE date,
+// not the database's UTC CURRENT_DATE. Both apps read the one APP_TIMEZONE.
+async function queryPersistentStats(persistentPool, today = todayStr()) {
   const [todos, emails, notes] = await Promise.all([
     persistentPool.query(
-      "SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= CURRENT_DATE) as overdue FROM todos WHERE deleted_at IS NULL"
+      "SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT auto_closed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL",
+      [today]
     ),
     persistentPool.query(
       "SELECT count(*) FILTER (WHERE status = 'draft') as drafts, count(*) FILTER (WHERE status = 'scheduled') as scheduled, count(*) FILTER (WHERE status = 'sent') as sent FROM emails WHERE deleted_at IS NULL"
@@ -493,3 +500,4 @@ module.exports.sendPerSistantWebhook = sendPerSistantWebhook;
 module.exports.setEmbeddedPersistentPool = setEmbeddedPersistentPool;
 module.exports.getEmbeddedPersistentPool = getEmbeddedPersistentPool;
 module.exports.perfinDashboardUrl = perfinDashboardUrl;
+module.exports.queryPersistentStats = queryPersistentStats;

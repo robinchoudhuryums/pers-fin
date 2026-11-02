@@ -10,9 +10,10 @@
 //      last_balance_sync_at, any Plaid item's / Teller enrollment's
 //      last_synced_at) is newer than cash_alerts_checked_at, or the last check
 //      was on an earlier APP_TIMEZONE day. Otherwise → "unchanged", no write.
-//   2. Freshness gate: no alert when the newest spendable-account balance is
-//      older than STALE_BALANCE_HOURS (or unknown) — an old balance must not
-//      read as "your cash is about to run out" → "skipped".
+//   2. Freshness gate: no alert when a bank-synced spendable account's balance
+//      (the OLDEST of them — seams audit #4 S6), or with none of those the newest
+//      spendable balance, is older than STALE_BALANCE_HOURS (or unknown) — an
+//      old balance must not read as "your cash is about to run out" → "skipped".
 //   3. Projects cash_alert_horizon_days ahead with the dashboard's forecast
 //      (services/cash-flow.js) and looks for the first day below
 //      cash_alert_threshold. None → "clear" (any earlier alert state is dropped;
@@ -38,6 +39,14 @@ const { INVESTMENT_ACCOUNT_TYPES, todayStr, APP_TIMEZONE } = require("./financia
 const { addDaysStr, parseYmd } = require("./cadence");
 
 const STALE_BALANCE_HOURS = 36;
+// A spendable account whose balance comes from a bank connection (Teller, or a
+// GOOD Plaid item — not a manual or CSV account, which nobody syncs) and that
+// feeds the forecast's starting balance (it has one). The freshness gate reads
+// the OLDEST of these (seams audit #4 S6): it read the newest, so one fresh
+// account let another's days-old balance into the projection (INV-142).
+const SYNCED_WITH_BALANCE = `(la.available_balance IS NOT NULL OR la.current_balance IS NOT NULL)
+      AND (la.teller_enrollment_id IS NOT NULL
+           OR EXISTS (SELECT 1 FROM plaid_items pi WHERE pi.id = la.plaid_item_id AND pi.status = 'GOOD'))`;
 const RENOTIFY_HOURS = 72;
 const EARLIER_DAYS = 3;
 const TAG = "cash-low";
@@ -97,12 +106,14 @@ async function runCashAlerts(pool, { now = new Date(), today = todayStr(), deps 
   const { rows } = await pool.query(`
     SELECT s.cash_alert_enabled, s.cash_alert_threshold, s.cash_alert_horizon_days,
            s.cash_alert_state, s.cash_alerts_checked_at,
-           b.balances_at,
+           b.balances_at, b.oldest_synced_at, b.synced_unknown,
            GREATEST(b.balances_at, s.last_txn_sync_at, s.last_balance_sync_at,
                     (SELECT max(last_synced_at) FROM plaid_items),
                     (SELECT max(last_synced_at) FROM teller_enrollments)) AS data_at
       FROM user_settings s
-     CROSS JOIN (SELECT max(la.balance_updated_at) AS balances_at
+     CROSS JOIN (SELECT max(la.balance_updated_at) AS balances_at,
+                        min(la.balance_updated_at) FILTER (WHERE ${SYNCED_WITH_BALANCE}) AS oldest_synced_at,
+                        COALESCE(bool_or(la.balance_updated_at IS NULL) FILTER (WHERE ${SYNCED_WITH_BALANCE}), false) AS synced_unknown
                    FROM linked_accounts la
                   WHERE la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}) b
      WHERE s.id = 1`);
@@ -145,7 +156,12 @@ async function runCashAlerts(pool, { now = new Date(), today = todayStr(), deps 
 // next } — `next` is the state to save (absent when its push wasn't logged).
 async function checkProjection(s, state, { now, at, forecast, sendToAll, sendEmail }) {
   const balancesAt = s.balances_at ? new Date(s.balances_at) : null;
-  if (!balancesAt || now.getTime() - balancesAt.getTime() > STALE_BALANCE_HOURS * 3600e3) {
+  const oldestSynced = s.oldest_synced_at ? new Date(s.oldest_synced_at) : null;
+  const tooOld = (d) => now.getTime() - d.getTime() > STALE_BALANCE_HOURS * 3600e3;
+  // Every bank-synced balance must be fresh (one unknown or old one → skipped);
+  // with no bank-synced account (manual / CSV only) the newest balance decides.
+  const stale = !balancesAt || tooOld(balancesAt) || s.synced_unknown === true || (oldestSynced != null && tooOld(oldestSynced));
+  if (stale) {
     const reason = balancesAt ? "stale_balances" : "no_balances";
     return { status: "skipped", reason, next: { alert: state.alert || null, last_notified: state.last_notified || null, last_check: { at, outcome: "skipped", reason } } };
   }
@@ -222,6 +238,6 @@ async function checkFloors(pool, { now, sendToAll, sentRecently }) {
 
 module.exports = {
   runCashAlerts, shouldNotify, alertText, invalidate,
-  STALE_BALANCE_HOURS, RENOTIFY_HOURS, EARLIER_DAYS, TAG, FLOOR_TAG, FLOOR_RENOTIFY_HOURS,
+  STALE_BALANCE_HOURS, SYNCED_WITH_BALANCE, RENOTIFY_HOURS, EARLIER_DAYS, TAG, FLOOR_TAG, FLOOR_RENOTIFY_HOURS,
   _reset() { _disabledDay = null; },
 };

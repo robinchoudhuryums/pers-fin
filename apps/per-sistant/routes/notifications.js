@@ -78,8 +78,11 @@ async function perfinNotifyPrefs(perfinPool) {
 // One real-world item, one alert (cycle-8 E3e, ST2): the items among these
 // entries that Perfin PUSHED in the last PUSHED_WINDOW_HOURS (its
 // notification_log rows with that item_key and push_state 'sent' — a push that
-// actually went out). Read-only through perfinPool; standalone or a failed
-// read → none, and the entries notify as before.
+// actually went out) or is HOLDING for quiet hours ('held' — Perfin pushes it
+// when they end; seams audit #4 A6: a dashboard load between quiet hours ending
+// and Perfin's release raised the item here, then Perfin pushed it too). An
+// expired hold isn't counted, so the entry notifies again. Read-only through
+// perfinPool; standalone or a failed read → none, and the entries notify as before.
 const PUSHED_WINDOW_HOURS = 12;
 async function perfinPushedItems(perfinPool, items) {
   const want = [...new Set((items || []).filter(Boolean))];
@@ -87,7 +90,7 @@ async function perfinPushedItems(perfinPool, items) {
   try {
     const r = await perfinPool.query(
       `SELECT DISTINCT item_key FROM notification_log
-        WHERE item_key = ANY($1::text[]) AND push_state = 'sent'
+        WHERE item_key = ANY($1::text[]) AND push_state IN ('sent', 'held')
           AND created_at > now() - make_interval(hours => $2)`,
       [want, PUSHED_WINDOW_HOURS]);
     return new Set(r.rows.map((row) => row.item_key));

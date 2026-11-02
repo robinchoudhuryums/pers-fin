@@ -77,7 +77,11 @@ teller/
                            null when unreadable; cycle-8 E4a)
     plaid-client.js      — Plaid client factory (shared by investments.js +
                            investment-performance.js so the two route modules
-                           don't need a circular require)
+                           don't need a circular require). Every call times out
+                           after PLAID_TIMEOUT_MS (90 s — baseOptions.timeout, which
+                           the SDK passes to axios; seams audit #4 B1: there was no
+                           timeout, so one call that never answered held a sync and
+                           every scheduled job behind it)
     keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
     job-health.js        — Scheduled-job heartbeats + missed-job watchdog. Every
                            startup.js job calls tick(name) BEFORE its activity
@@ -110,7 +114,15 @@ teller/
                            job once; a failed claim runs it anyway. A when() gate
                            (e.g. isUserActive) is checked in memory before the
                            claim — closed → no query, the job stays due. list()
-                           reports { name, everyMs, gated }
+                           reports { name, everyMs, gated, timeoutMs }. Deadlines
+                           (seams audit #4 B1): each run is raced against its
+                           register({ timeoutMs }) or runTimeoutMs (15 min); past it
+                           the runner logs, calls onTimeout(name, ms) and moves on —
+                           the run is abandoned (it keeps going), held in inFlight
+                           until it settles, and a due job still in flight is
+                           skipped, never started twice; the job_runs read and the
+                           claim have a 1-minute deadline (queryTimeoutMs — a timed-
+                           out read → every job due, a timed-out claim → run anyway)
     txn-watermark.js     — Transaction id watermarks with an overlap rescan (cycle-8
                            E2c, ST3) for the "what's new since the last check" reads
                            (runAnomalyCheck, runPaydayLanded): readMark(db) → { id:
@@ -244,7 +256,9 @@ teller/
                            non-SUSPENDED Teller enrollments exist and no cert is
                            configured; local:databases (under the shell) warn when
                            PERSISTENT_DATABASE_URL is unset or the same database
-                           (boot-checks.sameDatabase); local:public-url (info
+                           (boot-checks.sameDatabase — the URLs — or, seams audit #4
+                           A3, poolsShareDatabase — the databases themselves; an
+                           unreadable identity counts as separate); local:public-url (info
                            unset, warn when not a bare https origin); local:api-key
                            (warn unset or < 24 chars); local:shell-secret (< 32);
                            local:plaid-config (with PLAID_CLIENT_ID: fail without
@@ -307,7 +321,13 @@ teller/
                            internal | user_internal | user_ignored);
                            projectCashFlow bills only `bills` and returns both as
                            `forecast_items` (each bill's occurrences, projected
-                           total and next date in the window)
+                           total and next date in the window — the projection's
+                           window, today+1 … today+days, so a bill due today is in
+                           neither: seams audit #4 S3). A transaction's merchant key
+                           is DETECT_KEY_T — merchant-rename.js's TRIMmed DETECT_KEY,
+                           the detectors' own key (S1: an untrimmed copy let a
+                           subscription whose bank name ends in a space be billed AND
+                           averaged)
     cash-alerts.js       — The low projected cash alert (roadmap T2.2 L2):
                            runCashAlerts(pool, { now, today, deps }), run hourly
                            by the "cash-alerts" away job. Off by default (and then
@@ -317,7 +337,12 @@ teller/
                            last_txn_sync_at, last_balance_sync_at, a Plaid item's /
                            Teller enrollment's last_synced_at) is newer than
                            cash_alerts_checked_at or on a new local day; never on
-                           balances older than 36 h (STALE_BALANCE_HOURS) or none;
+                           balances older than 36 h (STALE_BALANCE_HOURS) or none —
+                           every bank-synced spendable account's balance must be
+                           fresh (SYNCED_WITH_BALANCE: Teller or a GOOD Plaid item,
+                           with a balance; the oldest of them and any never stamped —
+                           seams audit #4 S6, it read the newest only); with none of
+                           those (manual / CSV only) the newest balance decides;
                            projects cash_alert_horizon_days with getCashFlowForecast
                            and notifies on the first day below cash_alert_threshold
                            ("Low cash ahead", tag cash-low, /dashboard) + the opt-in
@@ -1066,14 +1091,18 @@ teller/
                            `item` (the linked-task key without "perfin:" — housing:<period>,
                            utility-amount:<id>, still-charging:<sub>:<txn>; a malformed one
                            is ignored): while Per-sistant has an OPEN task for it (not
-                           completed / trashed / detached — itemCovered, read through the
-                           wired Per-sistant pool, fail-soft: standalone or a failed read
-                           pushes) the row is written push_state covered, is_read true, with
+                           completed or trashed — itemCovered calls Per-sistant's own
+                           openLinkedItems, so a task reopened by hand counts too, seams
+                           audit #4 A2; read through the wired Per-sistant pool, fail-soft:
+                           standalone or a failed read pushes) the row is written push_state covered, is_read true, with
                            item_key, and nothing is pushed (`logged` unchanged); order muted
                            → covered → held → sent, covered also beating "push not
                            configured". The release job marks a held row covered when its
                            item's task opened since
     persistent.js        — Per-sistant integration: webhooks, SSO, productivity context
+                           (queryPersistentStats = Per-sistant's /api/stats SQL — no missed
+                           or auto-closed task done, overdue on the APP_TIMEZONE day;
+                           seams audit #4 A5)
                            POST /api/persistent/webhook/test, POST /api/persistent/webhook/send,
                            GET /api/persistent/status, GET /api/persistent/productivity-context,
                            POST /api/sso/generate, POST /api/sso/validate
@@ -1313,6 +1342,11 @@ shell/
                                  (roadmap T1.4); a final flush on shutdown.
                                  start() refuses to boot without a separate
                                  Per-sistant database (boot-checks.js, cycle-8 F26)
+                                 — by URL, then (seams audit #4 A3) by asking both
+                                 pools which database they reached, before either
+                                 app migrates. Shutdown awaits the job in progress
+                                 (waitForJobs, ≤ SHUTDOWN_JOB_WAIT_MS 7 s — seams
+                                 audit #4 B5) before the pools close
   middleware/
     auth.js                    — Shell auth: HMAC-signed cookie session
                                  (SHELL_PIN + SHELL_SECRET) with sliding-window
@@ -1363,42 +1397,66 @@ shell/
                                  NEON_DATABASE_URL (Per-sistant would fall back to /
                                  share Perfin's database, merging the two
                                  user_settings rows and the two AI caps);
-                                 ALLOW_SHARED_DATABASE=true opts in
+                                 ALLOW_SHARED_DATABASE=true opts in.
+                                 sharedDatabaseIdentityProblem({ perfinPool,
+                                 persistentPool, env }) (seams audit #4 A3) — the
+                                 same refusal when both pools reach one database
+                                 under different addresses (Neon's pooler and direct
+                                 hosts, localhost / 127.0.0.1): IDENTITY_SQL reads
+                                 current_database(), its pg_database oid and
+                                 pg_postmaster_start_time(); databaseIdentity /
+                                 poolsShareDatabase (true / false / null — a failed
+                                 read is unknown, never shared)
   views/
-    login.ejs                  — PIN form + biometric button (feature-detected)
-    landing.ejs                — Tile picker (the home-screen app's start page), one
-                                 status line per tile (design D7)
+    login.ejs                  — The opening screen (direction D: the instrument):
+                                 clock readout, the dial around the app icon, a
+                                 monospace status line and a glass keypad. The
+                                 keypad posts the PIN as JSON to POST /login
+                                 (handleLogin answers { ok, redirect } / { error }
+                                 to a JSON body — a plain form post still
+                                 redirects / renders); each digit lights an
+                                 inner tick, a refused PIN shakes the dial red
+                                 with the server's message, a correct PIN (or a
+                                 biometric login) plays the unlock — the outer
+                                 tick ring spins two fast turns and settles, the
+                                 keypad falls away, a gold line sweeps — then
+                                 navigates to the server's same-origin path.
+                                 Without JS: the plain PIN field + Continue
+    landing.ejs                — Tile picker (the home-screen app's start page) on
+                                 the same backdrop, glass tiles, one status line
+                                 per tile (design D7)
   public/
-    landing.css                — Shell-only styles
+    landing.css                — Shell-only styles (login + landing)
     manifest.json              — Unified PWA manifest (mask-crop PNG icons,
                                  not the placeholder SVG it had originally)
-    transition.css             — Per-sistant entry transition (landing tile +
-                                 Perfin nav's cross-app icon). Scoped under
-                                 .atrans-*; cosmic star/nebula backdrop +
-                                 particle-canvas mode styles.
-    transition.js              — Auto-init module: scans for [data-atrans]
-                                 triggers, binds click→activate→navigate.
-                                 Primary effect: particle assembly/disassembly
-                                 of the PWA icon — samples the overlay's
-                                 .atrans-art <img> via canvas getImageData
-                                 (96×96 grid → ~2.5px particles, capped at
-                                 7500 with uniform thinning, dpr-aware up to
-                                 3x) that fly in to assemble the icon, then
-                                 the REAL image crossfades in at full
-                                 resolution (drawImage sharpen — the finale
-                                 is never just the particle mosaic), holds,
-                                 and bursts apart as the image fades back out
-                                 (assemble 950ms / hold 430ms / disperse
-                                 520ms; navigates ~90ms before the end).
-                                 Honors prefers-reduced-motion (instant
-                                 navigation); falls back to the original CSS
-                                 mask reveal if the image isn't ready or the
-                                 canvas is tainted. HYBRID by device
-                                 (prefersLightTransition): desktop (fine
-                                 pointer + wide viewport) runs the particle
-                                 assembly; mobile/touch (coarse pointer OR
-                                 ≤768px) takes the lighter CSS mask reveal —
-                                 the particle field felt heavy on phones.
+    transition.css             — The shell dial and backdrop shared by the login,
+                                 the landing page and the Per-sistant entry
+                                 overlay: warm black + .shell-grain (inline SVG
+                                 noise), .shell-scan, .dial-* (outer 120 ticks
+                                 drifting once a minute, 48 inner progress ticks,
+                                 the arc; is-checking / is-error; .dial-field —
+                                 10 hairline rings around the dial fading
+                                 outward, in place of a soft glow), and the
+                                 unlock under .is-unlocking (dial-burst: 0 →
+                                 734° → 720° in 1.05 s, drift paused, ring and
+                                 field gold, three .dial-ripple rings spreading
+                                 out 0.2 s apart, dial swells). Reduced motion:
+                                 no animation.
+    transition.js              — window.ShellDial (mount(el) builds the dial SVG —
+                                 ticks, arc, ring field, ripples — into a
+                                 [data-dial] element and returns
+                                 setProgress / setState; ticks; reducedMotion)
+                                 and the Per-sistant entry: a click on a
+                                 [data-atrans="dial"] link (the landing tile,
+                                 Perfin's nav cross-app icon) shows #atrans-dial,
+                                 fills the ticks (~260 ms), spins the ring and
+                                 navigates ~950 ms later (straight away under
+                                 prefers-reduced-motion); a bfcache restore
+                                 clears the overlay. CSS-driven, so phones run
+                                 the same effect (it replaced the starfield +
+                                 particle-assembly transition)
+    shell-page.js              — The login / landing clock readout (external —
+                                 the landing page has no inline script)
     perfin-materialize.css     — Iron Man helmet stroke-draw + fill + pulse
                                  ring + particle burst + HUD scan animation
                                  (Perfin entry from landing tile + Per-sistant
@@ -1498,9 +1556,36 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3135 tests as of latest); use
+  Perfin and Per-sistant test files (3204 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3135 tests across 171 test files (incl.
+  Current count: 3204 tests across 177 test files (incl.
+  `tests/opening-screen.test.js` — the opening screen (direction D): POST /login's JSON answer to the keypad
+  (ok + the safeReturnTo'd redirect, 401 / 429 errors, a form post still redirecting / rendering), transition.js run in
+  a vm over a fake DOM (the dial's 120 / 48 ticks and arc, setProgress, the entry overlay's fill → spin → navigate,
+  reduced motion), login.ejs's keypad script in a vm (digits light the dial, Go posts JSON, a refused PIN's message and
+  reset, the unlock navigating to a same-origin path only) and the views / CSS (no starfield or soft light left, the
+  spin and ripple keyframes, the ring field);
+  `tests/seams-audit-4-s5.test.js` — Seams & Invariants audit #4, S4-5: Settings' saveField in a vm (a refused or
+  failed save puts back the value loadSettings marked, a saved change becomes the stored one, every change binding on it)
+  (C2), the emergency-fund note beside the projection (C3), the summary reload un-hiding the cards and a failed reload
+  keeping them (C4) and the Since-you-last-looked balance row with the real fmt and the money classes (C5) — with
+  `apps/per-sistant/tests/seams-audit-4-s5.test.js` (the heatmap's APP_TIMEZONE day, C6);
+  `tests/seams-audit-4-s4.test.js` — Seams & Invariants audit #4, S4-4: itemCovered asking Per-sistant's openLinkedItems
+  (a hand-reopened task covers; the same SQL in both apps; no pool or a failed read → pushed) (A2), perfinPushedItems
+  reading sent and held rows (A6), queryPersistentStats' filters and SQL equal to /api/stats' (A5) and the widget's
+  next_expected::text (A4);
+  `tests/seams-audit-4-s3.test.js` — Seams & Invariants audit #4, S4-3: the forecast's merchant key equal to
+  merchant-rename's TRIMmed DETECT_KEY (S1), a bill due today in neither forecast_items nor the totals (S3), the cash
+  alert skipping on an old or unknown bank-synced balance while manual-only uses the newest (S6), syncAgeIssues — one
+  warning per stale connection, re-auth / disconnected ones not repeated, the global balance stamp only with a Teller
+  connection, the global stamps without connections (S4) — and unrestorableReason + Settings' words (S5);
+  `tests/seams-audit-4.test.js` — Seams & Invariants audit #4, S4-2: the PIN check never naming the length (B4),
+  waitForJobs run in a vm from shell/index.js (done / error / a run that never settles timing out) and shutdown awaiting
+  it before the pools close (B5), the auto-sync start stamp and its slack (B6), the long jobs' 30-minute deadlines and
+  onTimeout's failed outcome (B1), databaseIdentity / poolsShareDatabase / sharedDatabaseIdentityProblem over fake pools
+  and the shell running it before either app migrates, Operator Checks' local:databases on the identity (A3), and the
+  Plaid client's 90 s timeout — the runner's deadline tests are in `tests/cycle8-e2a.test.js` (a hung run reported and
+  skipped while in flight, a hung job_runs read / claim timing out);
   `tests/cycle8-e4b.test.js` — cycle-8 E4b (G3): services/freshness.js's ageInfo edges, overallFreshness (the oldest
   connection wins, a webhook-synced one fresh beside two-day-old global stamps, a re-auth / disconnected one stale and named
   whatever the others' ages, a never-synced one oldest, the global fallback and none at all), the connections SQL and
@@ -1516,8 +1601,8 @@ shell/
   token / SERVER_BACKUPS / a token without it → none), getOperatorChecks → toIssues, db-backup.yml's stamp step last and
   silent, and backup.sh / the migration / reset-fresh keeping the record;
   `apps/per-sistant/tests/cycle8-e3e.test.js` — cycle-8 E3e (ST2), Per-sistant's half of one alert per item:
-  perfinPushedItems (standalone / no items → no query; only push_state sent within 12 h for these items; a failed read
-  → none), annotateNotify marking an item Perfin pushed notify:false while keeping the entry, housingItem (the month of
+  perfinPushedItems (standalone / no items → no query; push_state sent or held — seams audit #4 A6 — within 12 h for
+  these items; a failed read → none), annotateNotify marking an item Perfin pushed notify:false while keeping the entry, housingItem (the month of
   the line's due date), openLinkedItems (open untrashed tasks for these keys, fail-soft) and housingDueUnlessTask hiding
   the line only for its own month's task, and GET /api/notifications/check (housing_due with its item and notify:false
   once Perfin pushed it; left out while its task is open, the task's own entry carrying the item);
@@ -2594,7 +2679,16 @@ shell/
   /api/operator-checks and data-health). Since E4b, operator-freshness-e4b (a Plaid item synced 15 minutes ago fresh
   through GET /api/data-freshness while last_txn_sync_at is 48 h old; a second item 30 h old → stale naming it, a CSV item
   and a suspended enrollment never counted; a re-auth code → reason reauth; data-health listing the same connections).
-  330 tests, run
+  Since seams audit #4 S4-2, seams4-s4-2 (one scratch database under localhost and 127.0.0.1 read as one database by
+  the boot identity check — the URL check alone says two — the scratch and admin databases as two, an unreachable one
+  as unknown). Since S4-3, seams4-s4-3 (a "HULU " subscription billed and out of the spending average; a 72-hour-old
+  bank-synced balance beside a fresh one skipping the cash alert, an unstamped one too, a manual account ignored; each
+  deleted row's restorable and reason agreeing with the restore route). Since S4-4, seams4-s4-4 (both apps' real
+  databases: a hand-reopened linked task covering Perfin's push and open to Per-sistant, a trashed one neither; held /
+  sent pushes counted and expired / muted not; Perfin's embedded stats equal to /api/stats with a missed, an
+  auto-closed and a due-today task; the widget's date the stored day). Since S4-5, seams4-s4-5 (Per-sistant's heatmap: a
+  03:00 UTC completion on the previous day under America/Los_Angeles, the same day under UTC and an unknown zone).
+  340 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2752,7 +2846,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 91 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN — the dial shaking red / spinning up before Per-sistant loads — the dial lighting a step per digit, post-login default, Perfin's cross-app link opening Per-sistant through the dial overlay), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 93 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
 a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back, and Settings → Quiet Hours & Muting (cycle-8 E3c): quiet hours and a mute saved and read back, and Per-sistant's Settings link to it, and the nav sync badge (cycle-8 E4b): its level class and aria-label, and a click landing on Sync Health). Since cycle-8 E5a (ST4) `e2e/behaviour.spec.js` holds BEHAVIOUR tests: each does one key action on the page and checks the new state on the page, in the API and after a reload, then puts it back (through the app's own undo where there is one) — Activity rename + note, reimbursed, a duplicate deleted and brought back by the toast's Undo, Review Uncategorized Apply (no rule with Remember off), a manual bill marked paid on the Calendar and unmarked, a budget's rollover on and off, a rent payment recorded and undone, a subscription cancelled and restored, and (E5b) a credit score logged and removed, the theme switched (and still applied after a reload without the browser's copy), a dashboard widget switched off and on, a Settings switch whose save is refused going back while a saved one stays (the 400 routed with `page.route`), and Mark all read on the bell, and (E5c, Per-sistant) a note pinned through its dialog and unpinned, a todo's subtask ticked and the todo completed — the toast's Undo reopening it — completed again, reopened and unticked, today's habit marked done (the streak 1 → 2, the week grid) and unmarked, and a Job Radar listing saved (Saved view) and unsaved; each acts only on rows it creates under a unique "E5 … <tag>" name (its own "E5 Wallet" manual account) — the bell test's one unread notification and the job test's one listing are inserted straight into the databases (no route creates either) and, like the habit (the API only archives one), deleted directly afterwards, the listing's source trust put back. The login / page-problem helpers live in `e2e/helpers.js`; the seed runs once per run (`ensureSeeded` in seed.js — both spec files call it); the config runs ONE worker (`workers: 1`) so the behaviour file never runs beside the click sweep. The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
@@ -3354,7 +3448,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   each a link through `withBase`, or "✓ Nothing needs attention"). Skeletons while it
   loads; a failed load is one line ("The summary couldn't be loaded — the rest of the
   dashboard is below.") and the rest of the page loads as before; a part that failed
-  shows its own sentence. Not a Settings widget toggle.
+  shows its own sentence. A reload (after a forecast change) that succeeds shows the cards again; one that fails
+  keeps the summary already shown and toasts (seams audit #4 C4). Not a Settings widget toggle.
   **Order and density (design D4, decisions 6 / 7 / 15):** top to bottom — the summary,
   the sync strip (and the CSV-reminder / budget-alert banners), Since you last looked,
   Review Uncategorized, Your plan (roadmap T4.1 A2), the two charts, Accounts (the sync buttons and stat cards with
@@ -3525,7 +3620,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   |Δ| < $0.01). Each balance row carries `account_type`, `is_debt` (credit /
   loan) and `favorable` (for debt a DECREASE is good — DD-6), which the widget
   and both digest renderers use for colour, sign and an " owed" suffix
-  (negatives print as `-$X`, not `$-X`),
+  (negatives print as `-$X`, not `$-X`; the widget's rows go through `fmt` and the money classes — money in
+  green, a debt that rose or a cash balance below $0 red, otherwise the default colour, seams audit #4 C5),
   new subscriptions, and recent notifications since `last_dashboard_view_at`.
   Backed by `GET /api/whats-new`; advances the watermark 4 s after first
   render via `POST /api/whats-new/seen` so a quick nav-away doesn't lose
@@ -3677,7 +3773,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   spendable cash is projected to fall below a floor (`cash_alert_threshold`, default
   $500) within a look-ahead (`cash_alert_horizon_days`, 7–60, default 14), plus the
   opt-in critical-alert email. Checked hourly when new bank data arrived, else once a
-  local day; never on balances more than 36 hours old. Once per breach, again when it
+  local day; never while any bank-synced checking / savings balance is more than 36 hours old
+  (seams audit #4 S6 — one fresh account no longer hides another's stale one). Once per breach, again when it
   moves 3+ days earlier or after 72 hours; recovery is silent, and a dip that returns
   within 72 h of the last alert is held too unless it is 3+ days earlier (cycle-8 F11).
   Changing a Cash Alerts setting or an account floor makes the next hourly check run
@@ -4099,12 +4196,12 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   30 s old (cycle-8 F33).
 - **Tile-click + cross-app transition animations (unified shell)**: the
   same Iron Man materialize plays when entering Perfin from the landing
-  tile or from Per-sistant's nav cross-app icon; a parallel cosmic mask-
-  crop reveal (scan-line + nebula + rising particles) plays when entering
-  Per-sistant from the landing tile or Perfin's nav cross-app icon.
-  Implemented as shared shell static modules (`shell/public/
+  tile or from Per-sistant's nav cross-app icon; entering Per-sistant from
+  the landing tile or Perfin's nav cross-app icon plays the shell dial's
+  unlock — the same spin as a correct PIN on the login (the opening screen,
+  direction D). Implemented as shared shell static modules (`shell/public/
   perfin-materialize.{css,js}` and `transition.{css,js}`) wired via
-  `data-perfin-materialize` / `data-atrans="cosmic"` attributes.
+  `data-perfin-materialize` / `data-atrans="dial"` attributes.
 - **Branding (Perfin)**: Iron Man helmet logo (SVG traced from PNG) — nav
   bar icon (CSS mask), standalone Perfin PWA icon, login animation source.
 - **Branding (unified shell PWA)**: mask-crop PNG (1024×1024). Served from
@@ -4250,7 +4347,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   Every switch saved through `updateSetting` goes through `saveToggle(box, key)` (the keep-alive wrapper around
   `updateSetting` passes its result on — it dropped it, so every SAVED switch flipped back too, cycle-8 E5b): a save the server
   refused or that never reached it puts the switch back (cycle-8 F38 — it stayed flipped); the
-  insight-module and dashboard-widget switches revert the same way.
+  insight-module and dashboard-widget switches revert the same way. The selects and boxes that save on change go
+  through `saveField(el, key, value)` (seams audit #4 C2): `markSavedFields` stores each one's loaded value as
+  `data-saved`, a save moves it on, and a refused or failed save puts it back (`SAVED_FIELDS` lists them).
 - **"Last synced" nav badge** (Phase D; cycle-8 E4b, G3): top nav shows "Synced 47m ago",
   coloured by a level class — quiet when fresh (<6h), yellow when aging (6-24h), red when
   stale (>24h). Since E4b it reads `GET /api/data-freshness`'s `overall`
@@ -4299,7 +4398,12 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   one with `plaid_items.last_error_code` set — BSI-10; that issue carries
   `link: "/accounts"`, which Sync Health and the dashboard strip render as a link
   to the Re-authenticate button — G3), a derived
-  `issues[]` list (disconnected links, stale balances, never-synced, plus the
+  `issues[]` list (disconnected links, stale balances, never-synced — with bank
+  connections, one "<bank> (Plaid|Teller) hasn't synced in over 24h" per connection whose own
+  `last_synced_at` is stale, the badge's rule (`syncAgeIssues`, seams audit #4 S4: the global
+  stamps a webhook sync never moves made a webhook-only setup read stale here); the global
+  balance warning only while a Teller connection exists; the global stamps only without
+  connections — plus the
   per-item errors from the most recent sync run — see `last_sync_result` below),
   scheduled jobs whose last run FAILED (jobs[].last_status / last_error — F8)
   and the operator checks' warnings (cycle-7 G1 + ST4 — tagged `source:'operator'`
@@ -4364,9 +4468,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   puts the control back. Under the shell the settings cover Per-sistant too (see the Per-sistant
   Integration section). **One item, one alert (cycle-8 E3d, ST2):** the rent, utility-amount
   and still-charging pushes name their item; while Per-sistant has an open linked task for it
-  (Per-sistant Tasks on), the push isn't sent — the bell row is written read as "covered".
+  (Per-sistant Tasks on — open as Per-sistant itself reads it, a task reopened by hand included,
+  seams audit #4 A2), the push isn't sent — the bell row is written read as "covered".
   The other way round (cycle-8 E3e): Per-sistant raises no browser notification for an item
-  Perfin pushed in the last 12 hours.
+  Perfin pushed in the last 12 hours, or is holding for quiet hours (seams audit #4 A6).
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
   styles, WCAG AA contrast-compliant text colors. Modals and the bell panel go through the
   shared `openDialog` / `watchDialog` (focus trap, Esc, focus restore — IF-1); form controls
@@ -4599,15 +4704,19 @@ shared session cookie. Cross-app surface area today:
   Perfin's section under the shell. Since cycle-8 E3e each entry also names its
   `item` (a linked task's source_key without `perfin:`; housing_due's
   `housing:<month of its due date>`), and an item Perfin pushed in the last 12
-  hours (`perfinPushedItems` — notification_log push_state sent, read-only) is
-  `notify: false` — one interruption per item across the two apps.
+  hours (`perfinPushedItems` — notification_log push_state sent, or held for
+  quiet hours, read-only — seams audit #4 A6) is `notify: false` — one
+  interruption per item across the two apps.
 - **Productivity context** (`GET /api/persistent/productivity-context`):
   task/review stats from Per-sistant (embedded fast-path queries Per-sistant's
-  pool via `queryPersistentStats` / `queryPersistentReview`; HTTP fetch is the
+  pool via `queryPersistentStats` — the same SQL as Per-sistant's `/api/stats`
+  since seams audit #4 A5 — / `queryPersistentReview`; HTTP fetch is the
   standalone fallback). Nothing in Perfin calls it today — the AI insights
   prompt does not include it (seams audit #3; an endpoint for external use).
 - **Per-sistant's Perfin widget** (`GET /api/perfin/stats`): symmetric — the
-  embedded fast-path queries Perfin's `detected_subscriptions` directly;
+  embedded fast-path queries Perfin's `detected_subscriptions` directly
+  (`next_expected::text` — the calendar day, whatever the server's zone; seams
+  audit #4 A4);
   HTTP fetch is the standalone fallback. The fallback now correctly
   unwraps Perfin's `{subscriptions, summary}` response shape (an earlier
   version assumed a bare array and crashed silently, so the widget always
@@ -4864,7 +4973,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3135 tests passing across 171 test files (Perfin 2395 + Per-sistant 740), plus the real-Postgres route contract suite (330 tests; CI `migrations` job, `npm run test:contract`) and 91 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
+- 3204 tests passing across 177 test files (Perfin 2461 + Per-sistant 743), plus the real-Postgres route contract suite (340 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5046,7 +5155,9 @@ DELETE /api/transactions/:id # delete a single transaction (deduplication tool);
 GET  /api/deleted-transactions # deleted transactions, newest first (query: limit 1-200
                             # default 50, before = the previous page's `next`) →
                             # { items: [{ transaction_id, deleted_at, source, legacy,
-                            # restorable, date, merchant, amount, account_name,
+                            # restorable, unrestorable_reason (removed_by_bank |
+                            # account_gone | never | null — restore's refusals, per row,
+                            # seams audit #4 S5), date, merchant, amount, account_name,
                             # splits_count, batch_id }], next, batches: [{ batch_id, count,
                             # deleted_at, restorable }] } — every Resolve batch still holding a
                             # row (restorable: not bank-removed, its account still linked),
@@ -5699,7 +5810,7 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 
 ### Databases (one per sub-app)
 - `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
-- `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments. **Required under the unified shell, and it must name a different database from `NEON_DATABASE_URL`** — the shell refuses to start otherwise (cycle-8 F26, `shell/boot-checks.js`: the fallback used to migrate both apps into one database, merging their single-row `user_settings` and the two separate AI caps).
+- `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments. **Required under the unified shell, and it must name a different database from `NEON_DATABASE_URL`** — the shell refuses to start otherwise (cycle-8 F26, `shell/boot-checks.js`: the fallback used to migrate both apps into one database, merging their single-row `user_settings` and the two separate AI caps). Two different URLs that reach the same database (Neon's pooler and direct hosts) are refused too — the shell compares the databases themselves before either app migrates (seams audit #4 A3).
 - `ALLOW_SHARED_DATABASE` — `true` to run both apps in ONE database under the shell on purpose (skips the check above). Unset in every documented deployment.
 - `TOKEN_ENCRYPTION_PASSPHRASE` — passphrase for encrypting access tokens at rest. **Required — boot fails without it** (escape hatch: `ALLOW_MISSING_TOKEN_PASSPHRASE=true` for local debug with no bank links).
 
@@ -6585,7 +6696,14 @@ watchdog) carry a `when: isUserActive` gate checked in memory before the claim: 
 the user is away they cost no query and stay due, and run at the first check after
 the user returns. The away channels carry none (INV-77). A job's own gates,
 watermarks, memos and outcome are unchanged. `stopBackgroundJobs` stops the runner
-(a check in progress finishes its current job). Test seam: `startup._scheduler`.
+(a check in progress finishes its current job; the shell's shutdown waits up to 7 s
+for it — seams audit #4 B5). Test seam: `startup._scheduler`. **Deadlines (seams audit
+#4 B1):** a run that hasn't finished in 15 minutes (30 for bank-auto-sync,
+self-healing-reconcile and insights-auto-trigger — `LONG_JOB_TIMEOUT_MS`) is recorded as
+a failed run ("didn't finish within N minutes" — Sync Health shows it, the uptime
+heartbeat pings /fail) and the runner moves on; the run keeps going in the background and
+the job isn't started again until it has settled — one hung call used to stop every job
+behind it, the watchdog included.
 **Single-flight (PSC-12).** `syncAllTransactions`, `syncAllBalances` and
 `runCategorize` keep a module-level in-flight promise: a caller that arrives
 while a run is in progress (the 6-hourly insights chain and the bank auto-sync
@@ -6625,7 +6743,11 @@ second one (which re-sent the same uncategorized rows to Claude).
   sync (free rule + Teller-map paths over the whole backlog + a bounded AI
   batch) so the uncategorized count doesn't pile up between the 30-day AI-
   insights cadence runs. Updates `last_auto_sync_at` on every
-  check (success or partial failure).
+  check (success or partial failure) — to the time the run STARTED, written once
+  it's over (seams audit #4 B6: stamping the end made a run longer than the
+  runner's 5-minute check not due an interval later, so an hourly sync ran every
+  2 hours); due when that start is at least the interval minus 2 minutes ago
+  (`AUTO_SYNC_DUE_SLACK_MS`).
   Push notification only fires when at least one transaction was added, at
   least one balance actually CHANGED (`syncAllBalances` `accounts_changed`,
   computed in the balance UPDATE via a `WITH prev AS (…)` CTE and
@@ -7430,19 +7552,32 @@ SX3-pinned — the Sheets Income tab.
 **Seams & Invariants audit #4 (2026-11-02 — `.cycle/blocks/8-seams4-audit.md`, plan `.cycle/plan-seams4.md`):**
 24 findings in five batches. S4-1 (A1 push_state 'none' when nothing was delivered, B2 Sync Health reads only the
 watched jobs, S2 rename-rule re-key one survivor per cadence in one transaction, B3 a Perfin-only backup warns under
-the shell, C1 the contribution-limits Save) is done. Open: S4-2 (B1 a job that never settles stops every job — no
-per-run deadline, no Plaid client timeout; B5 shutdown doesn't await the running job; B6 bank auto-sync stamps at the
-end of its run; B4 the PIN check states SHELL_PIN's exact length — an INV-126 gap; A3 the shared-database check
-compares hostnames), S4-3 (S1 the forecast's merchant key isn't trimmed; S3 a bill due today is listed but not
-projected; S6 the cash alert's stale gate reads the newest balance; S4 data-health's sync warnings read the global
-stamps; S5 a deleted row's `restorable` ignores the bank-removed / gone-account rules), S4-4 (A2 the two apps'
-"open linked task" predicates differ on source_detached; A6 a held push isn't counted by Per-sistant's check; A5
-queryPersistentStats counts auto-closed tasks; A4 the Perfin widget sends a Date), S4-5 (C2 a refused select / number
-save keeps the refused value; C3 the emergency-fund note dropped beside a projection; C4 the summary cards stay hidden
-after a failed first load; C5 Since-you-last-looked amounts print "$-X"; C6 Per-sistant's heatmap uses the UTC day).
+the shell, C1 the contribution-limits Save) and S4-2 (B1 a deadline per scheduled run + a 90 s Plaid timeout, B5
+shutdown waits for the running job, B6 auto-sync stamps its start time, B4 no PIN length in the operator check, A3 the
+databases' identity compared at boot) and S4-3 (S1 the forecast's TRIMmed merchant key, S3 one window for the totals
+and forecast_items, S6 the cash alert gates on the oldest bank-synced balance, S4 Sync Health's sync warnings follow the
+connections, S5 per-row restorable + unrestorable_reason) and S4-4 (A2 one "open linked task" predicate — Per-sistant's
+openLinkedItems — in both apps, a task reopened by hand counting; A6 a held Perfin push counted by Per-sistant's check;
+A5 queryPersistentStats on /api/stats' SQL; A4 the Perfin widget's next_expected as text) and S4-5 (C2 a refused Settings
+select / box save puts the stored value back; C3 the emergency-fund note beside the projection; C4 a summary reload
+un-hides the cards, a failed reload keeps them; C5 Since-you-last-looked amounts through fmt and the money classes; C6
+Per-sistant's heatmap on the APP_TIMEZONE day) are done — every batch of audit #4 is done. S4-5 follow-ons: Per-sistant
+Analytics' completed / created per day, by-weekday chart and week / month window still group by UTC day; Settings'
+cash-floor and budget-cap boxes keep a refused typed value (a Save-button form); a refused Settings save puts back the
+value this page last loaded or saved (another tab's change since shows after a reload).
 S4-1 follow-ons: with GITHUB_OPS_TOKEN set (no SERVER_BACKUPS) the GitHub backup check can't see a Perfin-only
 backup; a rename re-key keeps only the survivor's user state (a displaced row's notes / dismissed state are dropped
-when the survivor has its own); a rename rule's transaction holds its rows' locks until COMMIT. OPERATOR: set the
+when the survivor has its own); a rename rule's transaction holds its rows' locks until COMMIT. S4-2 follow-ons: a
+run past its deadline is abandoned, not stopped (its writes still land), and a sync that legitimately takes over 30
+minutes is recorded as a failed run; there is no heartbeat check for the runner itself no longer checking (a check can't
+hang any more — its queries have deadlines). S4-3 follow-ons: a bank-synced account whose balance stops updating (a
+closed account still linked) keeps the low cash alert skipped until it syncs or is removed — there is no "leave this
+account out" control; the link exchanges don't stamp a connection's last_synced_at, so a newly linked bank shows "has
+no complete sync recorded yet" in Sync Health until the next scheduled sync. S4-4 follow-ons: a task reopened by
+hand keeps covering Perfin's push for its item until it is completed or trashed; if Perfin's release job never runs
+(the host asleep past quiet hours) Per-sistant stays quiet on a held item until the hold expires (≤ 12 h);
+queryPersistentReview still counts an auto-closed task as completed this week and uses the server's local week.
+OPERATOR: set the
 `PERSISTENT_DATABASE_URL` repository secret for Database Backup (Operator Checks warns until a backup dumps both).
 
 **Cycle 8 (late-Oct 2026 broad scan) — open until their batches run** (the scan's
@@ -7507,8 +7642,8 @@ Batch 8 follow-ons: only the IN-list CHECKs in `CHECK_LISTS` (tax_documents form
 webhook_events provider / status, and since E1a recurring_transfers forecast_treatment) are kept in step — the rest of the schema's IN-list CHECKs are
 still frozen at first creation; a replaced CHECK is added NOT VALID, so rows written before it
 aren't re-checked; Per-sistant's calendar projection starts its window at UTC midnight (a day early
-east of UTC — cosmetic); DATE values Per-sistant reads through perfinPool (finance search, the
-Perfin widget, housingDue) are still Perfin's Dates; a landing line can be up to 30 s stale.
+east of UTC — cosmetic); DATE values Per-sistant reads through perfinPool in housingDue are still Perfin's Dates
+(finance search and the Perfin widget read them as text — seams audit #4 A4); a landing line can be up to 30 s stale.
 
 **Cycle-8 expansion E1 (done — E1a–E1c, `.cycle/plan-e1-forecast-corrections.md`; E2–E5 done — see
 `.cycle/plan-cycle8-expansion.md`):** forecast corrections (G1) and undoing a whole CSV-overlap Resolve (G5).
@@ -8338,20 +8473,23 @@ INV-141 | Bank webhooks are visible without ever exposing a payload: GET /api/da
 INV-140 | A Teller webhook is a trigger, not data: transactions.processed syncs only the enrollment(s) it names (by enrollment id or its transactions' account ids — never a SUSPENDED one) through the same syncOneTellerEnrollment the scheduled sync loops, coalesced per enrollment, recording nothing global (the enrollment's last_synced_at only), then ONE runPostSyncSteps; enrollment.disconnected changes only a GOOD enrollment and notifies once per transition | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w5.test.js + tests/contract/webhooks-w5.contract.test.js
 INV-139 | Plaid webhooks are opt-in by PUBLIC_URL alone (hosting.webhookBaseUrl — never RENDER_EXTERNAL_URL): without it no link token carries a webhook and registration is a 400; a clean sync never clears a webhook's advance warning (PENDING_EXPIRATION / PENDING_DISCONNECT — setPlaidItemErrorCode keepWarnings), only a re-authentication does; an ITEM ERROR sets the signal only for a re-auth code | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w4.test.js + tests/contract/webhooks-w4.contract.test.js
 INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs only the named GOOD item, through the same syncOnePlaidItem the scheduled sync loops, under withPlaidTxnLock and coalesced per item (a request during its run → one more round, never a parallel walk); it records nothing global (no last_txn_sync_at / last_sync_result — the item's last_synced_at only, stamped when the walk reached the end of the cursor) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w3.test.js + tests/contract/webhooks-w3.contract.test.js
-INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit — the landed check's tag looked up in notification_log across its 24 h overlap, cycle-8 F51, on an id watermark since E2c) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4 + tests/contract/c8-batch4 + tests/contract/txn-watermark-e2c
+INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low alert while any bank-synced spendable balance is older than 36 h or unknown (seams audit #4 S6) and no account-floor alert on that account's balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit — the landed check's tag looked up in notification_log across its 24 h overlap, cycle-8 F51, on an id watermark since E2c) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4 + tests/contract/c8-batch4 + tests/contract/txn-watermark-e2c
 INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included — and a routes/ai.js feature then answers 422 { ai_refusal }, never an empty 200, cycle-8 F24); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4 + apps/per-sistant/tests/broad-scan-c8-batch6 (F24)
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
-INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4), all under one batch_id, and a batch restore runs each row through the same restore in one transaction — a refused row stays deleted (cycle-8 E1c); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3 + tests/cycle8-e1c.test.js + tests/contract/resolve-undo-e1c
+INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4), all under one batch_id, and a batch restore runs each row through the same restore in one transaction — a refused row stays deleted (cycle-8 E1c); the list's per-row restorable applies the same refusals (seams audit #4 S5); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3 + tests/cycle8-e1c.test.js + tests/contract/resolve-undo-e1c
 INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js
 INV-147 | The dashboard summary has one definition per figure, each the helper its own screen uses — net worth = the latest net_worth_snapshots row (written only through getNetWorth); spending = getBudgetStatus (GET /api/budgets); lowest cash = getCashFlowForecast (GET /api/cash-flow); bills due = getBillsDue (the /api/forecast charges via forecastCharges + the bill calendar's manualBillOccurrences, less bill_payments); rent owed = getHousingOwed (the ledger's ledgerTotals, payee-scoped); uncategorized = countUncategorized (/api/categorize/status); Sync Health = gatherDataHealth (/api/data-health) — no figure is re-derived in routes/dashboard-summary.js; every part is fail-soft with a fixed sentence and the page still loads when the whole request fails; attention links are same-app paths joined with withBase; the shell landing page's Perfin line reads the same gatherDashboardSummary in-process (its parts option — rent / bills / uncategorized only), never an HTTP self-fetch | Subsystem: Financial Analytics / Web UI | Verify: tests/design-d3.test.js + tests/design-d7.test.js + tests/contract/dashboard-summary.contract.test.js + e2e/pages.spec.js
-INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only. Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
+INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only (the dashboard's "Since you last looked" rows too — seams audit #4 C5). Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
 INV-149 | A linked task follows its source without ever overriding the user: one sync at a time (a transaction under pg_advisory_xact_lock(727274010), creations announced only after COMMIT); a key deleted for good is never inserted again (linked_task_tombstones, db/031's BEFORE DELETE trigger on every delete path); a task is closed only when its source says the item is resolved — a still-open item past the creation window is retained, not closed; an auto-close is not a completion (no todo_completed event, and analytics / the weekly review / Ask / stats leave it out); a task completed, reopened, edited or trashed by hand is never touched (source_detached, per-field snapshot) | Subsystem: Per-sistant Backend / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x1a + x1b + broad-scan-c8-batch5 + tests/broad-scan-c8-batch5 + tests/contract/linked-tasks / linked-tasks-crossapp / c8-batch5
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — and the sinking funds and subscription review — A9, the dates from cadence.js — and the contribution room — A10, from contributions recorded in investment_flows against limits the user entered — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged ; a what-if in Ask (A10) is whatIfPlan — buildAdvicePlan on inputs changed by applyWhatIf, never the model's arithmetic | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 / a9 / a10 + tests/contract/advice-a1
 INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes sets those columns (never the detectors; a rename re-key only copies the user's own setting from the row it retires onto the surviving row still on the default — E1 follow-on) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/cycle8-e1-followons.test.js + tests/contract/forecast-e1a + e1-followons
 INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read ; the dashboard's "Since you last looked" follows the mark-before-read and forward-only rules without the overlap — /seen stores the mark its GET read (seen_token, cycle-8 E2d), never now() | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/cycle8-e2d.test.js + tests/contract/txn-watermark-e2c + whats-new-e2d + c8-batch4
-INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push — 'sent' only once a device received it, 'none' when nothing was delivered (seams audit #4 A1); a held push is released once quiet hours end — marked sent only after the push reached a device, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d); Per-sistant's check marks notify:false an item Perfin pushed (push_state sent) in the last 12 hours, still listed, and housing_due steps aside only for its own month's open task (cycle-8 E3e) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js + apps/per-sistant/tests/cycle8-e3e.test.js + tests/contract/notify-e3e.contract.test.js
-INV-154 | Freshness has one definition — services/freshness.js (readConnections / overallFreshness / connectionFreshness) behind Sync Health's connection list (gatherDataHealth), GET /api/data-freshness and the nav badge; the badge never shows a fresher age than the oldest active bank connection's own last_synced_at, a connection needing re-authentication or disconnected makes it stale ("Reconnect <bank>"), and the global user_settings stamps are read only when no connection exists; colour comes from a level class, never an inline style (cycle-8 E4b) | Subsystem: Settings, Notifications & Cross-app / Web UI | Verify: tests/cycle8-e4b.test.js + tests/contract/operator-freshness-e4b + e2e/pages.spec.js
+INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push — 'sent' only once a device received it, 'none' when nothing was delivered (seams audit #4 A1); a held push is released once quiet hours end — marked sent only after the push reached a device, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task (Per-sistant's own openLinkedItems — not completed, not trashed; a task reopened by hand counts, seams audit #4 A2) is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d); Per-sistant's check marks notify:false an item Perfin pushed or is holding (push_state sent or held — seams audit #4 A6) in the last 12 hours, still listed, and housing_due steps aside only for its own month's open task (cycle-8 E3e) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js + apps/per-sistant/tests/cycle8-e3e.test.js + tests/contract/notify-e3e.contract.test.js + tests/seams-audit-4-s4.test.js + tests/contract/seams4-s4-4
+INV-155 | A scheduled job runs when it is due and once across processes: services/job-runner.js claims it with a conditional UPSERT of job_runs.last_ran_at (≥ 90% of the cadence old — a failed claim runs it anyway), checks a when() gate in memory before any query, runs due jobs one at a time; every run has a deadline (register timeoutMs, else 15 min; the runner's own queries 1 min) — past it the run is reported through onTimeout as a failed outcome, abandoned and never started again until it has settled (seams audit #4 B1) | Subsystem: Platform, Shell & Auth | Verify: tests/cycle8-e2a.test.js + tests/cycle8-e2b.test.js + tests/seams-audit-4.test.js + tests/contract/job-runner-e2a + scheduler-e2b
+INV-156 | Under the shell the two apps never share a database unless ALLOW_SHARED_DATABASE=true: start() refuses PERSISTENT_DATABASE_URL unset or naming the same host + port + database (sharedDatabaseProblem) and, before either app migrates, two pools whose database identity (name, oid, server start time) is the same (sharedDatabaseIdentityProblem — an unreadable identity is unknown, never shared); Operator Checks' local:databases applies both | Subsystem: Platform, Shell & Auth | Verify: tests/broad-scan-c8-batch1.test.js + tests/seams-audit-4.test.js + tests/contract/seams4-s4-2
+INV-154 | Freshness has one definition — services/freshness.js (readConnections / overallFreshness / connectionFreshness) behind Sync Health's connection list (gatherDataHealth), GET /api/data-freshness and the nav badge; the badge never shows a fresher age than the oldest active bank connection's own last_synced_at, a connection needing re-authentication or disconnected makes it stale ("Reconnect <bank>"), and the global user_settings stamps are read only when no connection exists — Sync Health's "haven't synced" warnings included (seams audit #4 S4); colour comes from a level class, never an inline style (cycle-8 E4b) | Subsystem: Settings, Notifications & Cross-app / Web UI | Verify: tests/cycle8-e4b.test.js + tests/seams-audit-4-s3.test.js + tests/contract/operator-freshness-e4b + e2e/pages.spec.js
+INV-157 | A Settings save's result reaches every updateSetting wrapper (the keep-alive wrapper passes it on), and a save the server refused or that never reached it puts the control back: a switch through saveToggle (and the insight-module / dashboard-widget switches), a select / box that saves on change through saveField — to the value loadSettings marked (data-saved) or the last saved one (cycle-8 F38 / E5b, seams audit #4 C2) | Subsystem: Web UI | Verify: tests/broad-scan-c8-batch7.test.js + tests/seams-audit-4-s5.test.js + e2e/behaviour.spec.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

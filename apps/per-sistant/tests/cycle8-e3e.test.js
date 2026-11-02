@@ -30,7 +30,7 @@ describe("perfinPushedItems", () => {
     const got = await perfinPushedItems(pool, ["housing:2026-10", undefined, "housing:2026-10", "utility-amount:7"]);
     assert.deepEqual([...got], ["housing:2026-10"]);
     assert.equal(PUSHED_WINDOW_HOURS, 12);
-    assert.match(calls[0][0], /FROM notification_log\s+WHERE item_key = ANY\(\$1::text\[\]\) AND push_state = 'sent'\s+AND created_at > now\(\) - make_interval\(hours => \$2\)/);
+    assert.match(calls[0][0], /FROM notification_log\s+WHERE item_key = ANY\(\$1::text\[\]\) AND push_state IN \('sent', 'held'\)\s+AND created_at > now\(\) - make_interval\(hours => \$2\)/);
     assert.deepEqual(calls[0][1], [["housing:2026-10", "utility-amount:7"], 12]);
   });
   it("a failed read is an empty set (fail-soft)", async () => {

@@ -158,7 +158,7 @@ describe("F15 — Rent & Utilities reminders reach an away user", () => {
     const body = src.slice(src.indexOf("async function runHousingLedgerTick()"));
     assert.doesNotMatch(body.slice(0, body.indexOf("\n}\n")), /isUserActive\(\)/);
     // Cycle-8 E2b: scheduled by the job runner, every 6 hours, with no activity gate.
-    assert.deepEqual(scheduled("housing-ledger"), { name: "housing-ledger", everyMs: 6 * 60 * 60 * 1000, gated: false });
+    assert.deepEqual(scheduled("housing-ledger"), { name: "housing-ledger", everyMs: 6 * 60 * 60 * 1000, gated: false, timeoutMs: 15 * 60 * 1000 });
     let gen = 0, rem = 0;
     housing.generateHousingObligations = async () => { gen++; return { generated: 0 }; };
     housing.runHousingReminders = async () => { rem++; return { sent: 1 }; };

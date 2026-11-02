@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Choose a tool</title>
-  <meta name="theme-color" content="#0c0e14">
+  <meta name="theme-color" content="#0a0907">
   <link rel="manifest" href="/manifest.json">
   <!-- Home-screen icons: served from the shell at root paths so iOS's
        "Add to Home Screen" from the landing page uses the mask-crop
@@ -16,29 +16,31 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="stylesheet" href="/shell-static/landing.css">
-  <link rel="stylesheet" href="/shell-static/transition.css?v=2">
+  <link rel="stylesheet" href="/shell-static/landing.css?v=3">
+  <link rel="stylesheet" href="/shell-static/transition.css?v=3">
   <link rel="stylesheet" href="/shell-static/perfin-materialize.css?v=2">
 </head>
 <body class="landing-body">
+  <div class="shell-grain" aria-hidden="true"></div>
   <main class="landing">
     <header class="landing-header">
-      <h1>What are we doing today?</h1>
+      <p class="shell-readout" id="shell-clock" aria-hidden="true"></p>
       <form method="POST" action="/logout" class="logout-form">
         <button type="submit" class="logout-btn" aria-label="Sign out">Sign out</button>
       </form>
     </header>
+    <h1>What are we doing today?</h1>
     <div class="tiles">
       <a href="/perfin" class="tile" data-perfin-materialize>
-        <div class="tile-icon">$</div>
+        <div class="tile-icon tile-icon-perfin" aria-hidden="true"></div>
         <h2>Perfin</h2>
         <p>Personal finance, transactions, and AI insights.</p>
 <% if (typeof status !== 'undefined' && status && status.perfin) { %>
         <p class="tile-status"><%= status.perfin %></p>
 <% } %>
       </a>
-      <a href="/per-sistant" class="tile" data-atrans="cosmic">
-        <div class="tile-icon">&#10003;</div>
+      <a href="/per-sistant" class="tile" data-atrans="dial">
+        <img class="tile-icon" src="/android-chrome-192x192.png?v=2" alt="" aria-hidden="true" width="48" height="48">
         <h2>Per-sistant</h2>
         <p>Tasks, notes, scheduled emails.</p>
 <% if (typeof status !== 'undefined' && status && status.persistent) { %>
@@ -48,23 +50,17 @@
     </div>
   </main>
 
-  <!-- Tile-transition overlay (lazy-activated on click of a [data-atrans] tile).
-       Decorations (stars, rising particles) are populated by transition.js
-       on init. -->
-  <div class="atrans-overlay atrans--cosmic" id="atrans-cosmic" aria-hidden="true">
-    <div class="atrans-particles"></div>
-    <div class="atrans-stage">
-      <div class="atrans-stars"></div>
-      <div class="atrans-nebula"></div>
-      <div class="atrans-ring"></div>
-      <div class="atrans-art-wrap">
-        <div class="atrans-art"><img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true"></div>
-        <div class="atrans-scanline"></div>
-      </div>
-    </div>
+  <!-- Per-sistant entry: the shell dial spins up before Per-sistant loads
+       (transition.js builds the dial and binds the tile's data-atrans). -->
+  <div class="atrans-overlay" id="atrans-dial" aria-hidden="true">
+    <div class="shell-grain"></div>
+    <div class="shell-scan"></div>
+    <div data-dial><img src="/android-chrome-192x192.png?v=2" alt="" width="60" height="60"></div>
+    <div class="dial-status is-ok">Per-sistant</div>
   </div>
 
-  <script src="/shell-static/transition.js?v=2" defer></script>
+  <script src="/shell-static/transition.js?v=3" defer></script>
+  <script src="/shell-static/shell-page.js?v=3" defer></script>
   <script src="/shell-static/perfin-materialize.js?v=2" defer></script>
 </body>
 </html>
