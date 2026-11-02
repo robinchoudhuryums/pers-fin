@@ -1,5 +1,5 @@
 // ============================================================================
-// The opening screen (direction D — light + instrument)
+// The opening screen (direction D — instrument: the dial, its ring field and the unlock ripple)
 // ============================================================================
 // - POST /login answers JSON when the keypad sends JSON (ok + the safe
 //   redirect, or the error with the same status), and still redirects /
@@ -209,6 +209,17 @@ describe("transition.js — the shell dial", () => {
     assert.equal(countM(lit.attrs.d), 0);
     assert.equal(countM(dim.attrs.d), 48);
     assert.equal(arc.attrs["stroke-dashoffset"], arc.attrs["stroke-dasharray"], "the arc starts empty");
+    // The ring field (hairlines fading outward) and the three unlock ripples.
+    const field = svg.querySelector(".dial-field");
+    const rings = field.children;
+    assert.equal(rings.length, 10);
+    assert.equal(Number(rings[0].attrs.r), 132, "the first ring sits just outside the outer ticks");
+    for (let i = 1; i < rings.length; i++) {
+      assert.ok(Number(rings[i].attrs.r) > Number(rings[i - 1].attrs.r), "rings go outward");
+      assert.ok(Number(rings[i].attrs["stroke-opacity"]) < Number(rings[i - 1].attrs["stroke-opacity"]), "and fade");
+    }
+    const ripples = svg.querySelector(".dial-ripples").children;
+    assert.deepEqual(ripples.map((c) => c.attrs.class), ["dial-ripple dial-ripple-1", "dial-ripple dial-ripple-2", "dial-ripple dial-ripple-3"]);
     // A second mount reuses the first.
     assert.equal(win.ShellDial.mount(host), win.ShellDial.mount(host));
     assert.equal(host.children.filter((c) => c.attrs.class === "dial-svg").length, 1);
@@ -437,7 +448,25 @@ describe("views and CSS", () => {
     assert.match(css, /\.is-unlocking \.dial-burst \{ animation: dial-burst 1\.05s/);
     assert.match(css, /@keyframes dial-burst \{\s*0%\s+\{ transform: rotate\(0deg\); \}\s*82%\s+\{ transform: rotate\(734deg\); \}\s*100% \{ transform: rotate\(720deg\); \}/);
     assert.match(css, /\.is-unlocking \.dial-drift \{ animation-play-state: paused; \}/);
-    assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\.dial, \.dial \*, \.shell-flare, \.shell-scan \{ animation: none !important; transition: none !important; \}/);
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\.dial, \.dial \*, \.shell-scan \{ animation: none !important; transition: none !important; \}/);
     assert.match(read("shell", "public", "landing.css"), /\.is-unlocking \.pin-panel \{ opacity: 0;/);
+  });
+
+  it("the ripple: three gold rings leave the dial one after another; the field turns gold", () => {
+    const css = read("shell", "public", "transition.css");
+    assert.match(css, /\.dial-ripple \{[^}]*opacity: 0;[^}]*transform-origin: 120px 120px;/);
+    assert.match(css, /\.is-unlocking \.dial-ripple \{ animation: dial-ripple 1\.1s [^}]* 0\.25s both; \}/);
+    assert.match(css, /\.is-unlocking \.dial-ripple-2 \{ animation-delay: 0\.45s; \}/);
+    assert.match(css, /\.is-unlocking \.dial-ripple-3 \{ animation-delay: 0\.65s; \}/);
+    assert.match(css, /@keyframes dial-ripple \{\s*0%\s+\{ opacity: 0; transform: scale\(1\); \}[\s\S]*?100% \{ opacity: 0; transform: scale\(4\.2\); \}/);
+    assert.match(css, /\.is-unlocking \.dial-field circle \{ stroke: #e2b98a; \}/);
+  });
+
+  it("no soft light: the gold glow and its pointer-follow are gone", () => {
+    for (const f of [["shell", "public", "transition.css"], ["shell", "public", "shell-page.js"],
+      ["shell", "views", "login.ejs"], ["shell", "views", "landing.ejs"], ["teller", "views", "partials", "nav.ejs"]]) {
+      const src = read(...f);
+      assert.doesNotMatch(src, /shell-light|shell-flare|pointermove|--lx|--ly/, f.join("/"));
+    }
   });
 });

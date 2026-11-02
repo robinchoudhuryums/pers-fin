@@ -93,7 +93,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 3202 tests across 177 files incl. apps/per-sistant/tests; `tests/contract/` = real-Postgres route contract suite, `npm run test:contract`) |
+| `tests/` | Test suite (node:test, 3204 tests across 177 files incl. apps/per-sistant/tests; `tests/contract/` = real-Postgres route contract suite, `npm run test:contract`) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |

@@ -1408,7 +1408,7 @@ shell/
                                  poolsShareDatabase (true / false / null — a failed
                                  read is unknown, never shared)
   views/
-    login.ejs                  — The opening screen (direction D: light + instrument):
+    login.ejs                  — The opening screen (direction D: the instrument):
                                  clock readout, the dial around the app icon, a
                                  monospace status line and a glass keypad. The
                                  keypad posts the PIN as JSON to POST /login
@@ -1431,16 +1431,20 @@ shell/
                                  not the placeholder SVG it had originally)
     transition.css             — The shell dial and backdrop shared by the login,
                                  the landing page and the Per-sistant entry
-                                 overlay: .shell-light (a gold light at --lx /
-                                 --ly), .shell-flare, .shell-grain (inline SVG
+                                 overlay: warm black + .shell-grain (inline SVG
                                  noise), .shell-scan, .dial-* (outer 120 ticks
                                  drifting once a minute, 48 inner progress ticks,
-                                 the arc; is-checking / is-error), and the unlock
-                                 under .is-unlocking (dial-burst: 0 → 734° → 720°
-                                 in 1.05 s, drift paused, ring gold, dial swells).
-                                 Reduced motion: no animation.
-    transition.js              — window.ShellDial (mount(el) builds the dial SVG
-                                 into a [data-dial] element and returns
+                                 the arc; is-checking / is-error; .dial-field —
+                                 10 hairline rings around the dial fading
+                                 outward, in place of a soft glow), and the
+                                 unlock under .is-unlocking (dial-burst: 0 →
+                                 734° → 720° in 1.05 s, drift paused, ring and
+                                 field gold, three .dial-ripple rings spreading
+                                 out 0.2 s apart, dial swells). Reduced motion:
+                                 no animation.
+    transition.js              — window.ShellDial (mount(el) builds the dial SVG —
+                                 ticks, arc, ring field, ripples — into a
+                                 [data-dial] element and returns
                                  setProgress / setState; ticks; reducedMotion)
                                  and the Per-sistant entry: a click on a
                                  [data-atrans="dial"] link (the landing tile,
@@ -1451,9 +1455,8 @@ shell/
                                  clears the overlay. CSS-driven, so phones run
                                  the same effect (it replaced the starfield +
                                  particle-assembly transition)
-    shell-page.js              — The login / landing clock readout and the light
-                                 following the pointer (external — the landing
-                                 page has no inline script)
+    shell-page.js              — The login / landing clock readout (external —
+                                 the landing page has no inline script)
     perfin-materialize.css     — Iron Man helmet stroke-draw + fill + pulse
                                  ring + particle burst + HUD scan animation
                                  (Perfin entry from landing tile + Per-sistant
@@ -1553,14 +1556,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3202 tests as of latest); use
+  Perfin and Per-sistant test files (3204 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3202 tests across 177 test files (incl.
+  Current count: 3204 tests across 177 test files (incl.
   `tests/opening-screen.test.js` — the opening screen (direction D): POST /login's JSON answer to the keypad
   (ok + the safeReturnTo'd redirect, 401 / 429 errors, a form post still redirecting / rendering), transition.js run in
   a vm over a fake DOM (the dial's 120 / 48 ticks and arc, setProgress, the entry overlay's fill → spin → navigate,
   reduced motion), login.ejs's keypad script in a vm (digits light the dial, Go posts JSON, a refused PIN's message and
-  reset, the unlock navigating to a same-origin path only) and the views / CSS (no starfield left, the spin keyframes);
+  reset, the unlock navigating to a same-origin path only) and the views / CSS (no starfield or soft light left, the
+  spin and ripple keyframes, the ring field);
   `tests/seams-audit-4-s5.test.js` — Seams & Invariants audit #4, S4-5: Settings' saveField in a vm (a refused or
   failed save puts back the value loadSettings marked, a saved change becomes the stored one, every change binding on it)
   (C2), the emergency-fund note beside the projection (C3), the summary reload un-hiding the cards and a failed reload
@@ -4969,7 +4973,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3202 tests passing across 177 test files (Perfin 2459 + Per-sistant 743), plus the real-Postgres route contract suite (340 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
+- 3204 tests passing across 177 test files (Perfin 2461 + Per-sistant 743), plus the real-Postgres route contract suite (340 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands

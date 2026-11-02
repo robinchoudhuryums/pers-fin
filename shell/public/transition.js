@@ -9,7 +9,8 @@
 //
 //   [data-atrans="dial"] links — a click shows the matching #atrans-dial
 //   overlay: the arc fills, the outer tick ring spins up (transition.css,
-//   .is-unlocking), and the browser navigates as the spin settles. It replaced
+//   .is-unlocking) while gold rings ripple out from it, and the browser
+//   navigates as the spin settles. It replaced
 //   the starfield / particle-assembly effect: the same short "unlocking"
 //   moment as the login, light enough for a phone, CSS-driven.
 // ============================================================================
@@ -19,6 +20,9 @@
   var INNER = 48;               // inner ticks — the progress ring
   var ARC_R = 84;
   var ARC_LEN = 2 * Math.PI * ARC_R;
+  // The ring field's radii — the gaps widen outward, the way a dial's
+  // graduations would.
+  var FIELD_RINGS = [132, 160, 192, 228, 268, 312, 360, 412, 468, 528];
 
   // Tick marks from..to of `count` around the centre, r1 → r2, as one path.
   function ticks(count, r1, r2, from, to) {
@@ -56,6 +60,19 @@
       'stroke-dasharray': ARC_LEN.toFixed(2), 'stroke-dashoffset': ARC_LEN.toFixed(2),
       transform: 'rotate(-90 120 120)',
     }, svg);
+    // The ring field: hairline circles around the dial, fainter as they go
+    // out (they replace the soft gold light). They turn gold on the unlock.
+    var field = el('g', { 'class': 'dial-field' }, svg);
+    for (var i = 0; i < FIELD_RINGS.length; i++) {
+      el('circle', { cx: C, cy: C, r: FIELD_RINGS[i],
+        'stroke-opacity': (0.13 * (1 - i / FIELD_RINGS.length) + 0.02).toFixed(3) }, field);
+    }
+    // The unlock ripple: three gold rings that leave the dial's edge one after
+    // another (transition.css animates them under .is-unlocking).
+    var ripples = el('g', { 'class': 'dial-ripples' }, svg);
+    for (var j = 1; j <= 3; j++) {
+      el('circle', { 'class': 'dial-ripple dial-ripple-' + j, cx: C, cy: C, r: 118 }, ripples);
+    }
     host.insertBefore(svg, host.firstChild);
 
     var ctl = {

@@ -1,7 +1,7 @@
 /* Shell-only styles (login + landing). Deliberately self-contained — no shared
    tokens imported from either sub-app, since the shell sits *outside* their
-   theme/palette systems and shouldn't drift if those change. The dial, the
-   moving light, the grain and the unlock sweep live in transition.css, which
+   theme/palette systems and shouldn't drift if those change. The dial (and its
+   ring field), the grain and the unlock sweep live in transition.css, which
    both pages load too (opening-screen direction D: light + instrument). */
 
 * { box-sizing: border-box; }
