@@ -30,7 +30,7 @@ const path = require("path");
 const auth = require("./middleware/auth");
 const webauthn = require("./middleware/webauthn");
 const errorHandler = require("./middleware/error-handler");
-const { sharedDatabaseProblem } = require("./boot-checks");
+const { sharedDatabaseProblem, sharedDatabaseIdentityProblem } = require("./boot-checks");
 const { landingStatus } = require("./landing-status");
 const { startKeepAlive } = require("../teller/services/keep-alive");
 const errorLog = require("../teller/services/error-log");
@@ -328,6 +328,22 @@ app.use(errorHandler);
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
+// Shutdown (seams audit #4 B5): wait for the job in progress to finish, but
+// no longer than ms — the forced exit 10 s after the signal still applies.
+const SHUTDOWN_JOB_WAIT_MS = 7000;
+function waitForJobs(promise, ms) {
+  let timer = null;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve("timeout"), ms); });
+  return Promise.race([
+    Promise.resolve(promise).then(() => "done", (err) => { console.error("Perfin job stop error:", err && err.message); return "error"; }),
+    timeout,
+  ]).then((outcome) => {
+    clearTimeout(timer);
+    if (outcome === "timeout") console.error("A scheduled job was still running at shutdown — closing anyway.");
+    return outcome;
+  });
+}
+
 async function start() {
   // Fail fast (PSC-11): with SHELL_SECRET unset, every request is
   // unauthenticated and a correct PIN used to throw inside the async login
@@ -343,6 +359,10 @@ async function start() {
   // ALLOW_SHARED_DATABASE=true is the explicit opt-in for a one-database setup.
   const dbProblem = sharedDatabaseProblem(process.env);
   if (dbProblem) throw new Error(dbProblem);
+  // Seams audit #4 A3: the same check on the databases themselves, before
+  // either app migrates — one database under two addresses passes the URL check.
+  const identityProblem = await sharedDatabaseIdentityProblem({ perfinPool: perfin.pool, persistentPool: persistent.pool, env: process.env });
+  if (identityProblem) throw new Error(identityProblem);
   if (!process.env.SHELL_PIN) {
     console.warn("WARNING: SHELL_PIN is not set — PIN login is disabled (biometric and x-api-key access still work).");
   } else if (process.env.SHELL_PIN.length < 6) {
@@ -380,12 +400,18 @@ async function start() {
   // DB pools.
   function shutdown(signal) {
     console.log(`\n${signal} received — shutting down gracefully…`);
-    try { perfin.stopBackgroundJobs(); } catch (err) { console.error("Perfin job stop error:", err.message); }
+    // The job that was running when the signal came is awaited (bounded)
+    // before the pools close (seams audit #4 B5): it used to be cut off
+    // mid-query, and its claim had already stamped last_ran_at, so it waited a
+    // whole cadence (1–6 h) to run again.
+    let jobsStopped = Promise.resolve();
+    try { jobsStopped = Promise.resolve(perfin.stopBackgroundJobs()); } catch (err) { console.error("Perfin job stop error:", err.message); }
     try { persistent.stopJobs(); } catch (err) { console.error("Per-sistant cron stop error:", err.message); }
     uptime.stopHeartbeat();
     errorLog.stop();
     server.close(async () => {
       try {
+        await waitForJobs(jobsStopped, SHUTDOWN_JOB_WAIT_MS);
         await errorLog.flush({ notify: false, drain: true }); // keep the last minute's errors, after any flush in flight
         await perfin.pool.end().catch(() => null);
         await persistent.pool.end().catch(() => null);

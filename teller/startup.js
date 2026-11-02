@@ -449,6 +449,15 @@ async function runInsightsAutoTriggerTick() {
   }
 }
 
+const AUTO_SYNC_DUE_SLACK_MS = 2 * 60 * 1000;
+// The jobs that make many bank / model calls get longer than the runner's
+// 15-minute default before it moves on (seams audit #4 B1).
+const LONG_JOB_TIMEOUT_MS = {
+  "bank-auto-sync": 30 * 60 * 1000,
+  "self-healing-reconcile": 30 * 60 * 1000,
+  "insights-auto-trigger": 30 * 60 * 1000,
+};
+
 // Bank auto-sync (every hour, throttled by the user's auto_sync_interval_hours).
 // Not activity-gated. Off → settled for the local day; not due → no settings
 // read until it is (cycle-8 F29). A Settings change drops both memos.
@@ -467,7 +476,12 @@ async function runBankAutoSyncTick() {
     const lastSync = s.last_auto_sync_at ? new Date(s.last_auto_sync_at) : null;
     const now = new Date();
     const dueMs = intervalHours * 60 * 60 * 1000;
-    if (lastSync && (now - lastSync) < dueMs) { setNextDue("bank-auto-sync", lastSync.getTime() + dueMs); return; }
+    // last_auto_sync_at is the START of the last run (seams audit #4 B6): it
+    // used to be stamped at the end, so a run longer than the runner's 5-minute
+    // check found itself not due an interval later and the cadence doubled.
+    // The slack covers the runner's claim landing a moment before the stamp.
+    if (lastSync && (now - lastSync) < dueMs - AUTO_SYNC_DUE_SLACK_MS) { setNextDue("bank-auto-sync", lastSync.getTime() + dueMs - AUTO_SYNC_DUE_SLACK_MS); return; }
+    const startedAt = now;
 
     const { syncAllTransactions, syncAllBalances, recordSyncResult, thrownSyncResult } = require("./routes/enrollments");
     const { syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
@@ -508,9 +522,11 @@ async function runBankAutoSyncTick() {
       }
     } catch (e) { console.error("Auto-sync categorize error:", e.message); }
 
-    await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
+    // Written once the run is over (a crashed run leaves the old stamp), but
+    // as the time it STARTED, so the next run is an interval after this one began.
+    await pool.query("UPDATE user_settings SET last_auto_sync_at = $1::timestamptz WHERE id = 1", [startedAt.toISOString()])
       .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
-    setNextDue("bank-auto-sync", Date.now() + dueMs);
+    setNextDue("bank-auto-sync", startedAt.getTime() + dueMs - AUTO_SYNC_DUE_SLACK_MS);
 
     // Persist a structured sync-result so per-item errors (decryption_failed,
     // per-institution failures) surface in the Sync Health card even on a
@@ -872,9 +888,12 @@ function startBackgroundJobs({ runnerOptions = {} } = {}) {
   // check (the watchdog's "scheduler alive" signal).
   const { createJobRunner } = require("./services/job-runner");
   if (runner) runner.stop();
+  // A run past its deadline (seams audit #4 B1) is a failed run: Sync Health
+  // shows it and the uptime heartbeat pings /fail; the runner moves on.
   runner = createJobRunner({
     pool,
     onCheck: (name) => { if (name in jobHealth.JOB_INTERVALS_MS) jobHealth.tick(name); },
+    onTimeout: (name, ms) => jobHealth.result(name, { ok: false, error: `didn't finish within ${Math.round(ms / 60000)} minutes` }),
     ...runnerOptions,
   });
   const active = () => isUserActive();
@@ -899,7 +918,7 @@ function startBackgroundJobs({ runnerOptions = {} } = {}) {
     ["bank-auto-sync", runBankAutoSyncTick],
     ["insights-auto-trigger", runInsightsAutoTriggerTick],
   ]) {
-    runner.register({ name, everyMs: every(name), run, when });
+    runner.register({ name, everyMs: every(name), run, when, timeoutMs: LONG_JOB_TIMEOUT_MS[name] });
   }
   runner.start();
 }

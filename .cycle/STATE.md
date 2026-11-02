@@ -18,6 +18,12 @@ Updated: 2026-11-02
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **S4-2 (DONE, 2026-11-02) — scheduler & operator hardening:** block `.cycle/blocks/8-s4-2-broad-implement.md`. B1 (a
+  deadline per scheduled run + the runner's queries; Plaid 90 s timeout), B5 (shutdown waits ≤ 7 s for the running job), B6
+  (auto-sync stamps its start time), B4 (no PIN length in the operator check), A3 (database identity compared at boot and in
+  local:databases). npm test 3149, contract 332, e2e 91. Net +1.
+  - **Where I left off:** S4-2 committed and pushed on the branch (not yet in a PR). Next: `/sync-docs` for the S4-2 doc
+    items, then PR + merge, then `/broad-implement S4-3`.
 - **S4-1 (DONE, 2026-11-02) — live-deploy hotfixes:** block `.cycle/blocks/8-s4-1-broad-implement.md`. A1 (push_state
   'none' when nothing was delivered), B2 (data-health reads only the watched jobs), S2 (one survivor per cadence + rename
   rules in one transaction), B3 (db-backup.yml records Perfin-only backups; Operator Checks warns under the shell), C1

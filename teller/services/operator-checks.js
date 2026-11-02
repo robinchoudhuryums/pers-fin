@@ -84,10 +84,11 @@ function localChecks(env = process.env, now = Date.now()) {
         fix: "Set TOKEN_ENCRYPTION_PASSPHRASE on Render (the same value the tokens were stored with)." });
 
   if (env.SHELL_PIN !== undefined) {
-    const len = String(env.SHELL_PIN).length;
-    checks.push(len < 6
-      ? { id: "local:shell-pin", label: "App PIN length", status: "warn", detail: `SHELL_PIN is ${len} characters — anyone can lock PIN login, and a short PIN is quicker to guess.`, fix: "Use a PIN of at least 6 digits (SHELL_PIN on Render)." }
-      : { id: "local:shell-pin", label: "App PIN length", status: "ok", detail: `SHELL_PIN is ${len} characters.`, fix: null });
+    // Never the exact length (INV-126 — only "shorter than N"; seams audit #4 B4).
+    const short = String(env.SHELL_PIN).length < 6;
+    checks.push(short
+      ? { id: "local:shell-pin", label: "App PIN length", status: "warn", detail: "SHELL_PIN is shorter than 6 characters — anyone can lock PIN login, and a short PIN is quicker to guess.", fix: "Use a PIN of at least 6 digits (SHELL_PIN on Render)." }
+      : { id: "local:shell-pin", label: "App PIN length", status: "ok", detail: "SHELL_PIN is 6 characters or longer.", fix: null });
   }
 
   const tz = env.APP_TIMEZONE ? String(env.APP_TIMEZONE).trim() : "";
@@ -220,10 +221,13 @@ async function goLiveChecks({ pool = null, persistentPool = null, env = process.
   // The two databases (under the shell only — a Per-sistant pool is wired).
   if (persistentPool) {
     try {
-      const { sameDatabase } = require("../../shell/boot-checks");
+      const { sameDatabase, poolsShareDatabase } = require("../../shell/boot-checks");
       const perfin = set("NEON_DATABASE_URL");
       const persistent = set("PERSISTENT_DATABASE_URL");
-      const shared = !persistent || (perfin && sameDatabase(perfin, persistent));
+      // The URLs, then the databases themselves (seams audit #4 A3 — one
+      // database under two addresses); an unreadable identity counts as separate.
+      const shared = !persistent || (perfin && sameDatabase(perfin, persistent))
+        || (await poolsShareDatabase(pool, persistentPool)) === true;
       checks.push(shared
         ? { id: "local:databases", label: "App databases", status: "warn",
             detail: "Perfin and Per-sistant share one database (ALLOW_SHARED_DATABASE) — their settings and their AI budgets are one row.",

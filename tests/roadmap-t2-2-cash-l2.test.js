@@ -224,7 +224,7 @@ describe("the cash-alerts job", () => {
     const body = src.slice(src.indexOf("async function runCashAlertsTick()"), src.indexOf("\n}\n", src.indexOf("async function runCashAlertsTick()")));
     assert.doesNotMatch(body, /isUserActive\(\)/);
     // Cycle-8 E2b: scheduled by the job runner, hourly, with no activity gate.
-    assert.deepEqual(scheduled("cash-alerts"), { name: "cash-alerts", everyMs: 3600e3, gated: false });
+    assert.deepEqual(scheduled("cash-alerts"), { name: "cash-alerts", everyMs: 3600e3, gated: false, timeoutMs: 15 * 60 * 1000 });
   });
 
   it("records an outcome only when it evaluated; a failure or an unlogged alert as an error", async () => {

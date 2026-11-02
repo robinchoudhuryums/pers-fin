@@ -36,4 +36,43 @@ function sameDatabase(a, b) {
   }
 }
 
-module.exports = { sharedDatabaseProblem, sameDatabase };
+// Seams audit #4 A3: the URL comparison above misses one database reached by
+// two names (Neon's "-pooler" host and the direct host, localhost and
+// 127.0.0.1, an IP and a name). So, before either app migrates, ask each pool
+// which database it is on: the database name, its oid and the server's start
+// time — two different servers or branches never share all three, while two
+// routes to one server do. A read that fails is unknown (null): the boot goes
+// on and the migrations report the connection problem themselves.
+const IDENTITY_SQL = `SELECT current_database() AS db,
+       (SELECT oid FROM pg_database WHERE datname = current_database())::text AS oid,
+       pg_postmaster_start_time()::text AS started`;
+
+async function databaseIdentity(pool) {
+  if (!pool) return null;
+  try {
+    const r = await pool.query(IDENTITY_SQL);
+    const row = r.rows[0];
+    return row && row.db ? `${row.db}|${row.oid}|${row.started}` : null;
+  } catch (err) {
+    console.error("boot check: couldn't read a database's identity:", err.message);
+    return null;
+  }
+}
+
+// Same database through either pool? true / false, or null when unknown.
+async function poolsShareDatabase(perfinPool, persistentPool) {
+  if (!perfinPool || !persistentPool) return null;
+  const [a, b] = await Promise.all([databaseIdentity(perfinPool), databaseIdentity(persistentPool)]);
+  if (a == null || b == null) return null;
+  return a === b;
+}
+
+async function sharedDatabaseIdentityProblem({ perfinPool, persistentPool, env = process.env } = {}) {
+  if (String(env.ALLOW_SHARED_DATABASE || "").toLowerCase() === "true") return null;
+  const shared = await poolsShareDatabase(perfinPool, persistentPool);
+  return shared
+    ? "PERSISTENT_DATABASE_URL and NEON_DATABASE_URL reach the same database (under different addresses) — refusing to start (the two apps' settings would merge). Give Per-sistant its own database, or set ALLOW_SHARED_DATABASE=true to run both apps in one."
+    : null;
+}
+
+module.exports = { sharedDatabaseProblem, sameDatabase, databaseIdentity, poolsShareDatabase, sharedDatabaseIdentityProblem, IDENTITY_SQL };

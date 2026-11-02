@@ -32,9 +32,18 @@
 // later — a failing job isn't retried every few minutes; its own outcome goes
 // to job-health from its body).
 //
-// Not wired into teller/startup.js yet — E2b moves the jobs onto it.
+// Deadlines (seams audit #4 B1). Jobs run one at a time, so ONE run that never
+// settled (a Plaid or Teller call that never answered, a lock wait) used to
+// stop every job behind it — the watchdog included — for as long as the
+// process lived. Each run now has a deadline (register's timeoutMs, else
+// runTimeoutMs): past it the runner logs, reports it through onTimeout (startup
+// records a failed outcome, so job-health / the uptime heartbeat see it) and
+// moves on. The run is abandoned, not cancelled — JavaScript can't stop it — so
+// a job still running from an earlier start is skipped, never started twice.
+// The runner's own queries (the job_runs read, the claim) have a deadline too.
 
 const MINUTE = 60 * 1000;
+const TIMED_OUT = Symbol("timed out");
 const DEFAULTS = {
   checkEveryMs: 5 * MINUTE,
   firstCheckMs: 1 * MINUTE,
@@ -42,6 +51,10 @@ const DEFAULTS = {
   // A claim succeeds when the stored last run is at least this share of the
   // cadence ago — slack for clock skew between the app and the database.
   claimFactor: 0.9,
+  // How long a run may take before the runner moves on (a job can set its own).
+  runTimeoutMs: 15 * MINUTE,
+  // How long the runner's own job_runs read / claim may take.
+  queryTimeoutMs: 1 * MINUTE,
 };
 
 // The claim: take the job when its stored last run is old enough (or there is
@@ -66,30 +79,49 @@ function createJobRunner({
   clearTimer = (h) => clearTimeout(h),
   sleep = (ms) => new Promise((resolve) => { const h = setTimeout(resolve, ms); if (h && h.unref) h.unref(); }),
   onCheck = null, // (name) — called for every registered job on each check (job-health's tick, E2b)
+  onTimeout = null, // (name, ms) — a run passed its deadline (seams audit #4 B1)
+  setDeadline = (fn, ms) => { const h = setTimeout(fn, ms); if (h && h.unref) h.unref(); return h; },
+  clearDeadline = (h) => clearTimeout(h),
   log = console,
   ...opts
 } = {}) {
   const cfg = { ...DEFAULTS, ...opts };
-  const jobs = new Map(); // name → { name, everyMs, run, when, order }
+  const jobs = new Map(); // name → { name, everyMs, run, when, timeoutMs, order }
   const lastRan = new Map(); // name → epoch ms of the last run (memory)
+  const inFlight = new Set(); // jobs whose run hasn't settled (one past its deadline)
   let loaded = false;
   let timer = null;
   let running = false; // started and not stopped
   let stopped = false; // stop() called — a check in progress runs no more jobs
   let checking = null; // the promise of the check in progress
 
-  function register({ name, everyMs, run, when = null }) {
+  function register({ name, everyMs, run, when = null, timeoutMs = null }) {
     if (typeof name !== "string" || !name) throw new Error("job name required");
     if (!Number.isFinite(everyMs) || everyMs <= 0) throw new Error(`job ${name}: everyMs must be a positive number`);
     if (typeof run !== "function") throw new Error(`job ${name}: run must be a function`);
+    if (timeoutMs != null && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new Error(`job ${name}: timeoutMs must be a positive number`);
     if (jobs.has(name)) throw new Error(`job ${name} registered twice`);
-    jobs.set(name, { name, everyMs, run, when, order: jobs.size });
+    jobs.set(name, { name, everyMs, run, when, timeoutMs, order: jobs.size });
+  }
+
+  // Resolves with the promise's value, or TIMED_OUT once ms pass (the promise
+  // is left to finish on its own). A rejection passes through.
+  function race(promise, ms) {
+    let h = null;
+    const timeout = new Promise((resolve) => { h = setDeadline(() => resolve(TIMED_OUT), ms); });
+    return Promise.race([promise, timeout]).finally(() => { if (h != null) clearDeadline(h); });
+  }
+
+  async function query(sql, params) {
+    const out = await race(pool.query(sql, params), cfg.queryTimeoutMs);
+    if (out === TIMED_OUT) throw new Error(`query timed out after ${Math.round(cfg.queryTimeoutMs / 1000)} s`);
+    return out;
   }
 
   async function load() {
     loaded = true;
     try {
-      const r = await pool.query(LOAD_SQL, [[...jobs.keys()]]);
+      const r = await query(LOAD_SQL, [[...jobs.keys()]]);
       for (const row of r.rows) {
         if (row.ran_ms != null && jobs.has(row.job_name)) lastRan.set(row.job_name, Number(row.ran_ms));
       }
@@ -114,11 +146,11 @@ function createJobRunner({
   // Returns true when this process should run the job now.
   async function claim(job) {
     try {
-      const r = await pool.query(CLAIM_SQL, [job.name, (job.everyMs * cfg.claimFactor) / 1000]);
+      const r = await query(CLAIM_SQL, [job.name, (job.everyMs * cfg.claimFactor) / 1000]);
       if (r.rows.length) return true;
       // Another process ran it: take its time so this one waits a cadence.
       try {
-        const cur = await pool.query(LAST_RAN_SQL, [job.name]);
+        const cur = await query(LAST_RAN_SQL, [job.name]);
         const ms = cur.rows[0] && cur.rows[0].ran_ms;
         lastRan.set(job.name, ms != null ? Number(ms) : now());
       } catch { lastRan.set(job.name, now()); } // its claim proved it ran recently
@@ -138,23 +170,39 @@ function createJobRunner({
       .filter((job) => dueAt(job) <= t)
       .sort((a, b) => (dueAt(a) - dueAt(b)) || (a.order - b.order));
     const ran = [];
+    const timedOut = [];
     let first = true;
     for (const job of due) {
       if (stopped) break;
       if (!gateOpen(job)) continue; // stays due; no query
+      if (inFlight.has(job.name)) { // an earlier run is still going (past its deadline)
+        log.error(`job runner: ${job.name} is still running from an earlier start — skipped`);
+        continue;
+      }
       if (!first && cfg.gapMs > 0) await sleep(cfg.gapMs);
       if (stopped) break;
       first = false;
       if (!(await claim(job))) continue;
       lastRan.set(job.name, now());
       ran.push(job.name);
+      const limit = job.timeoutMs || cfg.runTimeoutMs;
+      const p = Promise.resolve().then(() => job.run());
+      inFlight.add(job.name);
+      p.then(() => inFlight.delete(job.name), () => inFlight.delete(job.name));
       try {
-        await job.run();
+        const out = await race(p, limit);
+        if (out === TIMED_OUT) {
+          timedOut.push(job.name);
+          log.error(`job runner: ${job.name} didn't finish within ${Math.round(limit / 60000)} min — moving on (it keeps running in the background)`);
+          if (onTimeout) {
+            try { onTimeout(job.name, limit); } catch (err) { log.error("job runner: onTimeout threw:", err && err.message); }
+          }
+        }
       } catch (err) {
         log.error(`job runner: ${job.name} failed:`, err && err.message ? err.message : err);
       }
     }
-    return { ran };
+    return { ran, timed_out: timedOut };
   }
 
   // One check: run the due jobs. A check called while one is in progress
@@ -193,13 +241,15 @@ function createJobRunner({
   }
 
   function list() {
-    return [...jobs.values()].sort((a, b) => a.order - b.order).map(({ name, everyMs, when }) => ({ name, everyMs, gated: !!when }));
+    return [...jobs.values()].sort((a, b) => a.order - b.order)
+      .map(({ name, everyMs, when, timeoutMs }) => ({ name, everyMs, gated: !!when, timeoutMs: timeoutMs || cfg.runTimeoutMs }));
   }
 
   return {
     register, start, stop, check, list,
     // test seams
     _lastRan: lastRan,
+    _inFlight: inFlight,
     _isLoaded: () => loaded,
   };
 }

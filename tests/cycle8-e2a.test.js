@@ -76,7 +76,8 @@ describe("registration", () => {
     assert.throws(() => runner.register({ name: "c", everyMs: NaN, run: () => {} }), /positive/);
     assert.throws(() => runner.register({ name: "d", everyMs: HOUR }), /run must be a function/);
     assert.throws(() => runner.register({ everyMs: HOUR, run: () => {} }), /name required/);
-    assert.deepEqual(runner.list(), [{ name: "a", everyMs: HOUR, gated: false }]);
+    assert.throws(() => runner.register({ name: "e", everyMs: HOUR, run: () => {}, timeoutMs: 0 }), /timeoutMs must be a positive/);
+    assert.deepEqual(runner.list(), [{ name: "a", everyMs: HOUR, gated: false, timeoutMs: 15 * 60 * 1000 }]);
   });
 });
 
@@ -299,5 +300,103 @@ describe("SQL and schema", () => {
   it("startup.js schedules through it (E2b — tests/cycle8-e2b.test.js)", () => {
     const src = fs.readFileSync(path.join(__dirname, "..", "teller", "startup.js"), "utf8");
     assert.match(src, /require\("\.\/services\/job-runner"\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Seams audit #4 B1: one run that never settles used to stop every job behind
+// it (the runner awaited it with no deadline). Each run, and the runner's own
+// queries, now has a deadline; a run past it is reported and abandoned, and a
+// job still running from an earlier start is skipped rather than started twice.
+describe("seams audit #4 B1 — deadlines", () => {
+  function deadlines() {
+    const list = [];
+    return {
+      list,
+      setDeadline: (fn, ms) => { const h = { fn, ms, cleared: false }; list.push(h); return h; },
+      clearDeadline: (h) => { h.cleared = true; },
+      fire(ms) {
+        const h = list.find((x) => !x.cleared && x.ms === ms);
+        assert.ok(h, "a pending deadline of " + ms + " ms");
+        h.cleared = true;
+        h.fn();
+      },
+    };
+  }
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  it("a run past its deadline is reported and the next job runs; it is skipped while still running, then runs again", async () => {
+    const dl = deadlines();
+    const timeouts = [];
+    const { db, runner, ran, errors, job } = setup({}, {
+      setDeadline: dl.setDeadline, clearDeadline: dl.clearDeadline,
+      onTimeout: (name, ms) => timeouts.push([name, ms]),
+    });
+    let release;
+    let started = 0;
+    runner.register({ name: "hang", everyMs: HOUR, timeoutMs: 30 * 60 * 1000, run: () => { started++; return started === 1 ? new Promise((r) => { release = r; }) : Promise.resolve(); } });
+    job("b", HOUR);
+
+    const check = runner.check();
+    for (let i = 0; i < 5; i++) await flush();
+    assert.deepEqual(ran, [], "b waits behind the hanging run");
+    dl.fire(30 * 60 * 1000); // the job's own timeoutMs, not the 15-minute default
+    const out = await check;
+    assert.deepEqual(out, { ran: ["hang", "b"], timed_out: ["hang"] });
+    assert.deepEqual(ran, ["b"]);
+    assert.deepEqual(timeouts, [["hang", 30 * 60 * 1000]]);
+    assert.ok(errors.some((e) => /hang didn't finish within 30 min/.test(e)));
+    assert.ok(runner._inFlight.has("hang"));
+
+    // An hour on it is due again while still running: skipped, never claimed twice.
+    db.clock.t += HOUR + 1;
+    db.queries.length = 0;
+    const second = await runner.check();
+    assert.deepEqual(second.ran, ["b"]);
+    assert.equal(started, 1, "not started a second time");
+    assert.ok(!kinds(db.queries).includes("claim:hang"), "no claim while it is still running");
+    assert.ok(errors.some((e) => /hang is still running from an earlier start — skipped/.test(e)));
+
+    release();
+    await flush();
+    assert.ok(!runner._inFlight.has("hang"), "settled → no longer in flight");
+    const third = await runner.check();
+    assert.deepEqual(third.ran, ["hang"], "due since the skipped check, it runs once it has settled");
+    assert.equal(started, 2);
+  });
+
+  it("a run that settles in time clears its deadline and reports nothing", async () => {
+    const dl = deadlines();
+    const timeouts = [];
+    const { runner, job } = setup({}, { setDeadline: dl.setDeadline, clearDeadline: dl.clearDeadline, onTimeout: (n) => timeouts.push(n) });
+    job("a", HOUR);
+    const out = await runner.check();
+    assert.deepEqual(out, { ran: ["a"], timed_out: [] });
+    assert.deepEqual(timeouts, []);
+    assert.ok(dl.list.length > 0 && dl.list.every((h) => h.cleared), "every deadline cleared");
+    assert.ok(dl.list.some((h) => h.ms === 15 * 60 * 1000), "the default run deadline");
+  });
+
+  it("a job_runs read or claim that never answers times out: the read → every job due, the claim → run anyway", async () => {
+    const dl = deadlines();
+    const db = fakeDb();
+    const errors = [];
+    const ran = [];
+    const hangingPool = { query: (sql, params) => (sql === LOAD_SQL || sql === CLAIM_SQL ? new Promise(() => {}) : db.pool.query(sql, params)) };
+    const runner = createJobRunner({
+      pool: hangingPool, now: () => db.clock.t, sleep: async () => {},
+      setDeadline: dl.setDeadline, clearDeadline: dl.clearDeadline,
+      log: { error: (...a) => errors.push(a.join(" ")) },
+    });
+    runner.register({ name: "a", everyMs: HOUR, run: async () => { ran.push("a"); } });
+    const check = runner.check();
+    await flush();
+    dl.fire(60 * 1000); // the job_runs read
+    await flush(); await flush();
+    dl.fire(60 * 1000); // the claim
+    await check;
+    assert.deepEqual(ran, ["a"]);
+    assert.ok(errors.some((e) => /could not read job_runs/.test(e) && /timed out/.test(e)));
+    assert.ok(errors.some((e) => /claim for a failed — running it anyway/.test(e) && /timed out/.test(e)));
   });
 });
