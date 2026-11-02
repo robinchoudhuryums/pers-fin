@@ -53,9 +53,9 @@ describe("cycle-8 E4a go-live checks on real Postgres", { skip: SKIP }, () => {
 
     // The workflow's statement, read out of the workflow file itself.
     const yml = fs.readFileSync(path.join(__dirname, "../../.github/workflows/db-backup.yml"), "utf8");
-    const stamp = yml.match(/-qtAc "(UPDATE user_settings SET last_backup_at = now\(\), last_backup_source = 'github' WHERE id = 1)"/);
+    const stamp = yml.match(/-qtAc "(UPDATE user_settings SET last_backup_at = now\(\), last_backup_source = '\$SOURCE' WHERE id = 1)"/);
     assert.ok(stamp, "db-backup.yml's stamp statement");
-    await pool.query(stamp[1]);
+    await pool.query(stamp[1].replace("$SOURCE", "github")); // both databases dumped
 
     const ok = await backupCheck();
     assert.equal(ok.status, "ok");

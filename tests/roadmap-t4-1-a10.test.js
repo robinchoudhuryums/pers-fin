@@ -294,6 +294,53 @@ describe("T4.1 A10 — the reader, Settings and the surfaces", () => {
     assert.match(src, /CONTRIB_LIMITS = cl \|\| \{\};\n        loadContribAccounts\(\);/);
   });
 
+  it("seams audit #4 C1: a failed account load can't save {}; a save keeps a limit with no box", async () => {
+    const src = read("teller/views/settings.ejs");
+    const i = src.indexOf("    var CONTRIB_LIMITS = {};"), j = src.indexOf("    (function wireTargetAlloc()");
+    const make = (investments) => {
+      const el = (extra = {}) => ({ innerHTML: "", disabled: false, listeners: {}, addEventListener(t, f) { this.listeners[t] = f; }, ...extra });
+      const boxes = [];
+      const rowsEl = el({ querySelectorAll: () => boxes });
+      const saveBtn = el();
+      const calls = [], msgs = [];
+      const ctx = {
+        esc: (x) => String(x), Number, String, Math, Object, JSON, Error,
+        document: { getElementById: (id) => ({ "contrib-limit-rows": rowsEl, "contrib-limit-save-btn": saveBtn }[id] || null) },
+        apiFetch: async (url, opts) => {
+          calls.push([url, opts]);
+          if (url === "/api/investments") return investments ? { ok: true, json: async () => ({ accounts: investments }) } : { ok: false, status: 500 };
+          return { ok: true };
+        },
+        writeOk: async (res) => res.ok,
+        showMsg: (m, ok) => msgs.push([m, ok]),
+      };
+      vm.runInNewContext(src.slice(i, j) + "\n;this.set = function (l) { CONTRIB_LIMITS = l; }; this.load = loadContribAccounts;", ctx);
+      return { ctx, saveBtn, boxes, calls, msgs };
+    };
+
+    const failed = make(null);
+    failed.ctx.set({ "investment:3": 7000 });
+    await failed.ctx.load();
+    assert.equal(failed.saveBtn.disabled, true, "Save disabled while the accounts are unknown");
+    await failed.saveBtn.listeners.click();
+    assert.equal(failed.calls.filter(([u]) => u === "/api/settings").length, 0, "no PATCH sent");
+    assert.match(failed.msgs[0][0], /couldn't be loaded/);
+
+    const ok = make([{ source: "plaid", id: 3, name: "Roth IRA" }]);
+    ok.ctx.set({ "investment:3": 7000, "investment:99": 4150 });
+    await ok.ctx.load();
+    assert.equal(ok.saveBtn.disabled, false);
+    ok.boxes.push({ value: "7500", getAttribute: () => "investment:3" });
+    await ok.saveBtn.listeners.click();
+    const patch = ok.calls.find(([u]) => u === "/api/settings");
+    assert.deepEqual(JSON.parse(patch[1].body), { contribution_limits: { "investment:3": 7500, "investment:99": 4150 } },
+      "the unlisted account's limit is kept");
+    ok.boxes[0].value = "";
+    await ok.saveBtn.listeners.click();
+    assert.deepEqual(JSON.parse(ok.calls.filter(([u]) => u === "/api/settings")[1][1].body), { contribution_limits: { "investment:99": 4150 } },
+      "a cleared box removes that limit");
+  });
+
   it("the card lists the room, escaped", () => {
     const dash = read("teller/views/dashboard.ejs");
     const i = dash.indexOf("    var ADVICE_DISCLAIMER"), j = dash.indexOf("    // Design D3: the Summary card + Needs attention");

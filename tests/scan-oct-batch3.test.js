@@ -113,6 +113,31 @@ describe("F8 — job outcomes, not just heartbeats", () => {
     assert.ok(res.body.issues.some((i) => /Scheduled job bank-auto-sync failed its last run: transaction sync failed/.test(i.message)));
     assert.equal(res.body.ok, false);
   });
+
+  it("seams audit #4 B2: only watched jobs are read — the runner's job-watchdog claim row never reads as stale", async () => {
+    let params = null;
+    const old = new Date(Date.now() - 72 * 3600 * 1000);
+    dbModule.pool.query = async (sql, p) => {
+      if (/INSERT INTO job_runs/.test(sql)) return { rows: [] };
+      if (/FROM job_runs/.test(sql)) {
+        params = p;
+        const all = [
+          { job_name: "job-watchdog", last_run_at: old, last_status: null, last_error: null },
+          { job_name: "_watchdog", last_run_at: old, last_status: null, last_error: null },
+          { job_name: "bank-auto-sync", last_run_at: new Date(), last_status: "ok", last_error: null },
+        ];
+        return { rows: all.filter((r) => p[0].includes(r.job_name)) };
+      }
+      if (/FROM user_settings/.test(sql)) return { rows: [{ last_txn_sync_at: new Date(), last_balance_sync_at: new Date() }] };
+      return { rows: [{ total: 0, disconnected: 0, not_good: 0 }] };
+    };
+    const app = express(); app.use(require("../teller/routes/settings"));
+    const res = await supertest(app).get("/api/data-health").expect(200);
+    assert.deepEqual([...params[0]].sort(), Object.keys(jobHealth.JOB_INTERVALS_MS).sort());
+    assert.ok(!params[0].includes("job-watchdog") && !params[0].includes("_watchdog"));
+    assert.deepEqual(res.body.jobs.map((j) => j.job), ["bank-auto-sync"]);
+    assert.ok(!res.body.issues.some((i) => /haven't run recently/.test(i.message)));
+  });
 });
 
 // ---------------------------------------------------------------------------

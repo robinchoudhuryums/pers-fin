@@ -145,9 +145,13 @@ async function knowledgeCheck(persistentPool) {
 // Render deployment sees its backups without a token. With a token and no
 // SERVER_BACKUPS the GitHub backup check is the one (no duplicate). Same 36h
 // limit as the GitHub check.
-const BACKUP_SOURCE_WORDS = { server: "on the server", github: "GitHub Actions" };
+// db-backup.yml records 'github-perfin-only' when the PERSISTENT_DATABASE_URL
+// secret isn't set (seams audit #4 B3): under the shell that is a warning —
+// Per-sistant's own database has no backup — while a standalone Perfin has none
+// to back up. opts.underShell: Per-sistant is wired in (a persistentPool).
+const BACKUP_SOURCE_WORDS = { server: "on the server", github: "GitHub Actions", "github-perfin-only": "GitHub Actions, Perfin's database only" };
 
-async function backupCheck(pool, env = process.env, now = Date.now()) {
+async function backupCheck(pool, env = process.env, now = Date.now(), { underShell = false } = {}) {
   const onServer = hosting.serverBackups(env);
   if (!onServer && githubOps._config(env).configured) return null;
   const id = "local:backup";
@@ -165,6 +169,11 @@ async function backupCheck(pool, env = process.env, now = Date.now()) {
     const hours = Math.round(age / 3600000);
     const where = BACKUP_SOURCE_WORDS[row.last_backup_source] ? ` (${BACKUP_SOURCE_WORDS[row.last_backup_source]})` : "";
     if (age > githubOps.BACKUP_MAX_AGE_MS) return { id, label, status: "fail", detail: `The last backup${where} is ${hours}h old.`, fix };
+    if (underShell && row.last_backup_source === "github-perfin-only") {
+      return { id, label, status: "warn",
+        detail: `Last backup ${hours}h ago${where} — Per-sistant's database was not backed up.`,
+        fix: "Set the PERSISTENT_DATABASE_URL repository secret (Per-sistant's connection string) so the Database Backup workflow dumps both databases." };
+    }
     return { id, label, status: "ok", detail: `Last backup ${hours}h ago${where}.`, fix: null };
   } catch (e) {
     return { id, label, status: "unknown", detail: "Couldn't read the backup record: " + e.message, fix: null };
@@ -324,7 +333,7 @@ async function getOperatorChecks(opts = {}) {
   try {
     checks.push(...await goLiveChecks({ pool: opts.pool, persistentPool: opts.persistentPool, env }));
   } catch (e) { console.error("operator-checks go-live checks failed:", e.message); }
-  const sb = await backupCheck(opts.pool, env);
+  const sb = await backupCheck(opts.pool, env, Date.now(), { underShell: !!opts.persistentPool });
   if (sb) checks.push(sb);
   // Bank webhooks (roadmap T2.1 W6) — needs the database; fail-soft (the
   // status reader logs and leaves a failed part empty).
