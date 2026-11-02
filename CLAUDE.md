@@ -77,7 +77,11 @@ teller/
                            null when unreadable; cycle-8 E4a)
     plaid-client.js      — Plaid client factory (shared by investments.js +
                            investment-performance.js so the two route modules
-                           don't need a circular require)
+                           don't need a circular require). Every call times out
+                           after PLAID_TIMEOUT_MS (90 s — baseOptions.timeout, which
+                           the SDK passes to axios; seams audit #4 B1: there was no
+                           timeout, so one call that never answered held a sync and
+                           every scheduled job behind it)
     keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
     job-health.js        — Scheduled-job heartbeats + missed-job watchdog. Every
                            startup.js job calls tick(name) BEFORE its activity
@@ -110,7 +114,15 @@ teller/
                            job once; a failed claim runs it anyway. A when() gate
                            (e.g. isUserActive) is checked in memory before the
                            claim — closed → no query, the job stays due. list()
-                           reports { name, everyMs, gated }
+                           reports { name, everyMs, gated, timeoutMs }. Deadlines
+                           (seams audit #4 B1): each run is raced against its
+                           register({ timeoutMs }) or runTimeoutMs (15 min); past it
+                           the runner logs, calls onTimeout(name, ms) and moves on —
+                           the run is abandoned (it keeps going), held in inFlight
+                           until it settles, and a due job still in flight is
+                           skipped, never started twice; the job_runs read and the
+                           claim have a 1-minute deadline (queryTimeoutMs — a timed-
+                           out read → every job due, a timed-out claim → run anyway)
     txn-watermark.js     — Transaction id watermarks with an overlap rescan (cycle-8
                            E2c, ST3) for the "what's new since the last check" reads
                            (runAnomalyCheck, runPaydayLanded): readMark(db) → { id:
@@ -244,7 +256,9 @@ teller/
                            non-SUSPENDED Teller enrollments exist and no cert is
                            configured; local:databases (under the shell) warn when
                            PERSISTENT_DATABASE_URL is unset or the same database
-                           (boot-checks.sameDatabase); local:public-url (info
+                           (boot-checks.sameDatabase — the URLs — or, seams audit #4
+                           A3, poolsShareDatabase — the databases themselves; an
+                           unreadable identity counts as separate); local:public-url (info
                            unset, warn when not a bare https origin); local:api-key
                            (warn unset or < 24 chars); local:shell-secret (< 32);
                            local:plaid-config (with PLAID_CLIENT_ID: fail without
@@ -1313,6 +1327,11 @@ shell/
                                  (roadmap T1.4); a final flush on shutdown.
                                  start() refuses to boot without a separate
                                  Per-sistant database (boot-checks.js, cycle-8 F26)
+                                 — by URL, then (seams audit #4 A3) by asking both
+                                 pools which database they reached, before either
+                                 app migrates. Shutdown awaits the job in progress
+                                 (waitForJobs, ≤ SHUTDOWN_JOB_WAIT_MS 7 s — seams
+                                 audit #4 B5) before the pools close
   middleware/
     auth.js                    — Shell auth: HMAC-signed cookie session
                                  (SHELL_PIN + SHELL_SECRET) with sliding-window
@@ -1363,7 +1382,16 @@ shell/
                                  NEON_DATABASE_URL (Per-sistant would fall back to /
                                  share Perfin's database, merging the two
                                  user_settings rows and the two AI caps);
-                                 ALLOW_SHARED_DATABASE=true opts in
+                                 ALLOW_SHARED_DATABASE=true opts in.
+                                 sharedDatabaseIdentityProblem({ perfinPool,
+                                 persistentPool, env }) (seams audit #4 A3) — the
+                                 same refusal when both pools reach one database
+                                 under different addresses (Neon's pooler and direct
+                                 hosts, localhost / 127.0.0.1): IDENTITY_SQL reads
+                                 current_database(), its pg_database oid and
+                                 pg_postmaster_start_time(); databaseIdentity /
+                                 poolsShareDatabase (true / false / null — a failed
+                                 read is unknown, never shared)
   views/
     login.ejs                  — PIN form + biometric button (feature-detected)
     landing.ejs                — Tile picker (the home-screen app's start page), one
@@ -1498,9 +1526,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3135 tests as of latest); use
+  Perfin and Per-sistant test files (3149 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3135 tests across 171 test files (incl.
+  Current count: 3149 tests across 172 test files (incl.
+  `tests/seams-audit-4.test.js` — Seams & Invariants audit #4, S4-2: the PIN check never naming the length (B4),
+  waitForJobs run in a vm from shell/index.js (done / error / a run that never settles timing out) and shutdown awaiting
+  it before the pools close (B5), the auto-sync start stamp and its slack (B6), the long jobs' 30-minute deadlines and
+  onTimeout's failed outcome (B1), databaseIdentity / poolsShareDatabase / sharedDatabaseIdentityProblem over fake pools
+  and the shell running it before either app migrates, Operator Checks' local:databases on the identity (A3), and the
+  Plaid client's 90 s timeout — the runner's deadline tests are in `tests/cycle8-e2a.test.js` (a hung run reported and
+  skipped while in flight, a hung job_runs read / claim timing out);
   `tests/cycle8-e4b.test.js` — cycle-8 E4b (G3): services/freshness.js's ageInfo edges, overallFreshness (the oldest
   connection wins, a webhook-synced one fresh beside two-day-old global stamps, a re-auth / disconnected one stale and named
   whatever the others' ages, a never-synced one oldest, the global fallback and none at all), the connections SQL and
@@ -2594,7 +2629,10 @@ shell/
   /api/operator-checks and data-health). Since E4b, operator-freshness-e4b (a Plaid item synced 15 minutes ago fresh
   through GET /api/data-freshness while last_txn_sync_at is 48 h old; a second item 30 h old → stale naming it, a CSV item
   and a suspended enrollment never counted; a re-auth code → reason reauth; data-health listing the same connections).
-  330 tests, run
+  Since seams audit #4 S4-2, seams4-s4-2 (one scratch database under localhost and 127.0.0.1 read as one database by
+  the boot identity check — the URL check alone says two — the scratch and admin databases as two, an unreachable one
+  as unknown).
+  332 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -4864,7 +4902,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3135 tests passing across 171 test files (Perfin 2395 + Per-sistant 740), plus the real-Postgres route contract suite (330 tests; CI `migrations` job, `npm run test:contract`) and 91 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
+- 3149 tests passing across 172 test files (Perfin 2409 + Per-sistant 740), plus the real-Postgres route contract suite (332 tests; CI `migrations` job, `npm run test:contract`) and 91 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5699,7 +5737,7 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 
 ### Databases (one per sub-app)
 - `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
-- `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments. **Required under the unified shell, and it must name a different database from `NEON_DATABASE_URL`** — the shell refuses to start otherwise (cycle-8 F26, `shell/boot-checks.js`: the fallback used to migrate both apps into one database, merging their single-row `user_settings` and the two separate AI caps).
+- `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments. **Required under the unified shell, and it must name a different database from `NEON_DATABASE_URL`** — the shell refuses to start otherwise (cycle-8 F26, `shell/boot-checks.js`: the fallback used to migrate both apps into one database, merging their single-row `user_settings` and the two separate AI caps). Two different URLs that reach the same database (Neon's pooler and direct hosts) are refused too — the shell compares the databases themselves before either app migrates (seams audit #4 A3).
 - `ALLOW_SHARED_DATABASE` — `true` to run both apps in ONE database under the shell on purpose (skips the check above). Unset in every documented deployment.
 - `TOKEN_ENCRYPTION_PASSPHRASE` — passphrase for encrypting access tokens at rest. **Required — boot fails without it** (escape hatch: `ALLOW_MISSING_TOKEN_PASSPHRASE=true` for local debug with no bank links).
 
@@ -6585,7 +6623,14 @@ watchdog) carry a `when: isUserActive` gate checked in memory before the claim: 
 the user is away they cost no query and stay due, and run at the first check after
 the user returns. The away channels carry none (INV-77). A job's own gates,
 watermarks, memos and outcome are unchanged. `stopBackgroundJobs` stops the runner
-(a check in progress finishes its current job). Test seam: `startup._scheduler`.
+(a check in progress finishes its current job; the shell's shutdown waits up to 7 s
+for it — seams audit #4 B5). Test seam: `startup._scheduler`. **Deadlines (seams audit
+#4 B1):** a run that hasn't finished in 15 minutes (30 for bank-auto-sync,
+self-healing-reconcile and insights-auto-trigger — `LONG_JOB_TIMEOUT_MS`) is recorded as
+a failed run ("didn't finish within N minutes" — Sync Health shows it, the uptime
+heartbeat pings /fail) and the runner moves on; the run keeps going in the background and
+the job isn't started again until it has settled — one hung call used to stop every job
+behind it, the watchdog included.
 **Single-flight (PSC-12).** `syncAllTransactions`, `syncAllBalances` and
 `runCategorize` keep a module-level in-flight promise: a caller that arrives
 while a run is in progress (the 6-hourly insights chain and the bank auto-sync
@@ -6625,7 +6670,11 @@ second one (which re-sent the same uncategorized rows to Claude).
   sync (free rule + Teller-map paths over the whole backlog + a bounded AI
   batch) so the uncategorized count doesn't pile up between the 30-day AI-
   insights cadence runs. Updates `last_auto_sync_at` on every
-  check (success or partial failure).
+  check (success or partial failure) — to the time the run STARTED, written once
+  it's over (seams audit #4 B6: stamping the end made a run longer than the
+  runner's 5-minute check not due an interval later, so an hourly sync ran every
+  2 hours); due when that start is at least the interval minus 2 minutes ago
+  (`AUTO_SYNC_DUE_SLACK_MS`).
   Push notification only fires when at least one transaction was added, at
   least one balance actually CHANGED (`syncAllBalances` `accounts_changed`,
   computed in the balance UPDATE via a `WITH prev AS (…)` CTE and
@@ -7430,10 +7479,9 @@ SX3-pinned — the Sheets Income tab.
 **Seams & Invariants audit #4 (2026-11-02 — `.cycle/blocks/8-seams4-audit.md`, plan `.cycle/plan-seams4.md`):**
 24 findings in five batches. S4-1 (A1 push_state 'none' when nothing was delivered, B2 Sync Health reads only the
 watched jobs, S2 rename-rule re-key one survivor per cadence in one transaction, B3 a Perfin-only backup warns under
-the shell, C1 the contribution-limits Save) is done. Open: S4-2 (B1 a job that never settles stops every job — no
-per-run deadline, no Plaid client timeout; B5 shutdown doesn't await the running job; B6 bank auto-sync stamps at the
-end of its run; B4 the PIN check states SHELL_PIN's exact length — an INV-126 gap; A3 the shared-database check
-compares hostnames), S4-3 (S1 the forecast's merchant key isn't trimmed; S3 a bill due today is listed but not
+the shell, C1 the contribution-limits Save) and S4-2 (B1 a deadline per scheduled run + a 90 s Plaid timeout, B5
+shutdown waits for the running job, B6 auto-sync stamps its start time, B4 no PIN length in the operator check, A3 the
+databases' identity compared at boot) are done. Open: S4-3 (S1 the forecast's merchant key isn't trimmed; S3 a bill due today is listed but not
 projected; S6 the cash alert's stale gate reads the newest balance; S4 data-health's sync warnings read the global
 stamps; S5 a deleted row's `restorable` ignores the bank-removed / gone-account rules), S4-4 (A2 the two apps'
 "open linked task" predicates differ on source_detached; A6 a held push isn't counted by Per-sistant's check; A5
@@ -7442,7 +7490,10 @@ save keeps the refused value; C3 the emergency-fund note dropped beside a projec
 after a failed first load; C5 Since-you-last-looked amounts print "$-X"; C6 Per-sistant's heatmap uses the UTC day).
 S4-1 follow-ons: with GITHUB_OPS_TOKEN set (no SERVER_BACKUPS) the GitHub backup check can't see a Perfin-only
 backup; a rename re-key keeps only the survivor's user state (a displaced row's notes / dismissed state are dropped
-when the survivor has its own); a rename rule's transaction holds its rows' locks until COMMIT. OPERATOR: set the
+when the survivor has its own); a rename rule's transaction holds its rows' locks until COMMIT. S4-2 follow-ons: a
+run past its deadline is abandoned, not stopped (its writes still land), and a sync that legitimately takes over 30
+minutes is recorded as a failed run; there is no heartbeat check for the runner itself no longer checking (a check can't
+hang any more — its queries have deadlines). OPERATOR: set the
 `PERSISTENT_DATABASE_URL` repository secret for Database Backup (Operator Checks warns until a backup dumps both).
 
 **Cycle 8 (late-Oct 2026 broad scan) — open until their batches run** (the scan's
@@ -8351,6 +8402,8 @@ INV-150 | The cash plan's figures come from code, never the model: services/advi
 INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes sets those columns (never the detectors; a rename re-key only copies the user's own setting from the row it retires onto the surviving row still on the default — E1 follow-on) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/cycle8-e1-followons.test.js + tests/contract/forecast-e1a + e1-followons
 INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read ; the dashboard's "Since you last looked" follows the mark-before-read and forward-only rules without the overlap — /seen stores the mark its GET read (seen_token, cycle-8 E2d), never now() | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/cycle8-e2d.test.js + tests/contract/txn-watermark-e2c + whats-new-e2d + c8-batch4
 INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push — 'sent' only once a device received it, 'none' when nothing was delivered (seams audit #4 A1); a held push is released once quiet hours end — marked sent only after the push reached a device, one summary for several, expired (left in the bell) after 12 hours — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d); Per-sistant's check marks notify:false an item Perfin pushed (push_state sent) in the last 12 hours, still listed, and housing_due steps aside only for its own month's open task (cycle-8 E3e) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js + apps/per-sistant/tests/cycle8-e3e.test.js + tests/contract/notify-e3e.contract.test.js
+INV-155 | A scheduled job runs when it is due and once across processes: services/job-runner.js claims it with a conditional UPSERT of job_runs.last_ran_at (≥ 90% of the cadence old — a failed claim runs it anyway), checks a when() gate in memory before any query, runs due jobs one at a time; every run has a deadline (register timeoutMs, else 15 min; the runner's own queries 1 min) — past it the run is reported through onTimeout as a failed outcome, abandoned and never started again until it has settled (seams audit #4 B1) | Subsystem: Platform, Shell & Auth | Verify: tests/cycle8-e2a.test.js + tests/cycle8-e2b.test.js + tests/seams-audit-4.test.js + tests/contract/job-runner-e2a + scheduler-e2b
+INV-156 | Under the shell the two apps never share a database unless ALLOW_SHARED_DATABASE=true: start() refuses PERSISTENT_DATABASE_URL unset or naming the same host + port + database (sharedDatabaseProblem) and, before either app migrates, two pools whose database identity (name, oid, server start time) is the same (sharedDatabaseIdentityProblem — an unreadable identity is unknown, never shared); Operator Checks' local:databases applies both | Subsystem: Platform, Shell & Auth | Verify: tests/broad-scan-c8-batch1.test.js + tests/seams-audit-4.test.js + tests/contract/seams4-s4-2
 INV-154 | Freshness has one definition — services/freshness.js (readConnections / overallFreshness / connectionFreshness) behind Sync Health's connection list (gatherDataHealth), GET /api/data-freshness and the nav badge; the badge never shows a fresher age than the oldest active bank connection's own last_synced_at, a connection needing re-authentication or disconnected makes it stale ("Reconnect <bank>"), and the global user_settings stamps are read only when no connection exists; colour comes from a level class, never an inline style (cycle-8 E4b) | Subsystem: Settings, Notifications & Cross-app / Web UI | Verify: tests/cycle8-e4b.test.js + tests/contract/operator-freshness-e4b + e2e/pages.spec.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
