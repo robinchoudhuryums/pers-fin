@@ -10,7 +10,7 @@ to the "none in progress" state.
 ## Current Cycle
 
 Cycle: 8
-Phase: reflect
+Phase: audit
 Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
 Updated: 2026-11-02
 
@@ -2306,7 +2306,17 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 1 (cycle 8 reflected 2026-11-02; Seams & Invariants audit #3, 2026-10-22 — record below; audit #2 June 2026 below it.)
+- **Subsystem cycles since last Seams audit:** 0 (Seams & Invariants audit #4, 2026-11-02 — record below; audit #3 2026-10-22 and #2 June 2026 below it.)
+
+### Seams & Invariants audit #4 (2026-11-02 — counter reset to 0)
+Four parallel read-only reviews of cycle 8's seams (cross-app, scheduler/ops/migrations, shared
+truth, client↔server), each finding re-verified. READ-ONLY — 24 findings, none fixed yet: 6 Medium
+(A1 push_state 'sent' with no live subscription silences Per-sistant for 12 h; B2 the job-watchdog
+row reads stale ~36 h after deploy; S2 a rename rule over two same-cadence keys 500s half-applied;
+B3 the backup stamped with Per-sistant undumped; B1 one hung job stops every job; C1 a failed
+account load wipes contribution limits on Save) and 18 Low. FAIL: INV-124, INV-126; partial
+INV-142/145/148/151/153/154/157. Block: `.cycle/blocks/8-seams4-audit.md`. Two CI-only test
+failures (advice-a1 date, webhooks w1/w2 timing) fixed in d33cb7f on PR #134.
 
 ### Seams & Invariants audit #3 (2026-10-22 — counter reset to 0)
 Four parallel read-only reviews (cross-app, client↔server, ops, shared truth + mounts), each finding
