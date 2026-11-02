@@ -26,6 +26,13 @@ afterEach(() => { dbModule.pool.query = originalQuery; });
 const ca = require("../teller/services/cash-alerts");
 const fq = require("../teller/services/financial-queries");
 const jobHealth = require("../teller/services/job-health");
+const scheduled = (name) => {
+  const st = require("../teller/startup");
+  st.startBackgroundJobs();
+  const job = st._scheduler.runner().list().find((j) => j.name === name);
+  st.stopBackgroundJobs();
+  return job;
+};
 
 const NOW = new Date("2026-03-10T15:00:00Z");
 const TODAY = "2026-03-10";
@@ -136,6 +143,7 @@ describe("runCashAlerts — alert and dedup", () => {
     assert.deepEqual(d.emails, [{ t: "Low cash ahead", b: d.sent[0].body }]);
     assert.deepEqual(pool.calls.updates[0], {
       alert: { breach_date: "2026-03-12", low_date: "2026-03-14", low_balance: 100, notified_at: NOW.toISOString() },
+      last_notified: { breach_date: "2026-03-12", notified_at: NOW.toISOString() },
       last_check: { at: NOW.toISOString(), outcome: "notified", breach_date: "2026-03-12", floors_below: 0 },
     });
   });
@@ -164,12 +172,17 @@ describe("runCashAlerts — alert and dedup", () => {
     assert.equal(notYet.sent.length, 0);
   });
 
-  it("no breach → clear: a recorded alert is dropped silently", async () => {
+  it("no breach → clear: a recorded alert is dropped silently, its notification remembered (F11)", async () => {
     const d = deps({ forecast: { projection: [{ date: "2026-03-11", balance: 900 }], lowest: { date: "2026-03-11", balance: 900 } } });
-    const pool = fakePool(row({ cash_alert_state: { alert: { breach_date: "2026-03-12", notified_at: hoursAgo(5).toISOString() } } }));
+    const notifiedAt = hoursAgo(5).toISOString();
+    const pool = fakePool(row({ cash_alert_state: { alert: { breach_date: "2026-03-12", notified_at: notifiedAt } } }));
     assert.equal((await run(pool, d)).status, "clear");
     assert.equal(d.sent.length, 0);
-    assert.deepEqual(pool.calls.updates[0], { alert: null, last_check: { at: NOW.toISOString(), outcome: "clear", floors_below: 0 } });
+    assert.deepEqual(pool.calls.updates[0], {
+      alert: null,
+      last_notified: { breach_date: "2026-03-12", notified_at: notifiedAt },
+      last_check: { at: NOW.toISOString(), outcome: "clear", floors_below: 0 },
+    });
   });
 
   it("a balance AT the floor is not below it", async () => {
@@ -210,7 +223,8 @@ describe("the cash-alerts job", () => {
     const src = fs.readFileSync(path.join(__dirname, "../teller/startup.js"), "utf8");
     const body = src.slice(src.indexOf("async function runCashAlertsTick()"), src.indexOf("\n}\n", src.indexOf("async function runCashAlertsTick()")));
     assert.doesNotMatch(body, /isUserActive\(\)/);
-    assert.match(src, /setInterval\(\(\) => runCashAlertsTick\(\), 60 \* 60 \* 1000\)/);
+    // Cycle-8 E2b: scheduled by the job runner, hourly, with no activity gate.
+    assert.deepEqual(scheduled("cash-alerts"), { name: "cash-alerts", everyMs: 3600e3, gated: false });
   });
 
   it("records an outcome only when it evaluated; a failure or an unlogged alert as an error", async () => {
@@ -272,7 +286,7 @@ describe("Settings — cash alert fields", () => {
     for (const id of ["cash-alert-toggle", "cash-alert-threshold", "cash-alert-horizon"]) {
       assert.match(v, new RegExp('id="' + id + '"[^>]*aria-label="'), id + " is labelled");
     }
-    assert.match(v, /\['cash-alert-toggle', 'change', function\(\) \{ updateSetting\('cash_alert_enabled', this\.checked\); \}\]/);
+    assert.match(v, /\['cash-alert-toggle', 'change', function\(\) \{ saveToggle\(this, 'cash_alert_enabled'\); \}\]/);
     assert.match(v, /updateSetting\('cash_alert_horizon_days', parseInt\(this\.value, 10\)\)/);
     assert.match(v, /var n = parseAmountInput\(document\.getElementById\('cash-alert-threshold'\)\.value\);[\s\S]{0,140}updateSetting\('cash_alert_threshold', n\)/);
   });

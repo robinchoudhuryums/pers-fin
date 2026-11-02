@@ -13,8 +13,41 @@
 // Read-only. Each line has its own time budget (1.5s); a line whose read fails
 // or runs over is null, and the tile keeps just its description. landingStatus
 // never throws.
+//
+// Cycle-8 F33: each line's read is single-flight and its result kept 30 s, per
+// pool. A read that ran over the budget kept running with nothing waiting for
+// it, and every visit started another set of queries — on a 3-connection pool a
+// slow database piled them up. Now a visit during a read waits on that same
+// read, a visit within 30 s of a finished one reuses its line (a failure too,
+// as null), and a read that finishes after its page was served is what the next
+// visit shows.
 
 const TIMEOUT_MS = 1500;
+const CACHE_MS = 30 * 1000;
+const slots = new WeakMap(); // pool → { at, value, running }
+
+// fn's result for this pool: the cached one when under CACHE_MS old, else the
+// read in flight, else a new read. Never rejects (a failure is null).
+function sharedRead(pool, label, fn, now = Date.now) {
+  let slot = slots.get(pool);
+  if (!slot) { slot = { at: 0, value: undefined, running: null }; slots.set(pool, slot); }
+  if (slot.value !== undefined && now() - slot.at < CACHE_MS) return Promise.resolve(slot.value);
+  if (!slot.running) {
+    slot.running = Promise.resolve()
+      .then(fn)
+      .catch((err) => {
+        console.warn("landing status: " + label + " failed: " + (err && err.message));
+        return null;
+      })
+      .then((v) => {
+        slot.value = v === undefined ? null : v;
+        slot.at = now();
+        slot.running = null;
+        return slot.value;
+      });
+  }
+  return slot.running;
+}
 
 function defaultDeps() {
   return {
@@ -74,11 +107,11 @@ async function landingStatus({ perfinPool, persistentPool, deps, timeoutMs = TIM
   const d = Object.assign(defaultDeps(), deps || {});
   const [summary, counts] = await Promise.all([
     perfinPool
-      ? within("perfin", timeoutMs, () => d.gatherDashboardSummary(perfinPool, { parts: ["rent", "bills", "uncategorized"] }))
+      ? within("perfin", timeoutMs, () => sharedRead(perfinPool, "perfin", () => d.gatherDashboardSummary(perfinPool, { parts: ["rent", "bills", "uncategorized"] })))
       : null,
-    persistentPool ? within("per-sistant", timeoutMs, () => d.taskDueCounts(persistentPool)) : null,
+    persistentPool ? within("per-sistant", timeoutMs, () => sharedRead(persistentPool, "per-sistant", () => d.taskDueCounts(persistentPool))) : null,
   ]);
   return { perfin: perfinLine(summary), persistent: persistentLine(counts) };
 }
 
-module.exports = { landingStatus, perfinLine, persistentLine, TIMEOUT_MS };
+module.exports = { landingStatus, perfinLine, persistentLine, sharedRead, TIMEOUT_MS, CACHE_MS };

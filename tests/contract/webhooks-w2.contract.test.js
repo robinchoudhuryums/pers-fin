@@ -30,7 +30,17 @@ describe("Webhooks W2 on real Postgres", { skip: SKIP }, () => {
   let pool, app, realGet, savedSecret;
   const q = (s, p) => pool.query(s, p);
   const rows = (provider) => q("SELECT event_type, event_code, subject, dedupe_key, status FROM webhook_events WHERE provider = $1 ORDER BY id", [provider]).then((r) => r.rows);
-  const settle = () => new Promise((r) => setTimeout(r, 50));
+  // Wait for the detached handlers: the route answers 200 before its handler runs,
+  // so poll until no recent row is still received / processing (a fixed 50 ms
+  // sleep lost the race on a slow CI runner). Old seeded rows are left out.
+  const settle = async (ms = 3000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const n = (await pool.query("SELECT count(*)::int AS n FROM webhook_events WHERE status IN ('received', 'processing') AND received_at > now() - interval '1 hour'")).rows[0].n;
+      if (n === 0 || Date.now() > end) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
   const quiet = async (fn) => { const w = console.warn; console.warn = () => {}; try { return await fn(); } finally { console.warn = w; } };
 
   before(async () => {

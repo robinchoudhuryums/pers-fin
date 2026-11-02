@@ -131,6 +131,10 @@ function realizedGains(txns, { year } = {}) {
     const qty = Math.abs(num(t.quantity));
     const date = ymd(t.txn_date);
     if (BUY_TYPES.has(t.type)) {
+      // "buy to cover" closes a short sale, which isn't modelled (cycle-8
+      // F15): as a lot it was a phantom long position that later sales
+      // consumed FIFO, reported with a "full" basis.
+      if (t.subtype === "buy to cover") continue;
       if (qty > EPS) book.push({ qty, cost: Math.abs(num(t.amount)), date });
     } else if (SELL_TYPES.has(t.type)) {
       if (t.subtype === "sell short" || qty <= EPS) continue; // shorts aren't modelled
@@ -232,6 +236,11 @@ function investmentIncome(rows, accounts) {
     else if (CAP_GAIN_SHORT.has(sub)) field = "capital_gain_distributions_short";
     else if (TAX_WITHHELD.has(sub)) field = "tax_withheld";
     if (!field) continue;
+    // A `fee` row with an income subtype is money OUT — margin interest
+    // charged, a dividend paid on a short position — not income (cycle-8 F9:
+    // netted against it, interest could go negative and hide the 1099-INT
+    // suggestion). Tax withheld is reported whatever the row's type.
+    if (field !== "tax_withheld" && String(t.type || "").toLowerCase() === "fee") continue;
     if (!byAccount.has(a.id)) byAccount.set(a.id, blank(a));
     const rec = byAccount.get(a.id);
     // Tax withheld is cash OUT (positive amount): report it positive too.

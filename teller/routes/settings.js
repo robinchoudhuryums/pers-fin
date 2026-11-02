@@ -9,6 +9,7 @@ const errorLog = require("../services/error-log");
 const { INSIGHT_MODULES } = require("../data/reference-data");
 const { csvText, csvDate } = require("../services/csv-export");
 const operatorChecksService = require("../services/operator-checks");
+const freshnessSvc = require("../services/freshness");
 
 let sheetsSync;
 try {
@@ -24,13 +25,21 @@ router.get("/api/settings", async (req, res) => {
   // suppresses the "configure the webhook" prereq warning.
   const embedded = req.app.get("embedded") === true;
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, insight_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override, cash_alert_enabled, cash_alert_threshold, cash_alert_horizon_days, cash_alert_state, cash_alerts_checked_at, payday_alerts_enabled, linked_tasks_enabled, linked_tasks_sources, linked_tasks_bill_lead_days, linked_tasks_state FROM user_settings WHERE id = 1");
-    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false, insight_emails_enabled: true, cash_alert_enabled: false, cash_alert_threshold: 500, cash_alert_horizon_days: 14, cash_alert_state: null, cash_alerts_checked_at: null, payday_alerts_enabled: false, linked_tasks_enabled: false, linked_tasks_sources: { ...require("../services/linked-tasks").DEFAULT_SOURCES }, linked_tasks_bill_lead_days: 3, linked_tasks_state: null };
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, contribution_limits, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, insight_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override, cash_alert_enabled, cash_alert_threshold, cash_alert_horizon_days, cash_alert_state, cash_alerts_checked_at, payday_alerts_enabled, advice_alerts_enabled, advice_state, linked_tasks_enabled, linked_tasks_sources, linked_tasks_bill_lead_days, linked_tasks_state, notify_quiet_hours, notify_muted_types FROM user_settings WHERE id = 1");
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false, insight_emails_enabled: true, cash_alert_enabled: false, cash_alert_threshold: 500, cash_alert_horizon_days: 14, cash_alert_state: null, cash_alerts_checked_at: null, payday_alerts_enabled: false, advice_alerts_enabled: false, advice_state: null, contribution_limits: {}, linked_tasks_enabled: false, linked_tasks_sources: { ...require("../services/linked-tasks").DEFAULT_SOURCES }, linked_tasks_bill_lead_days: 3, linked_tasks_state: null };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
     // The stored sources over the defaults, so a source added later (T3.3 K2's
     // tax_documents) shows as it runs — on — until the user switches it off.
     row.linked_tasks_sources = require("../services/linked-tasks").effectiveSources(row.linked_tasks_sources);
+    // Cycle-8 E3a (G2): quiet hours + muted kinds, normalized, with the kind
+    // catalog and the zone the quiet hours are read in (the Settings section).
+    const notifyPrefs = require("../services/notify-prefs");
+    const np = notifyPrefs.normalizePrefs(row);
+    row.notify_quiet_hours = np.quiet;
+    row.notify_muted_types = np.muted;
+    row.notify_kinds = notifyPrefs.catalog();
+    row.notify_timezone = require("../services/financial-queries").APP_TIMEZONE;
     // always_on (services/hosting.js): the host never sleeps, so Settings
     // replaces the Keep-Alive controls with a note.
     res.json({ ...defaults, ...row, embedded, always_on: require("../services/hosting").alwaysOn(), available_modules: INSIGHT_MODULES });
@@ -259,12 +268,24 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("cash_alert_horizon_days = $" + idx++); values.push(d);
     }
     // Payday alerts (roadmap T2.2 L3). Switching them ON moves the "landed"
-    // watermark to now (the CASE reads the row's old switch), so deposits that
-    // arrived while they were off aren't announced.
+    // watermark — the time and, since cycle-8 E2c, the newest transaction id —
+    // to now (the CASE reads the row's old switch), so deposits that arrived
+    // while they were off aren't announced.
     if (req.body.payday_alerts_enabled !== undefined) {
       if (typeof req.body.payday_alerts_enabled !== "boolean") return res.status(400).json({ error: "payday_alerts_enabled must be true or false" });
       updates.push("payday_alerts_enabled = $" + idx++); values.push(req.body.payday_alerts_enabled);
-      if (req.body.payday_alerts_enabled) updates.push("last_income_alert_at = CASE WHEN payday_alerts_enabled THEN last_income_alert_at ELSE now() END");
+      if (req.body.payday_alerts_enabled) {
+        updates.push("last_income_alert_at = CASE WHEN payday_alerts_enabled THEN last_income_alert_at ELSE now() END");
+        updates.push("last_income_alert_txn_id = CASE WHEN payday_alerts_enabled THEN last_income_alert_txn_id ELSE (SELECT COALESCE(MAX(id), 0) FROM transactions) END");
+      }
+    }
+    // Roadmap T4.1 A4: "tell me when my plan changes". Switching it on drops
+    // the stored signature, so the first check records a fresh baseline
+    // instead of comparing with a plan from before it was off.
+    if (req.body.advice_alerts_enabled !== undefined) {
+      if (typeof req.body.advice_alerts_enabled !== "boolean") return res.status(400).json({ error: "advice_alerts_enabled must be true or false" });
+      updates.push("advice_alerts_enabled = $" + idx++); values.push(req.body.advice_alerts_enabled);
+      if (req.body.advice_alerts_enabled) updates.push("advice_state = CASE WHEN advice_alerts_enabled THEN advice_state ELSE NULL END");
     }
     // Linked tasks (roadmap T2.4 X2a — services/linked-tasks.js). Strict
     // (INV-59): a non-boolean switch, a sources map that isn't an object of
@@ -354,6 +375,42 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("target_allocation_pct = $" + idx++);
       values.push(JSON.stringify(clean));
     }
+    // Roadmap T4.1 A10: yearly contribution limits per investment account,
+    // entered by hand (no account type is assumed). The whole map is replaced;
+    // a key is "investment:<id>" or "linked:<id>" (investment_flows' source),
+    // a value 0-1,000,000 dollars; {} or null clears it.
+    if (req.body.contribution_limits !== undefined) {
+      const m = req.body.contribution_limits;
+      if (!(m === null || (typeof m === "object" && !Array.isArray(m)))) {
+        return res.status(400).json({ error: "contribution_limits must be an object of {\"investment:<id>\" | \"linked:<id>\": dollars} or null" });
+      }
+      const clean = {};
+      for (const [k, v] of Object.entries(m || {})) {
+        if (!/^(investment|linked):[1-9][0-9]{0,9}$/.test(k)) {
+          return res.status(400).json({ error: "contribution_limits keys must be \"investment:<id>\" or \"linked:<id>\"" });
+        }
+        const n = typeof v === "number" ? v : (typeof v === "string" && v.trim() !== "" ? Number(v) : NaN);
+        if (!Number.isFinite(n) || n < 0 || n > 1000000) {
+          return res.status(400).json({ error: "contribution_limits values must be numbers between 0 and 1,000,000" });
+        }
+        clean[k] = Math.round(n * 100) / 100;
+      }
+      updates.push("contribution_limits = $" + idx++);
+      values.push(JSON.stringify(clean));
+    }
+    // Cycle-8 E3a (G2): quiet hours { enabled, start: "HH:MM", end: "HH:MM" }
+    // (null → the default, off) and the muted notification kinds (a list of
+    // mutable kind keys; null → none). services/notify-prefs.js validates both.
+    if (req.body.notify_quiet_hours !== undefined) {
+      const q = require("../services/notify-prefs").parseQuietHours(req.body.notify_quiet_hours);
+      if (q.error) return res.status(400).json({ error: q.error });
+      updates.push("notify_quiet_hours = $" + idx++); values.push(JSON.stringify(q.value));
+    }
+    if (req.body.notify_muted_types !== undefined) {
+      const m = require("../services/notify-prefs").parseMutedKinds(req.body.notify_muted_types);
+      if (m.error) return res.status(400).json({ error: m.error });
+      updates.push("notify_muted_types = $" + idx++); values.push(JSON.stringify(m.value));
+    }
     // Shell-layer idle-session timeout (minutes). Sliding window — the shell's
     // requireAuth refreshes the cookie on every request with this many minutes
     // of remaining life. Bounded 5 min … 7 days (10080 min) so a typo can't
@@ -393,6 +450,21 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body && req.body.payday_alerts_enabled !== undefined) {
       require("../services/payday-alerts").invalidate();
     }
+    if (req.body && req.body.advice_alerts_enabled !== undefined) {
+      require("../services/advice-alerts").invalidate();
+    }
+    // Quiet hours / muted kinds are cached 60 s by sendToAll and the release
+    // job waits in memory for quiet hours to end — a change applies at once.
+    if (req.body && (req.body.notify_quiet_hours !== undefined || req.body.notify_muted_types !== undefined)) {
+      require("./notifications").invalidateNotifyPrefs();
+    }
+    // The bank auto-sync and the insights auto-trigger skip their settings
+    // read while off or not due (cycle-8 F29); a change to what decides that
+    // makes the next tick look again.
+    const memoJobs = [];
+    if (req.body && (req.body.auto_sync_enabled !== undefined || req.body.auto_sync_interval_hours !== undefined)) memoJobs.push("bank-auto-sync");
+    if (req.body && (req.body.insights_enabled !== undefined || req.body.insights_cadence_days !== undefined)) memoJobs.push("insights-auto-trigger");
+    if (memoJobs.length) require("../startup").invalidateJobMemos(memoJobs);
     // Linked tasks: the runner skips its settings read for the day once it
     // found itself off; a change makes the next run look again.
     if (Object.keys(req.body || {}).some(k => k.startsWith("linked_tasks_"))) {
@@ -437,6 +509,10 @@ router.post("/api/linked-tasks/run", async (req, res) => {
 // badge uses these thresholds to show green/yellow/red and previously had to
 // duplicate the threshold values; exposing `level` directly keeps the API
 // and UI consistent without requiring callers to repeat threshold math.
+// Cycle-8 E4b (G3): also `connections` (the list Sync Health shows) and
+// `overall` — the badge's figure, from services/freshness.js: the OLDEST active
+// connection, a re-auth / disconnected one as stale, the global stamps only with
+// no connection at all.
 router.get("/api/data-freshness", async (_req, res) => {
   try {
     const result = await pool.query(
@@ -444,22 +520,23 @@ router.get("/api/data-freshness", async (_req, res) => {
     );
     const s = result.rows[0] || {};
     const now = Date.now();
-    const FRESH_SEC = 6 * 60 * 60;       // <6h → green
-    const STALE_SEC = 24 * 60 * 60;       // >24h → red
+    const { FRESH_SEC, STALE_SEC } = freshnessSvc;
     function ageInfo(ts) {
-      if (!ts) return { timestamp: null, age_seconds: null, stale: true, level: "stale" };
-      const age = Math.floor((now - new Date(ts).getTime()) / 1000);
-      const level = age < FRESH_SEC ? "fresh" : age < STALE_SEC ? "aging" : "stale";
+      const info = freshnessSvc.ageInfo(ts, now);
       // SETT2: `stale` must agree with level==="stale" at the exact STALE_SEC
       // boundary — use >= (level uses `< STALE_SEC ? aging : stale`).
-      return { timestamp: ts, age_seconds: age, stale: age >= STALE_SEC, level };
+      return { timestamp: info.timestamp, age_seconds: info.age_seconds,
+        stale: info.timestamp ? info.age_seconds >= STALE_SEC : true, level: info.level };
     }
+    const conn = await freshnessSvc.connectionFreshness(pool, { now, globals: s });
     res.json({
       thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
       transactions: ageInfo(s.last_txn_sync_at),
       balances: ageInfo(s.last_balance_sync_at),
       auto_sync: ageInfo(s.last_auto_sync_at),
       insights: ageInfo(s.insights_last_run),
+      connections: conn.connections,
+      overall: conn.overall,
     });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -477,15 +554,9 @@ router.get("/api/data-freshness", async (_req, res) => {
 // summary's Sync Health item read this one function). Throws only when the
 // settings read itself fails; every other part is fail-soft as before.
 async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
-  const FRESH_SEC = 6 * 60 * 60;
-  const STALE_SEC = 24 * 60 * 60;
+  const { FRESH_SEC, STALE_SEC } = freshnessSvc;
   const now = Date.now();
-  function ageInfo(ts) {
-    if (!ts) return { timestamp: null, age_seconds: null, level: "stale" };
-    const age = Math.floor((now - new Date(ts).getTime()) / 1000);
-    const level = age < FRESH_SEC ? "fresh" : age < STALE_SEC ? "aging" : "stale";
-    return { timestamp: ts, age_seconds: age, level };
-  }
+  const ageInfo = (ts) => freshnessSvc.ageInfo(ts, now);
   const [settingsRow, teller, plaid, events] = await Promise.all([
     db.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result, last_sheets_sync_result FROM user_settings WHERE id = 1"),
     db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
@@ -599,26 +670,12 @@ async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
   }
 
   // Per-connection freshness (roadmap T2.1 W6): when each Teller enrollment /
-  // Plaid item last synced completely (its own last_synced_at — W3 / W5).
+  // Plaid item last synced completely (its own last_synced_at — W3 / W5). Read
+  // through services/freshness.js, the one definition the nav badge and
+  // /api/data-freshness share (cycle-8 E4b).
   let connections = [];
   try {
-    const cr = await db.query(
-      `SELECT 'teller' AS provider, id, institution_name, status, last_synced_at
-         FROM teller_enrollments WHERE status <> 'SUSPENDED'
-       UNION ALL
-       SELECT 'plaid', id, institution_name,
-              CASE WHEN last_error_code IS NOT NULL THEN 'NEEDS_REAUTH' ELSE status END,
-              last_synced_at
-         FROM plaid_items WHERE status <> 'CSV'
-       ORDER BY 1, 3`
-    );
-    connections = cr.rows.map(c => ({
-      provider: c.provider,
-      id: c.id,
-      institution: c.institution_name,
-      status: c.status,
-      last_synced: ageInfo(c.last_synced_at),
-    }));
+    connections = await freshnessSvc.readConnections(db, now);
   } catch (e) { console.error("data-health connections read failed:", e.message); }
 
   let operatorChecks = null;

@@ -19,7 +19,7 @@
 // Nothing here is sent to an AI model. Every CSV text cell goes through csvText
 // (the formula guard, INV-83) and every date through csvDate.
 
-const { todayStr, getIncomeForYear, getTaxDeductionReport } = require("./financial-queries");
+const { todayStr, getIncomeForYear, getTaxDeductionReport, APP_TIMEZONE } = require("./financial-queries");
 const { csvText: q, csvDate } = require("./csv-export");
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -264,11 +264,25 @@ function rentPaidCsv(s, year) {
   return housingPaymentsCsv({ year, total: s.total, payments: s.payments });
 }
 
+// The APP_TIMEZONE calendar day of a TIMESTAMPTZ (dismissed_at). csvDate reads a
+// Date with the server's local getters — UTC on Render — so a form dismissed in
+// the evening west of UTC was listed as dismissed the next day (cycle-8 F13).
+function zoneDay(ts) {
+  if (!ts) return "";
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: APP_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+  } catch {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
 function documentsCsv(s) {
   if (!s.ok) return errorCsv(s);
   return lines("Form,Issuer,Usually Arrives By,Received,Dismissed,State,Origin,Notes",
     s.documents.map((d) => [
-      q(d.form), q(d.issuer), csvDate(d.expected_by), csvDate(d.received_at), csvDate(d.dismissed_at),
+      q(d.form), q(d.issuer), csvDate(d.expected_by), csvDate(d.received_at), zoneDay(d.dismissed_at),
       q(d.state), q(d.origin), q(d.notes),
     ]));
 }

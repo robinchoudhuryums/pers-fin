@@ -107,6 +107,7 @@ describe("PSC-3 — digests / alerts / CSV reminder are watermark-gated", () => 
 
   it("weekly digest: runs on the configured day, then skips its DB read for the rest of the day", async () => {
     let queries = 0, runs = 0;
+    insights.DAILY_DIGEST_HOUR = 0; // past the 07:00 gate (cycle-8 F53)
     dbModule.pool.query = async () => { queries++; return { rows: [{ weekly_digest_enabled: true, weekly_digest_day: weekday }] }; };
     insights.runWeeklyDigest = async () => { runs++; return { sent: true }; };
     await startup._awayJobs.runWeeklyDigestTick();
@@ -117,6 +118,7 @@ describe("PSC-3 — digests / alerts / CSV reminder are watermark-gated", () => 
 
   it("weekly digest: a failed send stays unsettled and retries next tick", async () => {
     let runs = 0;
+    insights.DAILY_DIGEST_HOUR = 0;
     dbModule.pool.query = async () => ({ rows: [{ weekly_digest_enabled: true, weekly_digest_day: weekday }] });
     insights.runWeeklyDigest = async () => { runs++; return { sent: false, reason: "webhook_failed" }; };
     await startup._awayJobs.runWeeklyDigestTick();

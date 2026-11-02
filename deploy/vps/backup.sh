@@ -63,7 +63,7 @@ CUR=""
 # (SERVER_BACKUPS=true in app.env). A failed stamp doesn't fail the backup —
 # the check will just report it as missing until the next night's stamp.
 docker compose exec -T db psql -U postgres -d perfin -qc \
-  "UPDATE user_settings SET last_backup_at = now() WHERE id = 1" >/dev/null \
+  "UPDATE user_settings SET last_backup_at = now(), last_backup_source = 'server' WHERE id = 1" >/dev/null \
   || echo "$(date -u +%FT%TZ) WARNING: couldn't record the backup time in user_settings" >&2
 
 find "$DIR" -name '*.dump.gpg' -mtime +"$KEEP" -delete

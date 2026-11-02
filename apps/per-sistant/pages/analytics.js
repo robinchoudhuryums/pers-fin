@@ -126,13 +126,15 @@ async function load() {
   // Heatmap (GitHub-style, 90 days)
   var heatmap = data.heatmap || [];
   var heatmapMap = {};
-  heatmap.forEach(h => { heatmapMap[h.day ? new Date(h.day).toISOString().split('T')[0] : ''] = parseInt(h.count); });
+  // Cycle-8 F48: calendar-day keys on both sides (parseCalDate / ymdOfLocal) --
+  // the grid used toISOString() on a local date, a day off west of UTC.
+  heatmap.forEach(h => { var hd = h.day ? parseCalDate(h.day) : null; if (hd) heatmapMap[ymdOfLocal(hd)] = parseInt(h.count); });
   var maxHeat = Math.max(...heatmap.map(h => parseInt(h.count)), 1);
   var heatHtml = '';
   var today = new Date();
   for (var i = 90; i >= 0; i--) {
     var d = new Date(today); d.setDate(d.getDate() - i);
-    var key = d.toISOString().split('T')[0];
+    var key = ymdOfLocal(d);
     var count = heatmapMap[key] || 0;
     var intensity = count === 0 ? 0 : count <= maxHeat * 0.33 ? 1 : count <= maxHeat * 0.66 ? 2 : 3;
     var colors = ['var(--paper-2)', 'color-mix(in oklch, var(--good) 30%, transparent)', 'color-mix(in oklch, var(--good) 60%, transparent)', 'var(--good)'];

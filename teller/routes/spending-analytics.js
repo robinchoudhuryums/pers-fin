@@ -355,7 +355,7 @@ router.get("/api/income-summary", async (req, res) => {
         [months, monthStart]
       ),
       pool.query(
-        `SELECT COALESCE(t.merchant_name, t.name) AS source,
+        `SELECT COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS source, -- a rename wins (cycle-8 F54)
                 ROUND(SUM(${INCOME_AMOUNT}), 2) AS total_income,
                 COUNT(*) AS deposit_count,
                 MAX(t.date) AS last_seen
@@ -367,7 +367,7 @@ router.get("/api/income-summary", async (req, res) => {
            -- divides a rolling-window total by a count that includes a partial month.
            AND t.date >= $2::date - make_interval(months => $1 - 1)
            AND ${INCOME_PREDICATE_T}
-         GROUP BY COALESCE(t.merchant_name, t.name)
+         GROUP BY COALESCE(t.user_merchant_name, t.merchant_name, t.name)
          ORDER BY total_income DESC
          LIMIT 10`,
         [months, monthStart]

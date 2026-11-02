@@ -5,11 +5,12 @@
 const express = require("express");
 
 const { serverError } = require("../errors");
+const { ymdOf } = require("../helpers");
 const { upcomingFacts } = require("./rag");
 const { gatherHealthSummary, todayStr } = require("./health");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "UTC";
 const { gatherJobRadarSummary } = require("./jobs");
-const { housingDue, housingDueSuffix } = require("./housing-due");
+const { housingDueUnlessTask, housingDueSuffix } = require("./housing-due");
 
 // Job Radar leads for the notification check (weekly cadence is driven by the
 // weekly refresh; the client's 12h dedup ledger prevents re-firing). No-op +
@@ -55,6 +56,67 @@ async function failedEmails(pool) {
   } catch { return []; }
 }
 
+// Quiet hours + muted kinds (cycle-8 E3c, G2): Perfin owns the setting for both
+// apps (teller/services/notify-prefs.js, required lazily — only under the
+// shell). Read-only through the wired perfinPool; standalone or on any failure
+// → null, and every entry may notify as before.
+function notifyPrefsModule() {
+  // No Perfin code alongside (a standalone deployment): no prefs, as before.
+  try { return require("../../../teller/services/notify-prefs"); } catch { return null; }
+}
+async function perfinNotifyPrefs(perfinPool) {
+  const np = perfinPool && notifyPrefsModule();
+  if (!np) return null;
+  try {
+    const r = await perfinPool.query("SELECT notify_quiet_hours, notify_muted_types FROM user_settings WHERE id = 1");
+    return np.normalizePrefs(r.rows[0] || null);
+  } catch (err) {
+    console.error("notification check: quiet hours read failed:", err.message);
+    return null;
+  }
+}
+// One real-world item, one alert (cycle-8 E3e, ST2): the items among these
+// entries that Perfin PUSHED in the last PUSHED_WINDOW_HOURS (its
+// notification_log rows with that item_key and push_state 'sent' — a push that
+// actually went out). Read-only through perfinPool; standalone or a failed
+// read → none, and the entries notify as before.
+const PUSHED_WINDOW_HOURS = 12;
+async function perfinPushedItems(perfinPool, items) {
+  const want = [...new Set((items || []).filter(Boolean))];
+  if (!perfinPool || !want.length) return new Set();
+  try {
+    const r = await perfinPool.query(
+      `SELECT DISTINCT item_key FROM notification_log
+        WHERE item_key = ANY($1::text[]) AND push_state = 'sent'
+          AND created_at > now() - make_interval(hours => $2)`,
+      [want, PUSHED_WINDOW_HOURS]);
+    return new Set(r.rows.map((row) => row.item_key));
+  } catch (err) {
+    console.error("notification check: Perfin push lookup failed:", err.message);
+    return new Set();
+  }
+}
+
+// A linked task's item: its source_key without "perfin:" (null otherwise).
+function itemOfTask(row) {
+  const k = row && row.source_key;
+  return typeof k === "string" && k.startsWith("perfin:") ? k.slice(7) : null;
+}
+
+// Each entry's kind and whether the dashboard may raise a browser notification
+// for it: false while quiet hours run (unless the kind bypasses them), for a
+// muted kind, or (E3e) for an item Perfin already pushed (`pushed`, a Set). The
+// list itself always carries every entry.
+function annotateNotify(list, prefs, now = new Date(), pushed = null) {
+  const np = notifyPrefsModule();
+  for (const n of list) {
+    n.kind = np ? np.kindOfCheckType(n.type) : null;
+    n.notify = !(prefs && np) || np.decide({ kind: n.kind, prefs, now, tz: APP_TIMEZONE }) === "sent";
+    if (n.notify && n.item && pushed && pushed.has(n.item)) n.notify = false;
+  }
+  return list;
+}
+
 // How far ahead to surface a fact's renewal/expiration (days).
 const FACT_LOOKAHEAD_DAYS = 30;
 
@@ -68,9 +130,9 @@ module.exports = function ({ pool }) {
       // the evening tomorrow's tasks read "due today").
       const today = todayStr();
       const perfinPool = req.app.get("perfinPool");
-      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar, vaultErr, failedMail] = await Promise.all([
-        pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
-        pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
+      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar, vaultErr, failedMail, prefs] = await Promise.all([
+        pool.query("SELECT id, title, due_date, source_key FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
+        pool.query("SELECT id, title, due_date, source_key FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
         pool.query("SELECT id, title, streak_count, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND recurring = true AND streak_count >= 3 AND due_date = $1", [today]),
         // F115: the reminder's LOCAL (APP_TIMEZONE) day — DATE(reminder_at) is
         // the UTC day, so an evening reminder west of UTC showed a day late.
@@ -79,20 +141,25 @@ module.exports = function ({ pool }) {
         // Fail-soft: a health-tables error degrades to "no habit alerts"
         // rather than 500ing the whole notification check.
         gatherHealthSummary(pool).catch(() => ({ due_today: 0, done_today: 0, streaks_at_risk: [] })),
-        // Cross-app rent/utilities (read-only via perfinPool), fail-soft.
-        housingDue(perfinPool),
+        // Cross-app rent/utilities (read-only via perfinPool), fail-soft —
+        // left out while a housing linked task is open (cycle-8 F23).
+        housingDueUnlessTask(perfinPool, pool, today),
         // Job Radar high-fit leads (fail-soft; no-op when disabled).
         jobRadarLeads(pool),
         vaultSyncError(pool),
         failedEmails(pool),
+        perfinNotifyPrefs(perfinPool),
       ]);
       const notifications = [];
-      dueSoon.rows.forEach(t => notifications.push({ type: "due_today", title: t.title, id: t.id, entity: "todo" }));
-      overdue.rows.forEach(t => notifications.push({ type: "overdue", title: t.title, id: t.id, entity: "todo" }));
+      // A linked task's entry carries its item (cycle-8 E3e) — it IS the surface
+      // for that item, so Perfin's push stands aside while it's open (E3d).
+      const withItem = (o, t) => { const item = itemOfTask(t); if (item) o.item = item; return o; };
+      dueSoon.rows.forEach(t => notifications.push(withItem({ type: "due_today", title: t.title, id: t.id, entity: "todo" }, t)));
+      overdue.rows.forEach(t => notifications.push(withItem({ type: "overdue", title: t.title, id: t.id, entity: "todo" }, t)));
       streaksAtRisk.rows.forEach(t => notifications.push({ type: "streak_at_risk", title: `${t.title} (${t.streak_count} streak)`, id: t.id, entity: "todo" }));
       reminders.rows.forEach(n => notifications.push({ type: "reminder", title: n.title, id: n.id, entity: "note" }));
       facts.forEach(f => {
-        const on = f.on_date ? new Date(f.on_date).toISOString().slice(0, 10) : "";
+        const on = f.on_date ? ymdOf(f.on_date) || "" : ""; // a DATE value's own day (cycle-8 F52)
         const label = f.kind === "expires" ? "expires" : String(f.kind).replace(/_/g, " ");
         const days = Number(f.days_away);
         notifications.push({
@@ -123,6 +190,7 @@ module.exports = function ({ pool }) {
           id: null,
           entity: "housing",
           days_away: due,
+          item: housing.item, // housing:<month> — Perfin's rent push and linked task (E3e)
         });
       }
       // Job Radar: a single summary line when there are high-fit/high-trust leads.
@@ -153,8 +221,11 @@ module.exports = function ({ pool }) {
           entity: "knowledge",
         });
       }
+      const np = prefs && notifyPrefsModule();
+      const pushed = await perfinPushedItems(perfinPool, notifications.map((n) => n.item));
       res.json({
-        notifications,
+        notifications: annotateNotify(notifications, prefs, new Date(), pushed),
+        quiet: !!(np && np.isQuiet(new Date(), prefs.quiet, APP_TIMEZONE)),
         counts: {
           due_today: dueSoon.rows.length,
           overdue: overdue.rows.length,
@@ -174,3 +245,7 @@ module.exports = function ({ pool }) {
 
   return router;
 };
+module.exports.annotateNotify = annotateNotify;
+module.exports.perfinNotifyPrefs = perfinNotifyPrefs;
+module.exports.perfinPushedItems = perfinPushedItems;
+module.exports.PUSHED_WINDOW_HOURS = PUSHED_WINDOW_HOURS;

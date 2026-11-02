@@ -84,6 +84,10 @@ function setMetaValue(meta, key, value) {
   }
 }
 
+// An unreadable line that STARTS with a privacy key (after indentation, a
+// list dash or a quote) — `  sensitivity: secret`, `sensitivity secret`.
+const PRIVACY_MENTION_RE = /^[\s\-"']*(sensitivity|embed|private)["']?\s*(?:[:=]|\s\S)/i;
+
 function parseFrontmatter(text) {
   const s = String(text || "");
   // Trailing spaces/tabs after either `---` are allowed (F132): an opener of
@@ -102,10 +106,18 @@ function parseFrontmatter(text) {
       continue;
     }
     listKey = null;
-    const mm = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
-    if (!mm) continue;
-    const key = mm[1].toLowerCase();
-    const val = stripYamlComment(mm[2].trim());
+    // cycle-8 F49: a quoted key (`"sensitivity": secret`) is a key — it used
+    // to be skipped, so the file was embedded and sent to Voyage / Claude.
+    const mm = line.match(/^(["']?)([A-Za-z0-9_-]+)\1\s*:\s*(.*)$/);
+    if (!mm) {
+      // A line we can't read that names a privacy key (an indented
+      // `  sensitivity: secret`, `sensitivity secret`, `- private: true`)
+      // fails closed: the file is private, never normal.
+      if (PRIVACY_MENTION_RE.test(line)) setMetaValue(meta, "sensitivity", "unparsed");
+      continue;
+    }
+    const key = mm[2].toLowerCase();
+    const val = stripYamlComment(mm[3].trim());
     if (val === "") { setMetaValue(meta, key, ""); listKey = key; continue; }
     if (/^(true|false)$/i.test(val)) setMetaValue(meta, key, /^true$/i.test(val));
     else if (/^\[.*\]$/.test(val)) {
@@ -175,8 +187,9 @@ const CHUNKING_VERSION = 2;
 // successful FULL sync stamps it into user_settings.vault_parse_version, and
 // Perfin's operator checks (cycle-7 ST4) ask for one full reindex while the
 // stored value is older. 2 = the cycle-7 F132 rules ("--- " delimiters,
-// repeated privacy keys fail closed).
-const VAULT_PARSE_VERSION = 2;
+// repeated privacy keys fail closed). 3 = cycle-8 F49 (quoted keys read, an
+// unreadable privacy-key line fails closed).
+const VAULT_PARSE_VERSION = 3;
 const DEFAULT_MAX_TOKENS = 480;   // comfortably inside voyage-3.5's window
 const DEFAULT_OVERLAP_TOKENS = 60;
 

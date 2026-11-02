@@ -15,9 +15,9 @@
 // error, console error or non-501 5xx it triggers.
 // ============================================================================
 const { test, expect } = require("@playwright/test");
-const { seedPerfin, seedPersistent } = require("./seed");
+const { ensureSeeded } = require("./seed");
+const { PIN, loginWithPin, watch } = require("./helpers");
 
-const PIN = process.env.E2E_SHELL_PIN || "246810";
 // Log in ONCE and reuse the session: a fresh login per test lands on the
 // Per-sistant dashboard (~15 API calls) every time, which alone tripped
 // Per-sistant's 200-requests/15-min limiter part-way through the run before
@@ -40,34 +40,6 @@ function unexpected(pagePath, problems, gaps = KNOWN_GAPS) {
 const SWEEP_KNOWN_GAPS = {
   ...KNOWN_GAPS,
 };
-
-async function loginWithPin(page, pin) {
-  await page.goto("/login");
-  await expect(page.locator("#pin-pad .pin-key").first()).toBeVisible();
-  for (const d of String(pin)) await page.locator('.pin-key[data-digit="' + d + '"]').click();
-  await page.locator('.pin-key[data-action="go"]').click();
-  await page.waitForURL(/\/per-sistant/);
-}
-
-// Collect what would make a page "broken": an uncaught exception, or a server
-// error. 501 is expected (no AI key / push keys in the e2e environment).
-// A console.error counts too (G2) — except the browser's own "Failed to load
-// resource" line, which the response check above already judges (a 501 is
-// expected; a 4xx is often the right answer to a sweep click).
-function watch(page, label = () => "") {
-  const problems = [];
-  page.on("pageerror", (err) => problems.push(label() + "pageerror: " + err.message));
-  page.on("response", (res) => {
-    if (res.status() >= 500 && res.status() !== 501) problems.push(label() + res.status() + " " + res.url());
-  });
-  page.on("console", (msg) => {
-    if (msg.type() !== "error") return;
-    const text = msg.text();
-    if (/^Failed to load resource/.test(text)) return;
-    problems.push(label() + "console.error: " + text);
-  });
-  return problems;
-}
 
 // A control the sweep must never press: marked data-e2e-skip (the static
 // destructive buttons; the microphone buttons — a headless browser has no mic,
@@ -136,10 +108,10 @@ test.describe("every page loads cleanly", () => {
     const page = await context.newPage();
     await loginWithPin(page, PIN);
     sessionCookies = await context.cookies();
-    const seeded = await seedPerfin(page.request);
+    // Once per run: behaviour.spec.js seeds the same data (cycle-8 E5a).
+    const seeded = await ensureSeeded(page.request);
     manualAccountId = seeded.manualAccountId;
     taxYear = seeded.taxYear;
-    await seedPersistent(page.request);
     await context.close();
   });
 
@@ -197,11 +169,41 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
-  test("the landing tiles carry their status lines (design D7)", async ({ page }) => {
+  test("the Cash Flow section lists what the forecast holds and saves a setting (cycle-8 E1b)", async ({ page }) => {
     const problems = watch(page);
-    await page.goto("/");
+    // The Subscriptions page's click sweep presses Dismiss on the seeded
+    // subscription earlier in the run; bring it back so it is a projected bill.
+    const subs = (await (await page.request.get("/perfin/api/subscriptions?filter=all")).json()).subscriptions || [];
+    const sf = subs.find((x) => x.display_name === "Streamflix");
+    expect(sf, "the seeded subscription").toBeTruthy();
+    if (sf.is_dismissed) expect((await page.request.patch(`/perfin/api/subscriptions/${sf.id}/undismiss`, { headers: { "X-Requested-With": "XMLHttpRequest" } })).ok()).toBe(true);
+    await page.goto("/perfin/dashboard");
+    const wrap = page.locator("#cashflow-items-wrap");
+    await expect(wrap).toBeVisible();
+    await wrap.locator("summary").click();
+    const items = page.locator("#cashflow-items");
+    // The seeded subscription is a projected bill with its own setting.
+    const sel = items.getByLabel("Forecast setting for Streamflix");
+    await expect(sel).toHaveValue("auto");
+    await sel.selectOption("ignore");
+    await expect(items).toContainText("You left it out");
+    await expect(items.getByLabel("Forecast setting for Streamflix")).toHaveValue("ignore");
+    // Put it back so the other checks see the seeded forecast.
+    await items.getByLabel("Forecast setting for Streamflix").selectOption("auto");
+    await expect(items).not.toContainText("You left it out");
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("the landing tiles carry their status lines (design D7)", async ({ page }) => {
+    test.setTimeout(75000);
+    const problems = watch(page);
     // The seeded ledger owes rent; the line comes from the dashboard summary.
-    await expect(page.locator('a.tile[href="/perfin"] .tile-status')).toContainText(/\$[\d,]+\.\d\d owed to /);
+    // A line is kept 30 s (cycle-8 F33), so a visit from another spec before the
+    // seed finished can show the old one — reload until the cache has turned over.
+    await expect(async () => {
+      await page.goto("/");
+      await expect(page.locator('a.tile[href="/perfin"] .tile-status')).toContainText(/\$[\d,]+\.\d\d owed to /, { timeout: 2000 });
+    }).toPass({ timeout: 60000, intervals: [2000, 5000, 10000] });
     await expect(page.locator('a.tile[href="/per-sistant"] .tile-status')).toBeVisible();
     expect(problems, problems.join("\n")).toEqual([]);
   });
@@ -329,6 +331,31 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("Settings saves quiet hours and a mute, and Per-sistant points there (cycle-8 E3c)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/perfin/settings#quiet-hours-section");
+    const section = page.locator("#quiet-hours-section");
+    await expect(section).toBeVisible();
+    await expect(section.locator("#mute-list")).toContainText("Per-sistant"); // under the shell
+    await section.getByLabel("Quiet hours start").fill("21:30");
+    await section.getByLabel("Quiet hours end").fill("06:45");
+    await section.getByRole("button", { name: "Save times" }).click();
+    await expect(page.locator("#toast-stack .toast", { hasText: "Setting saved." }).first()).toBeVisible();
+    await section.getByLabel("Job Radar").check();
+    await expect.poll(async () => (await (await page.request.get("/perfin/api/settings")).json()).notify_muted_types).toEqual(["jobs"]);
+    const s = await (await page.request.get("/perfin/api/settings")).json();
+    expect(s.notify_quiet_hours).toEqual({ enabled: false, start: "21:30", end: "06:45" });
+    await page.reload();
+    await expect(page.locator("#quiet-hours-section").getByLabel("Job Radar")).toBeChecked();
+    await expect(page.locator("#quiet-start")).toHaveValue("21:30");
+    // Put it back so later checks see the defaults.
+    await page.locator("#quiet-hours-section").getByLabel("Job Radar").uncheck();
+    await expect.poll(async () => (await (await page.request.get("/perfin/api/settings")).json()).notify_muted_types).toEqual([]);
+    await page.goto("/per-sistant/settings");
+    await expect(page.locator("#quiet-hours-link a")).toHaveAttribute("href", "/perfin/settings#quiet-hours-section");
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
   test("the Tax page shows the year's package, takes a form and downloads the ZIP (T3.3 K4)", async ({ page }) => {
     const problems = watch(page);
     await page.goto("/perfin/tax?year=" + taxYear);
@@ -400,15 +427,25 @@ test.describe("every page loads cleanly", () => {
     const seen = { settings: false, notifications: false, logo: 0 };
     page.on("response", (res) => {
       const u = res.url();
-      if (u.includes("/perfin/api/settings")) seen.settings = true;
+      if (u.includes("/perfin/api/data-freshness")) seen.settings = true;
       if (u.includes("/perfin/api/notifications?limit=20")) seen.notifications = true;
       if (u.endsWith("/perfin/logo.svg")) seen.logo = res.status();
     });
     await page.goto("/perfin/budgets");
     await page.waitForLoadState("networkidle");
-    expect(seen.settings, "nav sync badge fetched /api/settings").toBe(true);
+    expect(seen.settings, "nav sync badge fetched /api/data-freshness (cycle-8 E4b)").toBe(true);
     expect(seen.notifications, "bell fetched the unread count").toBe(true);
     expect(seen.logo, "nav logo mask loads under /perfin").toBe(200);
+    // Cycle-8 E4b: the badge is a link to Sync Health with its level class; the
+    // seeded run has no bank connection, so it reads the global stamps.
+    const badge = page.locator("#nav-sync-badge");
+    await expect(badge).toHaveAttribute("href", "/perfin/settings#sync-health");
+    await expect(badge).toHaveText(/^(Synced .+|Not synced yet)$/);
+    await expect(badge).toHaveClass(/sync-(fresh|aging|stale)/);
+    await expect(badge).toHaveAttribute("aria-label", /open Sync Health$/);
+    await badge.click();
+    await page.waitForURL(/\/perfin\/settings#sync-health$/);
+    await expect(page.locator("#sync-health")).toBeVisible();
   });
 
   test("a burst of toasts caps at five without hanging the tab (F89)", async ({ page }) => {

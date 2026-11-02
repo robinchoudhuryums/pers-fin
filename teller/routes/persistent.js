@@ -153,13 +153,21 @@ async function deliverDigestInProcess(event, data) {
 function escAlertHtml(t) {
   return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
-async function sendCriticalAlertEmail(title, body) {
+// opts.tag (the notification's tag) or opts.kind names the kind of alert: a
+// kind the user muted (Settings → quiet hours & muting, cycle-8 E3b) sends no
+// email either. Quiet hours never hold an email — it waits in the inbox.
+async function sendCriticalAlertEmail(title, body, opts = {}) {
   try {
     const s = await pool.query(
-      "SELECT critical_alert_emails_enabled FROM user_settings WHERE id = 1"
+      "SELECT critical_alert_emails_enabled, notify_muted_types FROM user_settings WHERE id = 1"
     );
     if (!s.rows[0] || !s.rows[0].critical_alert_emails_enabled) {
       return { sent: false, reason: "disabled" };
+    }
+    const notifyPrefs = require("../services/notify-prefs");
+    const kind = opts.kind || (opts.tag ? notifyPrefs.kindOf(opts.tag) : null);
+    if (kind && notifyPrefs.kindInfo(kind).mutable && notifyPrefs.normalizePrefs(s.rows[0]).muted.includes(kind)) {
+      return { sent: false, reason: "muted" };
     }
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:0;background:#080b12;font-family:Inter,system-ui,sans-serif;">
       <div style="max-width:640px;margin:0 auto;padding:32px 24px;">

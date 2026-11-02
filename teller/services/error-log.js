@@ -168,7 +168,11 @@ async function flush(opts = {}) {
 
 async function flushOnce({ notify = true } = {}) {
   const pool = state.pool;
-  if (!pool || state.flushing || buffer.size === 0) return { written: 0 };
+  if (!pool || state.flushing) return { written: 0 };
+  // Cycle-8 F32: the daily prune also runs in a quiet minute — it used to run
+  // only after a flush that had new errors, so a log that stopped erroring kept
+  // its old rows. pruneIfDue reads the database at most once a day.
+  if (buffer.size === 0) { await pruneIfDue(pool); return { written: 0 }; }
   state.flushing = true;
   const entries = [...buffer.values()];
   buffer.clear();

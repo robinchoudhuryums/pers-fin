@@ -136,7 +136,8 @@
         var res = await apiFetch('/api/transactions/duplicates');
         if (!res.ok) return;
         var data = await res.json();
-        if (!data.duplicates || data.duplicates.length === 0) return;
+        // Cycle-8 E5a: the last pair deleted → clear the list (it used to stay on screen).
+        if (!data.duplicates || data.duplicates.length === 0) { document.getElementById('dup-section').style.display = 'none'; document.getElementById('dup-list').innerHTML = ''; return; }
 
         document.getElementById('dup-section').style.display = 'block';
         document.getElementById('dup-list').innerHTML = data.duplicates.map(function(d) {
@@ -169,7 +170,10 @@
       try {
         var res = await apiFetch('/api/transactions/' + encodeURIComponent(txnId), { method: 'DELETE' });
         if (!(await writeOk(res, 'Delete'))) return;
-        showMsg('Transaction deleted.', true, { action: { label: 'Undo', run: function() { undoDelete(txnId); } } });
+        // Cycle-8 F56: focus goes to Undo (the pressed Delete button is about
+        // to be redrawn away) and the text says where else to restore it.
+        showMsg('Transaction deleted. You can also restore it from Settings → Sync Health → Deleted transactions.', true,
+          { action: { label: 'Undo', focus: true, run: function() { undoDelete(txnId); } } });
         reloadAfterDelete();
       } catch (e) { showMsg("Couldn't delete the transaction — check your connection.", false); }
     }

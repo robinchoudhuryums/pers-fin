@@ -29,6 +29,11 @@ try {
 const CHALLENGE_COOKIE = "shell_webauthn_chl";
 const CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 min — plenty for a user to complete a prompt
 const _challenges = new Map();
+// A hard ceiling on outstanding challenges (cycle-8 F28): authenticate-options
+// is pre-auth, so an unbounded map was memory anyone could fill. Past the cap
+// the oldest challenge (Map insertion order) is dropped — at worst that user
+// presses the biometric button again.
+const MAX_CHALLENGES = 1000;
 setInterval(() => {
   const cutoff = Date.now() - CHALLENGE_TTL_MS;
   for (const [k, v] of _challenges) if (v.ts < cutoff) _challenges.delete(k);
@@ -88,6 +93,7 @@ function attach(app, perfinPool) {
       // Store challenge keyed by random cookie value so the verify step can
       // recover it without server-side state tied to a session id.
       const challengeKey = crypto.randomBytes(12).toString("hex");
+      while (_challenges.size >= MAX_CHALLENGES) _challenges.delete(_challenges.keys().next().value);
       _challenges.set(challengeKey, { challenge: options.challenge, ts: Date.now() });
       res.cookie(CHALLENGE_COOKIE, challengeKey, {
         httpOnly: true,
@@ -168,4 +174,4 @@ function attach(app, perfinPool) {
   });
 }
 
-module.exports = { attach };
+module.exports = { attach, MAX_CHALLENGES, _challenges };

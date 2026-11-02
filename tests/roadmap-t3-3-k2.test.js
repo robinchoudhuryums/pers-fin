@@ -378,9 +378,13 @@ describe("migration + reset-fresh", () => {
     const db = read("teller/services/database.js");
     const m = /CREATE TABLE IF NOT EXISTS tax_documents \(([\s\S]*?)\)`\);/.exec(db);
     assert.ok(m, "the CREATE TABLE");
-    const list = /form TEXT NOT NULL CHECK \(form IN \(([\s\S]*?)\)\)/.exec(m[1])[1].match(/'([^']+)'/g).map((x) => x.slice(1, -1));
-    assert.deepEqual(list, docs.FORMS);
-    assert.match(m[1], /origin TEXT NOT NULL DEFAULT 'manual' CHECK \(origin IN \('suggested', 'manual'\)\)/);
+    // Cycle-8 F31: the lists live in database.CHECK_LISTS (interpolated here and
+    // kept in step on an existing table by syncInListChecks).
+    const { CHECK_LISTS } = require("../teller/services/database");
+    assert.deepEqual(CHECK_LISTS.tax_documents.form, docs.FORMS);
+    assert.deepEqual(CHECK_LISTS.tax_documents.origin, ["suggested", "manual"]);
+    assert.match(m[1], /form TEXT NOT NULL CHECK \(form IN \(\$\{inList\(CHECK_LISTS\.tax_documents\.form\)\}\)\)/);
+    assert.match(m[1], /origin TEXT NOT NULL DEFAULT 'manual' CHECK \(origin IN \(\$\{inList\(CHECK_LISTS\.tax_documents\.origin\)\}\)\)/);
     assert.match(db, /CREATE UNIQUE INDEX IF NOT EXISTS uq_tax_documents_year_form_issuer\s+ON tax_documents \(tax_year, form, \(LOWER\(issuer\)\)\)/);
   });
 

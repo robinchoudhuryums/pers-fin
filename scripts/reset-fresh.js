@@ -137,8 +137,19 @@ async function main() {
 
     // Reset user_settings to a single default row (clears zip / partner_name /
     // AI running summary / all watermarks / integration config / widget prefs).
+    // The backup record survives (cycle-8 E4a): it describes the backups, not
+    // the data, and clearing it made Operator Checks report "no backup".
+    // to_jsonb, so a database whose migrations predate the columns reads nulls
+    // instead of aborting the reset's transaction.
+    const backup = (await client.query(
+      "SELECT to_jsonb(s) ->> 'last_backup_at' AS last_backup_at, to_jsonb(s) ->> 'last_backup_source' AS last_backup_source FROM user_settings s WHERE id = 1"
+    )).rows[0] || {};
     await client.query("DELETE FROM user_settings");
     await client.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+    if (backup.last_backup_at) {
+      await client.query("UPDATE user_settings SET last_backup_at = $1, last_backup_source = $2 WHERE id = 1",
+        [backup.last_backup_at, backup.last_backup_source || null]);
+    }
 
     await client.query("COMMIT");
     console.log("Reset complete.\n");

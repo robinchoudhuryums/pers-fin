@@ -386,11 +386,47 @@ router.post("/api/transactions/csv-overlap/resolve", async (req, res) => {
       return res.json({ would_delete: ids.length, dry_run: true });
     }
     if (!ids.length) return res.json({ deleted: 0 });
-    const del = await pool.query(
-      `DELETE FROM transactions WHERE transaction_id = ANY($1::text[]) RETURNING transaction_id`,
-      [ids]
-    );
-    res.json({ deleted: del.rows.length });
+    // Tombstone each deleted CSV row with its snapshot, like a single DELETE
+    // (cycle-8 F4): without it, re-importing a statement that overlaps the
+    // resolved range brought every duplicate back (the CSV dedup ids are
+    // deterministic), and none of them could be restored from Settings.
+    // One id for this Resolve's tombstones (cycle-8 E1c / G5), so POST
+    // /api/deleted-transactions/batches/:batch_id/restore can undo it at once.
+    const batchId = newBatchId();
+    const client = await pool.connect();
+    let deleted;
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO deleted_transactions (transaction_id, snapshot, source, batch_id)
+         SELECT t.transaction_id,
+                jsonb_build_object(
+                  'row', to_jsonb(t),
+                  'splits', COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id)
+                                      FROM transaction_splits s
+                                      WHERE s.parent_transaction_id = t.transaction_id), '[]'::jsonb)
+                ),
+                ${SOURCE_SQL},
+                $2
+         FROM transactions t
+         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+         LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+         WHERE t.transaction_id = ANY($1::text[])
+         ON CONFLICT (transaction_id) DO UPDATE
+           SET snapshot = EXCLUDED.snapshot, source = EXCLUDED.source, batch_id = EXCLUDED.batch_id, deleted_at = now()`,
+        [ids, batchId]
+      );
+      const del = await client.query(
+        `DELETE FROM transactions WHERE transaction_id = ANY($1::text[]) RETURNING transaction_id`,
+        [ids]
+      );
+      await client.query("COMMIT");
+      deleted = del.rows.length;
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally { client.release(); }
+    res.json(deleted ? { deleted, batch_id: batchId } : { deleted });
   } catch (err) {
     console.error("csv-overlap resolve error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -630,7 +666,7 @@ router.delete("/api/transactions/:id", async (req, res) => {
     await client.query(
       `INSERT INTO deleted_transactions (transaction_id, snapshot, source) VALUES ($1, $2::jsonb, $3)
        ON CONFLICT (transaction_id) DO UPDATE
-         SET snapshot = EXCLUDED.snapshot, source = EXCLUDED.source, deleted_at = now()`,
+         SET snapshot = EXCLUDED.snapshot, source = EXCLUDED.source, batch_id = NULL, deleted_at = now()`,
       [req.params.id, JSON.stringify(found.rows[0].snapshot), found.rows[0].source]
     );
     await client.query("COMMIT");
@@ -654,6 +690,12 @@ function legacySource(id) {
 }
 const LEGACY_RETURNS_ON = { csv: "csv_reimport", manual: "never" }; // else "reconcile"
 const DELETED_PAGE_MAX = 200;
+// CSV-overlap Resolve batches (cycle-8 E1c / G5).
+const BATCH_LIST_MAX = 20;
+const BATCH_ID_RE = /^resolve_[a-z0-9]{1,16}_[a-z0-9]{1,16}$/;
+function newBatchId() {
+  return "resolve_" + Date.now().toString(36) + "_" + require("crypto").randomBytes(6).toString("hex");
+}
 const CURSOR_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z)\|(.+)$/;
 
 // GET /api/deleted-transactions?limit=&before= — newest first. `before` is the
@@ -671,7 +713,7 @@ router.get("/api/deleted-transactions", async (req, res) => {
   }
   try {
     const r = await pool.query(
-      `SELECT d.transaction_id, d.deleted_at, d.source, (d.snapshot IS NOT NULL) AS has_snapshot,
+      `SELECT d.transaction_id, d.deleted_at, d.source, d.batch_id, (d.snapshot IS NOT NULL) AS has_snapshot,
               to_char(d.deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at,
               d.snapshot->'row'->>'date' AS date,
               COALESCE(d.snapshot->'row'->>'user_merchant_name', d.snapshot->'row'->>'merchant_name',
@@ -701,10 +743,30 @@ router.get("/api/deleted-transactions", async (req, res) => {
         amount: x.amount === null || x.amount === undefined ? null : Number(x.amount),
         account_name: x.account_name || null,
         splits_count: Number(x.splits_count) || 0,
+        batch_id: x.batch_id || null,
       };
     });
     const last = page[page.length - 1];
-    res.json({ items, next: r.rows.length > limit && last ? `${last.cursor_at}|${last.transaction_id}` : null });
+    // Every Resolve batch still holding a tombstone, newest first (E1c) — the
+    // page's "Restore all" headers, whatever page their rows fall on.
+    // `restorable` counts the rows restoreDeleted would bring back — not one
+    // the bank removed, not one whose account is gone (E1 follow-on).
+    const b = await pool.query(
+      `SELECT batch_id, COUNT(*)::int AS count, MAX(deleted_at) AS deleted_at,
+              (COUNT(*) FILTER (WHERE bank_removed_at IS NULL AND snapshot IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM linked_accounts la
+                             WHERE la.account_id = deleted_transactions.snapshot->'row'->>'account_id')))::int AS restorable
+       FROM deleted_transactions WHERE batch_id IS NOT NULL
+       GROUP BY batch_id ORDER BY MAX(deleted_at) DESC LIMIT ${BATCH_LIST_MAX}`
+    );
+    res.json({
+      items,
+      next: r.rows.length > limit && last ? `${last.cursor_at}|${last.transaction_id}` : null,
+      batches: b.rows.map((x) => ({
+        batch_id: x.batch_id, count: x.count, deleted_at: x.deleted_at,
+        restorable: x.restorable === undefined ? x.count : x.restorable,
+      })),
+    });
   } catch (err) {
     console.error("deleted transactions list error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -726,13 +788,18 @@ async function insertableColumns(client, table) {
 
 // Restore one tombstone inside the caller's transaction. Returns
 // { status, body }; nothing is written unless status is 200.
-async function restoreDeleted(client, id) {
+async function restoreDeleted(client, id, { applyRules = true } = {}) {
   const t = await client.query(
-    "SELECT snapshot, source FROM deleted_transactions WHERE transaction_id = $1 FOR UPDATE",
+    "SELECT snapshot, source, bank_changed_at, bank_removed_at FROM deleted_transactions WHERE transaction_id = $1 FOR UPDATE",
     [id]
   );
   if (!t.rows.length) return { status: 404, body: { error: "No deleted transaction with that id" } };
   const { snapshot } = t.rows[0];
+  // The bank removed it after it was deleted here (a reversal, a voided
+  // charge): it isn't brought back (cycle-8 F6).
+  if (t.rows[0].bank_removed_at) {
+    return { status: 409, body: { error: "Your bank has since removed this transaction (reversed or voided), so it isn't restored.", reason: "removed_by_bank" } };
+  }
 
   if (!snapshot || !snapshot.row) {
     const source = legacySource(id);
@@ -761,6 +828,25 @@ async function restoreDeleted(client, id) {
   );
   const inserted = ins.rows.length > 0;
 
+  // The snapshot's merchant rename came from a rule that may have been
+  // deleted, switched off or renamed while the row was deleted — and the
+  // revert / rename only reached rows that existed then (cycle-8 F5, INV-124).
+  // The rule's CURRENT name applies; a gone or inactive rule's rename is
+  // cleared. Then every rule applies, so an unnamed row is renamed now rather
+  // than at the next sync that happens to add a row.
+  if (inserted) {
+    if (row.user_merchant_rule_id != null) {
+      const rr = await client.query("SELECT rename_to, is_active FROM merchant_rename_rules WHERE id = $1", [row.user_merchant_rule_id]);
+      const rule = rr.rows[0];
+      if (rule && rule.is_active) {
+        await client.query("UPDATE transactions SET user_merchant_name = $2 WHERE transaction_id = $1", [id, rule.rename_to]);
+      } else {
+        await client.query("UPDATE transactions SET user_merchant_name = NULL, user_merchant_rule_id = NULL WHERE transaction_id = $1", [id]);
+      }
+    }
+    if (applyRules) await require("./merchant-rename").applyRenameRules(client);
+  }
+
   let splits = 0;
   const splitRows = Array.isArray(snapshot.splits) ? snapshot.splits : [];
   if (inserted && splitRows.length) {
@@ -775,7 +861,11 @@ async function restoreDeleted(client, id) {
   }
 
   await client.query("DELETE FROM deleted_transactions WHERE transaction_id = $1", [id]);
-  return { status: 200, body: { restored: true, transaction_id: id, already_present: !inserted, splits } };
+  // The bank changed it after it was deleted here (a tip, a corrected amount):
+  // Plaid won't send it again, so the restored copy is the old one until a
+  // Plaid reconcile re-reads the history (cycle-8 F6).
+  const stale = inserted && !!t.rows[0].bank_changed_at;
+  return { status: 200, body: { restored: true, transaction_id: id, already_present: !inserted, splits, ...(stale ? { stale: true } : {}) } };
 }
 
 // POST /api/deleted-transactions/:id/restore — put a deleted transaction back
@@ -795,6 +885,53 @@ router.post("/api/deleted-transactions/:id/restore", async (req, res) => {
   } finally { client.release(); }
 });
 
+// POST /api/deleted-transactions/batches/:batch_id/restore — undo a whole
+// CSV-overlap Resolve (cycle-8 E1c / G5): each of its rows through
+// restoreDeleted, in ONE transaction. A row restoreDeleted refuses (its account
+// is gone, the bank removed it) changes nothing and stays deleted; it is listed
+// in `skipped`. The rename rules run once, after the rows are back.
+router.post("/api/deleted-transactions/batches/:batch_id/restore", async (req, res) => {
+  const batchId = String(req.params.batch_id || "");
+  if (!BATCH_ID_RE.test(batchId)) return res.status(400).json({ error: "batch_id must be a CSV overlap resolve id" });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const ids = await client.query(
+      "SELECT transaction_id FROM deleted_transactions WHERE batch_id = $1 ORDER BY transaction_id FOR UPDATE",
+      [batchId]
+    );
+    if (!ids.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Nothing from that resolve is still deleted." });
+    }
+    let restored = 0, alreadyPresent = 0, splits = 0, stale = 0, cleared = 0;
+    const skipped = [];
+    for (const { transaction_id: id } of ids.rows) {
+      const out = await restoreDeleted(client, id, { applyRules: false });
+      if (out.status !== 200) {
+        const reason = out.body.reason || (out.body.returns_on === "never" ? "unrestorable"
+          : out.status === 409 ? "account_gone" : "not_found");
+        skipped.push({ transaction_id: id, reason, error: out.body.error });
+        continue;
+      }
+      // A tombstone with no snapshot is only lifted — the row returns on the
+      // next reconcile / re-import, so it isn't counted as restored.
+      if (out.body.cleared) { cleared++; continue; }
+      if (out.body.already_present) alreadyPresent++;
+      else restored++;
+      splits += out.body.splits || 0;
+      if (out.body.stale) stale++;
+    }
+    if (restored) await require("./merchant-rename").applyRenameRules(client);
+    await client.query("COMMIT");
+    res.json({ batch_id: batchId, restored, already_present: alreadyPresent, splits, ...(stale ? { stale } : {}), ...(cleared ? { cleared } : {}), skipped });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("restore batch error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  } finally { client.release(); }
+});
+
 module.exports = router;
 // Test seams (cycle-7 F21) — attached after the router assignment (INV-19).
 module.exports.pairOverlaps = pairOverlaps;
@@ -803,3 +940,5 @@ module.exports.merchantsSimilar = merchantsSimilar;
 module.exports.restoreDeleted = restoreDeleted;
 module.exports.legacySource = legacySource;
 module.exports.SOURCE_SQL = SOURCE_SQL;
+module.exports.newBatchId = newBatchId;
+module.exports.BATCH_ID_RE = BATCH_ID_RE;

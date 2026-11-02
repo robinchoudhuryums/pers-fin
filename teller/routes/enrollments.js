@@ -7,6 +7,7 @@ const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { tellerRequest } = require("../services/teller-api");
 const { INCOME_PREDICATE, NOT_TRANSFER, INVESTMENT_ACCOUNT_TYPES, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth } = require("../services/financial-queries");
+const { readMark, windowSql, advanceSql } = require("../services/txn-watermark");
 
 // POST /api/enroll — store Teller Connect enrollment
 router.post("/api/enroll", async (req, res) => {
@@ -147,6 +148,11 @@ async function syncEnrollment(enrollment, opts = {}) {
   // forever, so DISCONNECTED could never be set.
   let authFailures = 0;
   let authStatus = null;
+  // Accounts whose transactions request Teller answered at least once — the
+  // proof that the token authenticates (cycle-8 F2: the self-heal back to GOOD
+  // used to run whenever no account had a 401/403, including a run where every
+  // fetch timed out or got a 5xx, or an enrollment with no accounts).
+  let accountsAnswered = 0;
 
   // Teller paginates newest-first; `from_id` returns rows OLDER than that id.
   // We request an explicit page size and do NOT assume what Teller's default is:
@@ -170,6 +176,7 @@ async function syncEnrollment(enrollment, opts = {}) {
       let txns;
       try {
         txns = await tellerRequest(endpoint, access_token);
+        if (pages === 1) accountsAnswered++;
       } catch (fetchErr) {
         console.error(`  Error fetching transactions for account ${account_id}:`, fetchErr.message);
         fetchError = true;
@@ -284,7 +291,8 @@ async function syncEnrollment(enrollment, opts = {}) {
   // range. Surfaced by syncAllEnrollments so the partial failure is visible in
   // Sync Health rather than reported as a clean success (F15).
   // insertError counts too (BSI-7): a row failed to land and will be retried.
-  return { added, incomplete: fetchError || insertError };
+  // `authenticated` = Teller answered for at least one account this run.
+  return { added, incomplete: fetchError || insertError, authenticated: accountsAnswered > 0 };
 }
 
 // The non-suspended Teller enrollments with their decrypted tokens
@@ -323,8 +331,10 @@ async function syncOneTellerEnrollment(enrollment, { backfillFrom = null } = {})
     // The token authenticated again → self-heal a DISCONNECTED flag (BSI-9
     // made DISCONNECTED reachable; syncAllBalances only runs GOOD
     // enrollments, so a transient 401 must not stop balance syncs until a
-    // manual re-link).
-    if (enrollment.status === "DISCONNECTED") {
+    // manual re-link). Only when Teller actually answered for an account
+    // (cycle-8 F2) — a run where every fetch timed out or failed, or an
+    // enrollment with no accounts, proves nothing about the token.
+    if (enrollment.status === "DISCONNECTED" && result.authenticated) {
       await pool.query(
         "UPDATE teller_enrollments SET status = 'GOOD', updated_at = now() WHERE id = $1 AND status = 'DISCONNECTED'",
         [enrollment.id]
@@ -452,18 +462,32 @@ async function syncAllEnrollments(opts = {}) {
 // Plaid-only charges never got an anomaly alert. Correctness details:
 //   1. Baseline average excludes the trailing 7 days so the candidate
 //      doesn't inflate its own baseline.
-//   2. Only transactions inserted since last_anomaly_check_at are considered,
-//      so the same anomaly doesn't re-push on subsequent syncs.
+//   2. Only transactions new since the last check are considered — an id
+//      watermark with an overlap rescan (services/txn-watermark.js, cycle-8
+//      E2c): rows above user_settings.last_anomaly_txn_id, plus rows at or
+//      below it created within 24 h of the previous check (a transaction that
+//      was still open then commits a lower id later). A charge already
+//      announced — its transaction_id in an anomaly notification's data — is
+//      never announced again, so the overlap can't re-push.
 // Never throws (a failed check must not fail the sync).
+const ANOMALY_DEDUPE_DAYS = 30;
 async function runAnomalyCheck() {
   try {
-    const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
-    const watermark = settings.rows[0]?.last_anomaly_check_at || null;
+    // The stored time travels as text — a JS Date drops the microseconds.
+    const settings = await pool.query("SELECT last_anomaly_txn_id::text AS last_anomaly_txn_id, last_anomaly_check_at::text AS last_anomaly_check_at FROM user_settings WHERE id = 1");
+    const s = settings.rows[0] || {};
+    const watermark = s.last_anomaly_txn_id || "0";
+    const since = s.last_anomaly_check_at || null;
+    // The mark is read BEFORE the candidates and the candidates stop there
+    // (cycle-8 F1 / E2c): a row committed after it waits for the next check.
+    const mark = await readMark(pool);
+    if (mark.id === "0") return; // no transactions at all
+    const win = windowSql({ alias: "t", watermark: "$1", since: "$2", mark: "$3" });
     // Group merchants by user_merchant_name when the user has set one, so a
     // user-merged merchant ('Amazon' replacing 'AMAZON MKTP*4321' / 'AMZN.COM')
     // accumulates a single baseline rather than three under-the-threshold ones.
     const anomalies = await pool.query(
-      `SELECT t.merchant_name, t.name, t.user_merchant_name, t.amount, t.date, avg_tbl.avg_amount
+      `SELECT t.transaction_id, t.merchant_name, t.name, t.user_merchant_name, t.amount, t.date, avg_tbl.avg_amount
        FROM transactions t
        JOIN (
          SELECT LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) AS merchant,
@@ -481,32 +505,37 @@ async function runAnomalyCheck() {
          AND ${NOT_TRANSFER}
          -- 7-day window (F7) matches the baseline's 7-day exclusion below, so a
          -- late-POSTING charge (synced today but dated up to a week ago — caught
-         -- by created_at > watermark) is still eligible, while staying disjoint
-         -- from the baseline so a candidate never inflates its own average.
+         -- by its new id) is still eligible, while staying disjoint from the
+         -- baseline so a candidate never inflates its own average.
          AND t.date >= CURRENT_DATE - INTERVAL '7 days'
          AND t.amount > avg_tbl.avg_amount * 3
-         AND ($1::timestamptz IS NULL OR t.created_at > $1)
+         AND ${win.where}
+         AND NOT EXISTS (
+           SELECT 1 FROM notification_log n
+            WHERE n.type LIKE 'anomaly-%'
+              AND n.data->>'transaction_id' = t.transaction_id
+              AND n.created_at > now() - make_interval(days => ${ANOMALY_DEDUPE_DAYS}))
        ORDER BY t.amount DESC
        LIMIT 5`,
-      [watermark]
+      [watermark, since, mark.id]
     );
-    // Track whether the notify loop itself failed. If it did, leave the
-    // watermark alone so the next sync re-considers the same candidates —
-    // otherwise a transient sendToAll error would permanently silence the
-    // anomaly (the watermark advances past the row's created_at, and the
-    // next pass filters it out).
+    // If a push wasn't recorded (sendToAll threw, or its notification_log row
+    // didn't land), leave the watermark alone so the next sync re-considers
+    // the same candidates — the ones that WERE logged are skipped then by the
+    // transaction_id check above, so a retry never re-pushes them.
     let notifyFailed = false;
     if (anomalies.rows.length > 0) {
       try {
         const { sendToAll } = require("./notifications");
         for (const a of anomalies.rows) {
           const merchant = a.user_merchant_name || a.merchant_name || a.name;
-          await sendToAll({
+          const sent = await sendToAll({
             title: "Unusual charge detected",
             body: merchant + ": $" + parseFloat(a.amount).toFixed(2) + " (avg: $" + parseFloat(a.avg_amount).toFixed(2) + ")",
             tag: "anomaly-" + merchant.toLowerCase().replace(/\s+/g, "-"),
-            data: { url: "/transactions" },
+            data: { url: "/transactions", transaction_id: a.transaction_id },
           });
+          if (!sent || !sent.logged) notifyFailed = true;
         }
       } catch (notifyErr) {
         notifyFailed = true;
@@ -523,12 +552,14 @@ async function runAnomalyCheck() {
         }).join("\n");
         await sendCriticalAlertEmail(
           anomalies.rows.length > 1 ? "Unusual charges detected" : "Unusual charge detected",
-          lines
+          lines,
+          { kind: "spending" }
         );
       } catch (e) { console.error("Anomaly alert email error:", e.message); }
     }
     if (!notifyFailed) {
-      await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1")
+      // Never backwards — a check that ran alongside may have gone further.
+      await pool.query(advanceSql("last_anomaly_txn_id", "last_anomaly_check_at"), [mark.id, mark.at])
         .catch(err => console.error("Anomaly watermark update error:", err.message));
     }
   } catch (err) {
@@ -837,7 +868,16 @@ router.get("/api/sync/status", (req, res) => {
 // writes are idempotent upserts, so this is safe to run repeatedly.
 async function reconcileTeller(days = 90) {
   const backfillDays = Math.max(1, Math.min(365, parseInt(days, 10) || 90));
-  return syncAllEnrollments({ backfillDays });
+  const result = await syncAllEnrollments({ backfillDays });
+  // Rows a reconcile recovers get the merchant rename rules (cycle-8 F43) —
+  // not the post-sync anomaly check (INV-05). Without it a recovered charge
+  // kept its bank name, and the next detection run split a renamed
+  // subscription again.
+  if (result && result.transactions_added > 0) {
+    try { await require("./merchant-rename").applyRenameRules(); }
+    catch (e) { console.error("rename rules after the Teller reconcile failed:", e.message); }
+  }
+  return result;
 }
 
 // runReconcile — the actual backfill work, shared by the synchronous and

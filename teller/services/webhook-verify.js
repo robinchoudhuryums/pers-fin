@@ -13,7 +13,9 @@
 //   - alg must be ES256 (anything else, including "none", is refused);
 //   - the signing key is fetched by the JWT's kid with
 //     /webhook_verification_key/get and cached; a key whose expired_at is set
-//     is refused;
+//     is refused; a kid with no key is remembered as a miss for an hour, and
+//     at most KEY_FETCH_LIMIT uncached lookups reach Plaid an hour, one per kid
+//     at a time — the iat and body-hash checks run before any lookup (cycle-8 F3);
 //   - iat must be within MAX_AGE_MS (a little clock skew allowed ahead);
 //   - request_body_sha256 must equal the SHA-256 of the raw body.
 //   Plaid deliveries carry no event id, and its SYNC_UPDATES_AVAILABLE body is
@@ -35,6 +37,14 @@ const crypto = require("crypto");
 const MAX_AGE_MS = 5 * 60 * 1000;
 const MAX_SKEW_MS = 60 * 1000; // a timestamp this far in the future is still accepted
 const KEY_CACHE_MS = 24 * 60 * 60 * 1000;
+// A kid Plaid has no key for is remembered as a miss for an hour, and at most
+// KEY_FETCH_LIMIT uncached lookups go to Plaid per KEY_FETCH_WINDOW_MS — the kid
+// comes from an unsigned header, so anyone can name a new one (cycle-8 F3).
+const KEY_MISS_CACHE_MS = 60 * 60 * 1000;
+const KEY_FETCH_LIMIT = 20;
+const KEY_FETCH_WINDOW_MS = 60 * 60 * 1000;
+const KEY_CACHE_MAX = 200;
+const KID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 const sha256 = (v) => crypto.createHash("sha256").update(v).digest();
 const sha256Hex = (v) => crypto.createHash("sha256").update(v).digest("hex");
@@ -59,18 +69,48 @@ function createPlaidVerifier({
   getClient = () => require("./plaid-client").getPlaidClient(),
   now = () => Date.now(),
 } = {}) {
-  const keys = new Map(); // kid → { key, fetchedAt }
+  const keys = new Map(); // kid → { key, fetchedAt } — key null for a miss
+  const pending = new Map(); // kid → the lookup in flight (one per kid)
+  let fetchTimes = []; // when each recent uncached lookup went to Plaid
+
+  function remember(kid, key) {
+    keys.delete(kid);
+    keys.set(kid, { key, fetchedAt: now() });
+    while (keys.size > KEY_CACHE_MAX) keys.delete(keys.keys().next().value);
+  }
 
   async function keyFor(kid) {
     const hit = keys.get(kid);
-    if (hit && now() - hit.fetchedAt < KEY_CACHE_MS && hit.key.expired_at == null) return hit.key;
+    if (hit) {
+      const age = now() - hit.fetchedAt;
+      if (hit.key == null && age < KEY_MISS_CACHE_MS) return null;
+      if (hit.key != null && age < KEY_CACHE_MS && hit.key.expired_at == null) return hit.key;
+    }
+    if (pending.has(kid)) return pending.get(kid);
     const client = getClient();
     if (!client) return null;
-    const res = await client.webhookVerificationKeyGet({ key_id: kid });
-    const key = res && res.data && res.data.key;
-    if (!key) return null;
-    keys.set(kid, { key, fetchedAt: now() });
-    return key;
+    const t = now();
+    fetchTimes = fetchTimes.filter((x) => t - x < KEY_FETCH_WINDOW_MS);
+    if (fetchTimes.length >= KEY_FETCH_LIMIT) return null; // a cached key still verifies
+    fetchTimes.push(t);
+    const p = (async () => {
+      try {
+        const res = await client.webhookVerificationKeyGet({ key_id: kid });
+        const key = (res && res.data && res.data.key) || null;
+        remember(kid, key);
+        return key;
+      } catch (e) {
+        // Plaid answers an unknown key id with a 4xx: remember the miss. Any
+        // other failure isn't cached; it still counted against the limit.
+        const status = e && e.response && e.response.status;
+        if (status >= 400 && status < 500) remember(kid, null);
+        return null;
+      } finally {
+        pending.delete(kid);
+      }
+    })();
+    pending.set(kid, p);
+    return p;
   }
 
   return {
@@ -82,7 +122,12 @@ function createPlaidVerifier({
       if (parts.length !== 3) return { ok: false };
       let header, claims;
       try { header = b64urlJson(parts[0]); claims = b64urlJson(parts[1]); } catch { return { ok: false }; }
-      if (!header || header.alg !== "ES256" || typeof header.kid !== "string" || !header.kid) return { ok: false };
+      if (!header || header.alg !== "ES256" || typeof header.kid !== "string" || !KID_RE.test(header.kid)) return { ok: false };
+      // The checks that cost nothing come before a key lookup (cycle-8 F3); the
+      // signature over these claims is verified below.
+      if (!claims || !withinWindow(Number(claims.iat) * 1000, now())) return { ok: false };
+      if (!req.rawBody || typeof claims.request_body_sha256 !== "string") return { ok: false };
+      if (!safeEqual(sha256Hex(req.rawBody), claims.request_body_sha256)) return { ok: false };
 
       const key = await keyFor(header.kid);
       if (!key || key.expired_at != null) return { ok: false };
@@ -94,10 +139,6 @@ function createPlaidVerifier({
       const signature = Buffer.from(parts[2], "base64url");
       const valid = crypto.verify("sha256", signed, { key: publicKey, dsaEncoding: "ieee-p1363" }, signature);
       if (!valid) return { ok: false };
-
-      if (!claims || !withinWindow(Number(claims.iat) * 1000, now())) return { ok: false };
-      if (!req.rawBody || typeof claims.request_body_sha256 !== "string") return { ok: false };
-      if (!safeEqual(sha256Hex(req.rawBody), claims.request_body_sha256)) return { ok: false };
 
       const body = req.body || {};
       return {
@@ -186,4 +227,6 @@ module.exports = {
   parseTellerSignature,
   tellerSecrets,
   MAX_AGE_MS,
+  KEY_MISS_CACHE_MS,
+  KEY_FETCH_LIMIT,
 };

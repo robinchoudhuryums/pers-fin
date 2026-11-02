@@ -161,7 +161,9 @@ describe("the dashboard widget's finance rows (emitted bundles in a vm)", () => 
       window: { LINKED_APP_BASES: bases, BASE_PATH: "/per-sistant" }, BP: "/per-sistant", searchTimeout: null, el,
       document: { getElementById: () => el },
       clearTimeout() {}, setTimeout(fn) { pending = fn; },
-      fetch: async () => ({ json: async () => reply }),
+      // cycle-8 F36: the widget reads through tryFetch with a sequence guard
+      searchWidgetSeq: 0, esc: (x) => x,
+      tryFetch: async () => ({ ok: true, json: async () => reply }),
     };
     vm.runInNewContext(
       "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +

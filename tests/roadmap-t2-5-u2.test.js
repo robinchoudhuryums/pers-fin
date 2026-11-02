@@ -243,7 +243,7 @@ describe("Settings → Sync Health → Deleted transactions (settings.ejs)", () 
     assert.match(t.els["deleted-transactions-body"].innerHTML, /<button class="btn" data-deleted-more>Show more<\/button>/);
     assert.equal(t.els["deleted-transactions-count"].textContent, "(1+)");
     const more = await t.click("data-deleted-more");
-    assert.equal(more.disabled, true);
+    assert.equal(more.disabled, false, "put back after the load (cycle-8 F37); the list was redrawn anyway");
     assert.equal(t.calls[1], "/api/deleted-transactions?limit=50&before=" + encodeURIComponent("2026-10-20T12:00:00.000000Z|csv_1"));
     const html = t.els["deleted-transactions-body"].innerHTML;
     assert.ok(html.indexOf("csv_1") < html.indexOf("txn_old"), "the next page appends");
@@ -308,7 +308,7 @@ describe("Activity page delete → Undo (transactions.js)", () => {
     await t.ctx.deleteDuplicate("txn_1");
     assert.deepEqual(t.calls, [["/api/transactions/txn_1", "DELETE"]]);
     const [text, ok, opts] = t.msgs[0];
-    assert.equal(text, "Transaction deleted.");
+    assert.equal(text, "Transaction deleted. You can also restore it from Settings → Sync Health → Deleted transactions.");
     assert.equal(ok, true);
     assert.equal(opts.action.label, "Undo");
     assert.deepEqual(t.reloads, ["dups", "search:100"]);
@@ -345,5 +345,34 @@ describe("e2e seed", () => {
     assert.match(seed, /E2E DELETED SHOP,9\.99/);
     assert.match(seed, /call\(req, "delete", `\/perfin\/api\/transactions\/\$\{encodeURIComponent\(deleted\.transaction_id \|\| deleted\.id\)\}`/);
     assert.match(read("e2e/pages.spec.js"), /Restore brings it back \(T2\.5 U2\)/);
+  });
+});
+
+// Cycle-8 E5a: deleting the last duplicate pair left the finder showing it —
+// loadDuplicates returned early on an empty list without touching the section.
+describe("E5a — the duplicate finder after the last pair is deleted", () => {
+  const src = read("teller/public/transactions.js");
+  const start = src.indexOf("async function loadDuplicates()");
+  const end = src.indexOf("function reloadAfterDelete()");
+  function run(dups) {
+    const els = { "dup-section": { style: { display: "block" } }, "dup-list": { innerHTML: "<div class=\"dup-card\">old pair</div>" } };
+    const ctx = {
+      apiFetch: async () => ({ ok: true, json: async () => ({ duplicates: dups }) }),
+      document: { getElementById: (id) => els[id] },
+      esc: (s) => String(s), fmt: (n) => "$" + n, fmtDate: (d) => d, parseFloat, Math,
+    };
+    vm.runInNewContext(src.slice(start, end), ctx);
+    return ctx.loadDuplicates().then(() => els);
+  }
+  it("an empty list hides the section and clears the old pair", async () => {
+    assert.ok(start > 0 && end > start);
+    const els = await run([]);
+    assert.equal(els["dup-section"].style.display, "none");
+    assert.equal(els["dup-list"].innerHTML, "");
+  });
+  it("a remaining pair is still shown", async () => {
+    const els = await run([{ merchant: "Cafe", amount: "4.50", date: "2026-10-01", account1: "A", account2: "B", id1: "x", id2: "y" }]);
+    assert.equal(els["dup-section"].style.display, "block");
+    assert.match(els["dup-list"].innerHTML, /Cafe/);
   });
 });

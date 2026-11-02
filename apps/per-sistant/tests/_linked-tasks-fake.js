@@ -5,15 +5,27 @@
 // A fake pool that understands exactly the statements linked-tasks.js sends.
 function fakePool() {
   const rows = [];
+  const tombstones = new Set();
   let nextId = 1;
   const queries = [];
-  return {
+  const pool = {
     rows,
     queries,
+    tombstones,
+    // What db/031's trigger does when a linked task is deleted for good.
+    hardDelete(key) {
+      const i = rows.findIndex((r) => r.source_key === key);
+      if (i >= 0) { tombstones.add(key); rows.splice(i, 1); }
+    },
+    // syncLinkedTasks runs on one client in a transaction.
+    async connect() { return { query: (sql, params) => pool.query(sql, params), release() { pool.released = (pool.released || 0) + 1; } }; },
     async query(sql, params) {
       queries.push(sql);
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [], rowCount: 0 };
+      if (/^SELECT pg_advisory_xact_lock/.test(sql)) return { rows: [{}], rowCount: 1 };
       if (/^INSERT INTO todos/.test(sql)) {
         const [title, description, priority, due_date, source_app, source_key, source_url, snapshot] = params;
+        if (tombstones.has(source_key)) return { rows: [], rowCount: 0 };
         if (rows.some((r) => r.source_key === source_key)) return { rows: [], rowCount: 0 };
         const row = { id: nextId++, title, description, priority, horizon: "short", category: "finance", due_date,
           source_app, source_key, source_url, source_snapshot: JSON.parse(snapshot),
@@ -56,6 +68,7 @@ function fakePool() {
       throw new Error("unexpected SQL: " + sql);
     },
   };
+  return pool;
 }
 
 module.exports = { fakePool };

@@ -31,7 +31,9 @@ const { getMonthlySpending, getMonthlyIncomeAndSpending, getCategorySpendingThis
 // genuine this-month hallucinations, inflating audit_accuracy as a false
 // negative). Deliberately NOT added: bare/unqualified or "per month" claims —
 // AIA1 intentionally checks those against this-month (pinned in tests).
-const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|last month|previous month|prior month|months? ago|year[- ]?over[- ]?year|yoy|trailing|estimated?|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|running[- ]?average|rolling[- ]?average|monthly average|average monthly|average per month|\d+[- ]?month average|avg[ ./]*mo|averaging|projected|projection|annualized|run[- ]?rate|on track)\b/;
+// cycle-8 F42: the year / week / quarter periods too ("last year", "last
+// week", "this quarter", "$90 a week") — they were compared with this month.
+const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|last month|previous month|prior month|months? ago|year[- ]?over[- ]?year|yoy|trailing|estimated?|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|running[- ]?average|rolling[- ]?average|monthly average|average monthly|average per month|\d+[- ]?month average|avg[ ./]*mo|averaging|projected|projection|annualized|run[- ]?rate|on track|last year|previous year|prior year|years? ago|same (?:month|time|period) last year|last (?:spring|summer|fall|autumn|winter|holiday season)|last week|past week|previous week|prior week|this week|per week|\/wk\b|\/week|weekly|a week|last quarter|previous quarter|prior quarter|this quarter|per quarter|quarterly)\b/;
 
 // An explicit this-month qualifier OVERRIDES a cross-period match: the model
 // was given this-month actuals, so a claim it tags "this month" is checkable
@@ -48,9 +50,19 @@ const MONTH_NAME_RE = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|J
 const MONTH_INDEX = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 function namesOtherMonth(window, thisMonth) {
   const tm = Number(thisMonth.slice(5, 7));
+  const ty = thisMonth.slice(0, 4);
   for (const m of window.matchAll(MONTH_NAME_RE)) {
     if (m[2]) { if (`${m[2]}-${m[3]}` !== thisMonth) return true; continue; }
     if (MONTH_INDEX[m[1].slice(0, 3).toLowerCase()] !== tm) return true;
+    // cycle-8 F42: this month's NAME can still mean another year — "last
+    // November", "November 2025" — the prior-year same-month comparison.
+    if (/\b(?:last|previous|prior)\s+$/i.test(window.slice(0, m.index))) return true;
+    const year = window.slice(m.index + m[0].length).match(/^,?\s+((?:19|20)\d{2})\b/);
+    if (year && year[1] !== ty) return true;
+  }
+  // A bare year that isn't this one ("In 2025, Shopping hit $800").
+  for (const y of window.matchAll(/(?<![$\d.,-])\b((?:19|20)\d{2})\b(?!-\d)/g)) {
+    if (y[1] !== ty) return true;
   }
   return false;
 }
@@ -79,7 +91,7 @@ function claimPeriodWindow(text, claim) {
 // with September's $300").
 function claimNamesOtherMonth(text, claim, thisMonth) {
   const { lead, trail } = claimPeriodParts(text, claim);
-  const attached = (trail.match(/^\s*(?:in|for|during|of)\s+(?:\d{4}-\d{2}|[A-Z][a-z]+)/) || [""])[0];
+  const attached = (trail.match(/^\s*(?:(?:in|for|during|of)\s+(?:(?:last|previous|prior)\s+)?(?:\d{4}-\d{2}|[A-Z][a-z]+(?:,?\s+\d{4})?|\d{4})|(?:last|previous|prior)\s+[A-Z][a-z]+)/) || [""])[0];
   return namesOtherMonth(lead, thisMonth) || namesOtherMonth(attached, thisMonth);
 }
 
@@ -292,6 +304,69 @@ function attributeCategory(lead, trail, categories) {
 // AIN-1: a subscription figure is the TOTAL only when phrased as one.
 const SUB_TOTAL_RE = /\b(total\w*|all|combined|altogether|overall)\b|\b\d+\s+(?:active\s+|recurring\s+)?subscriptions\b/;
 
+// Roadmap T4.1 A3: the cash plan's figures — the amounts the prompt gave the
+// model. A dollar figure stated "per paycheck", or "per month" next to one of
+// the plan's debts, must be one of them (the nearest, within 5%).
+const PER_PAYCHECK_RE = /\b(?:per|a|each|every)\s+paycheck\b/;
+const PER_MONTH_RE = /\b(?:per|a|each|every)\s+month\b|\/mo(?:nth)?\b|\bmonthly\b/;
+// A hypothetical ("cancelling Hulu would free $8 per paycheck") isn't the plan.
+const PLAN_HYPOTHETICAL_RE = /\b(?:cancel\w*|switch\w*|downgrad\w*|instead|alternative|could|would|if you|by cutting)\b/;
+function planFigures(plan) {
+  if (!plan || !plan.ok) return null;
+  const ppy = (plan.period && plan.period.paychecks_per_year) || 12;
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const debts = {};
+  for (const d of (plan.allocation && plan.allocation.debts) || []) {
+    if (!d || !d.name) continue;
+    debts[String(d.name).toLowerCase()] = {
+      per_period: [d.per_period, r2((d.extra_monthly * 12) / ppy)].filter((v) => v > 0),
+      monthly: [d.payment_monthly, d.extra_monthly, d.minimum_monthly].filter((v) => v > 0),
+    };
+  }
+  // Roadmap T4.1 A8: a loan's "extra $100 a month" and its payment with it.
+  for (const l of plan.loan_extra || []) {
+    const d = l && l.name && debts[String(l.name).toLowerCase()];
+    if (d) d.monthly.push(...[l.extra_monthly, r2(l.payment_monthly + l.extra_monthly)].filter((v) => v > 0));
+  }
+  const a = plan.allocation || {};
+  const perPeriod = [plan.headline && plan.headline.amount_per_period, plan.surplus && plan.surplus.recommended_per_period,
+    a.buffer_per_period, a.emergency_per_period, a.invest_per_period, a.debt_extra_per_period,
+    ...Object.values(debts).flatMap((d) => d.per_period),
+    // A goal's catch-up amount (roadmap T4.1 A5) is a plan figure too.
+    ...(plan.goals || []).map((g) => g && g.add_per_period),
+    // Roadmap T4.1 A6: a raise's share and what trimming a creeping category frees.
+    ...(plan.raises || []).flatMap((r) => (r ? [r.suggest_per_period, r.raise_per_deposit] : [])),
+    ...(plan.spending_creep || []).map((c) => c && c.increase_per_period)].filter((v) => v > 0);
+  return { unit: plan.period && plan.period.unit, perPeriod, debts };
+}
+// The finding for one plan claim, or null when it matches (or isn't a plan claim).
+function planClaimFinding(claim, lead, trail, figures) {
+  if (!figures) return { matched: false, finding: null };
+  const clause = lead + " " + trail;
+  if (PLAN_HYPOTHETICAL_RE.test(clause)) return { matched: false, finding: null };
+  const debt = attributeCategory(lead, trail, Object.keys(figures.debts));
+  let set = null, label = null;
+  if (figures.unit === "paycheck" && PER_PAYCHECK_RE.test(clause)) {
+    set = debt ? figures.debts[debt].per_period : figures.perPeriod;
+    label = "per paycheck" + (debt ? " for " + debt : "");
+  } else if (debt && PER_MONTH_RE.test(clause)) {
+    set = figures.debts[debt].monthly;
+    label = "a month for " + debt;
+  }
+  if (!set) return { matched: false, finding: null };
+  if (!set.length) return { matched: true, finding: null };
+  let nearest = set[0];
+  for (const v of set) if (Math.abs(claim.value - v) < Math.abs(claim.value - nearest)) nearest = v;
+  const pctOff = Math.abs(claim.value - nearest) / nearest;
+  if (pctOff <= 0.05) return { matched: true, finding: null };
+  return {
+    matched: true,
+    finding: { severity: pctOff > 0.20 ? "critical" : "warning", tier: 1, check: "cash_plan",
+      claim: `$${claim.value.toFixed(2)} ${label}`, expected: `$${nearest.toFixed(2)}`,
+      pct_off: Math.round(pctOff * 100), context: claim.context },
+  };
+}
+
 // AIN-3: savings rate over a set of {income, spending} months (sum-based).
 function savingsRateOf(rows) {
   const inc = rows.reduce((a, r) => a + (r.income || 0), 0);
@@ -303,7 +378,7 @@ function savingsRateOf(rows) {
  * Run all audit tiers against an insight text.
  * Returns { findings: [...], summary: { critical, warning, info } }
  */
-async function auditInsight(insightText, insightId) {
+async function auditInsight(insightText, insightId, { plan = null } = {}) {
   const findings = [];
   // AI-5: track tiers that threw so a swallowed DB error in a tier isn't later
   // mistaken for "audited and clean". Any incomplete tier marks the whole run
@@ -345,8 +420,17 @@ async function auditInsight(insightText, insightId) {
     // Check dollar claims against actuals
     const dollarClaims = extractDollarClaims(insightText);
     const categoryNames = Object.keys(actualCategories);
+    const figures = planFigures(plan);
     for (let i = 0; i < dollarClaims.length; i++) {
       const claim = dollarClaims[i];
+      // T4.1 A3: a plan figure is judged against the plan, before the
+      // this-month spending checks (which would skip or mis-read it).
+      if (figures) {
+        const seg = claimSegments(insightText, dollarClaims, i);
+        const pc = planClaimFinding(claim, seg.lead, seg.trail, figures);
+        if (pc.finding) findings.push(pc.finding);
+        if (pc.matched) continue;
+      }
       // Skip claims scoped to a non-current-month period (annual/multi-month/YTD/
       // projected/average, or a named other month — F61) — the per-category +
       // subscription actuals below are this-month figures, so comparing a
@@ -688,4 +772,4 @@ async function getAuditAccuracy(days = 90) {
   }
 }
 
-module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, isGenericName, claimSegments, attributeCategory, CROSS_PERIOD_RE, namesOtherMonth, claimPeriodWindow, claimNamesOtherMonth };
+module.exports = { planFigures, planClaimFinding, auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, isGenericName, claimSegments, attributeCategory, CROSS_PERIOD_RE, namesOtherMonth, claimPeriodWindow, claimNamesOtherMonth };

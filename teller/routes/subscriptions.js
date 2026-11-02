@@ -280,7 +280,10 @@ async function runSubscriptionWatchdog(db = pool) {
     const title = `${r.display_name} charged ${money(r.charged)} after you cancelled it`;
     const body = `A ${money(r.charged)} charge on ${r.charged_on} matches ${r.display_name}, which you marked cancelled. ` +
       "Check the merchant — the cancellation may not have gone through.";
-    const sent = await sendToAll({ title, body, tag: "sub-still-charging-" + r.id, data: { url: "/subscriptions" } });
+    // item (cycle-8 E3d): the charge's linked task, when one is already open,
+    // covers the push. The task is made just below, so the first alert per
+    // charge is always pushed (the task has no due date — it never interrupts).
+    const sent = await sendToAll({ title, body, tag: "sub-still-charging-" + r.id, item: linkedTasks.stillChargingItem(r), data: { url: "/subscriptions" } });
     if (!sent.logged) continue; // not recorded → retry on the next run
     await db.query(
       "UPDATE detected_subscriptions SET still_charging_txn = $2, still_charging_at = $3, still_charging_amount = $4, updated_at = now() WHERE id = $1",
@@ -290,7 +293,7 @@ async function runSubscriptionWatchdog(db = pool) {
     // the alert is marked; a failure never un-marks it.
     try { await linkedTasks.ensureStillChargingTask(db, r); }
     catch (e) { console.error("still-charging linked task failed:", e.message); }
-    await sendCriticalAlertEmail(title, body);
+    await sendCriticalAlertEmail(title, body, { tag: "sub-still-charging-" + r.id });
   }
 
   const rises = await db.query(`
@@ -310,6 +313,43 @@ async function runSubscriptionWatchdog(db = pool) {
     });
     if (!sent.logged) continue;
     await db.query("UPDATE detected_subscriptions SET price_alerted_amount = amount WHERE id = $1", [r.id]);
+    out.price_rises++;
+  }
+
+  // An expected charge that came in more than 10% higher (cycle-8 F47). Such a
+  // charge is outside detection's ±10% amount band, so it isn't part of the
+  // series and the subscription keeps its old price until three charges at the
+  // new one form a cluster (DC-7) — about two billing cycles late for a monthly
+  // plan, and never for a yearly one. A later charge from the same merchant key,
+  // within 45 days, between 10% and 50% above the subscription's amount, is read
+  // as the new price. Utilities are left out (a winter bill isn't a price rise).
+  // Once per price: price_alerted_amount holds the charged amount, which the
+  // rule above then matches when detection re-anchors on it.
+  const early = await db.query(`
+    SELECT ds.id, ds.display_name, ds.amount, c.amount AS charged
+    FROM detected_subscriptions ds
+    JOIN LATERAL (
+      SELECT t.amount, t.date
+      FROM transactions t
+      WHERE t.amount > 0 AND t.pending = false
+        AND ${SUB_MERCHANT_KEY_SQL} = ds.merchant_key
+        AND t.date > ds.last_charged AND t.date >= CURRENT_DATE - 45
+        AND t.amount > ds.amount * 1.10 AND t.amount <= ds.amount * 1.5
+      ORDER BY t.date DESC, t.transaction_id DESC
+      LIMIT 1
+    ) c ON true
+    WHERE ds.is_active AND NOT ds.is_dismissed AND ds.cancelled_at IS NULL
+      AND ds.amount > 0 AND ds.category <> 'utility'
+      AND ds.price_alerted_amount IS DISTINCT FROM c.amount`);
+  for (const r of early.rows) {
+    const sent = await sendToAll({
+      title: `${r.display_name} went up from ${money(r.amount)} to ${money(r.charged)}`,
+      body: `${r.display_name}'s latest charge is ${money(r.charged)} (was ${money(r.amount)}).`,
+      tag: "sub-price-" + r.id,
+      data: { url: "/subscriptions" },
+    });
+    if (!sent.logged) continue;
+    await db.query("UPDATE detected_subscriptions SET price_alerted_amount = $2 WHERE id = $1", [r.id, r.charged]);
     out.price_rises++;
   }
   return out;
@@ -1247,6 +1287,77 @@ router.patch("/api/recurring-transfers/:id/type", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Forecast corrections (cycle-8 E1a / G1) — how the cash-flow forecast
+// (services/cash-flow.js) treats one recurring transfer or subscription. They
+// change the forecast only; the next hourly cash-alert check re-evaluates.
+// ---------------------------------------------------------------------------
+// The CHECK's own value list (read at request time — test doubles of the
+// database module don't carry it).
+const forecastTreatments = () => require("../services/database").CHECK_LISTS.recurring_transfers.forecast_treatment;
+function rowId(raw) {
+  const s = String(raw || "");
+  if (!/^\d{1,10}$/.test(s)) return null;
+  const n = Number(s);
+  return n >= 1 && n <= 2147483647 ? n : null;
+}
+function forecastChanged() {
+  try { require("../services/cash-alerts").invalidate(); }
+  catch (err) { console.error("cash-alerts invalidate failed:", err.message); }
+}
+
+// PATCH /api/recurring-transfers/:id/forecast — { treatment: auto | bill |
+// internal | ignore }
+router.patch("/api/recurring-transfers/:id/forecast", async (req, res) => {
+  const id = rowId(req.params.id);
+  if (!id) return res.status(400).json({ error: "id must be a positive integer" });
+  const treatment = req.body && req.body.treatment;
+  const allowed = forecastTreatments();
+  if (typeof treatment !== "string" || !allowed.includes(treatment)) {
+    return res.status(400).json({ error: `treatment must be one of: ${allowed.join(", ")}` });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE recurring_transfers SET forecast_treatment = $1, updated_at = now()
+       WHERE id = $2 AND direction = 'outgoing'
+       RETURNING id, display_name, direction, forecast_treatment`,
+      [treatment, id]
+    );
+    if (!result.rows.length) {
+      // Only outgoing transfers are billed; an incoming one has nothing to correct.
+      const found = await pool.query("SELECT direction FROM recurring_transfers WHERE id = $1", [id]);
+      if (found.rows.length) return res.status(400).json({ error: "Only an outgoing transfer is in the forecast" });
+      return res.status(404).json({ error: "Not found" });
+    }
+    forecastChanged();
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("recurring-transfer forecast error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/subscriptions/:id/forecast — { ignore: true | false }
+router.patch("/api/subscriptions/:id/forecast", async (req, res) => {
+  const id = rowId(req.params.id);
+  if (!id) return res.status(400).json({ error: "id must be a positive integer" });
+  const ignore = req.body && req.body.ignore;
+  if (typeof ignore !== "boolean") return res.status(400).json({ error: "ignore must be true or false" });
+  try {
+    const result = await pool.query(
+      `UPDATE detected_subscriptions SET forecast_ignore = $1, updated_at = now() WHERE id = $2
+       RETURNING id, display_name, forecast_ignore`,
+      [ignore, id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    forecastChanged();
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("subscription forecast error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // ============================================================================
 // Manual Bills — user-created expected charges for the calendar
 // ============================================================================
@@ -1283,6 +1394,8 @@ router.post("/api/manual-bills", async (req, res) => {
        RETURNING *`,
       [name.trim(), parsedAmount, parsedDay, billCadence, category || "bill", notes || null]
     );
+    // A manual bill opens, moves or closes its linked tasks (cycle-8 F22).
+    linkedTasks.kick("manual-bill-add");
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -1319,6 +1432,7 @@ router.patch("/api/manual-bills/:id", async (req, res) => {
       values
     );
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    linkedTasks.kick("manual-bill-edit");
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -1329,6 +1443,7 @@ router.patch("/api/manual-bills/:id", async (req, res) => {
 router.delete("/api/manual-bills/:id", async (req, res) => {
   try {
     await pool.query("DELETE FROM manual_bills WHERE id = $1", [req.params.id]);
+    linkedTasks.kick("manual-bill-delete");
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });

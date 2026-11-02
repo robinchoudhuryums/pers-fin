@@ -283,6 +283,12 @@ const INSIGHT_MODULES = {
     extra_tokens: 200,
     requires_zip: false,
   },
+  cash_plan: {
+    label: "Your plan for extra money",
+    description: "Words the dashboard's plan — debt, emergency fund, investing — with its computed figures",
+    extra_tokens: 250,
+    requires_zip: false,
+  },
   debt_optimizer: {
     label: "Debt payoff optimizer",
     description: "Credit card payoff strategies with utilization and credit score impact",

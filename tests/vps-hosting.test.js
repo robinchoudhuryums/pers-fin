@@ -121,20 +121,21 @@ describe("Operator Checks on a self-hosted server", () => {
 
   it("the on-server backup check reads user_settings.last_backup_at", async () => {
     const env = { SERVER_BACKUPS: "true" };
-    const pool = (row) => ({ query: async (sql) => { assert.match(sql, /SELECT last_backup_at FROM user_settings/); return { rows: [row] }; } });
-    assert.equal(await oc.serverBackupCheck(pool({ last_backup_at: null }), {}, NOW), null, "off without SERVER_BACKUPS");
-    assert.equal((await oc.serverBackupCheck(null, env, NOW)).status, "unknown");
-    const none = await oc.serverBackupCheck(pool({ last_backup_at: null }), env, NOW);
+    const pool = (row) => ({ query: async (sql) => { assert.match(sql, /SELECT last_backup_at, last_backup_source FROM user_settings/); return { rows: [row] }; } });
+    assert.equal(await oc.backupCheck(pool({ last_backup_at: null }), { ...GH }, NOW), null, "off without SERVER_BACKUPS while the GitHub check runs");
+    assert.equal((await oc.backupCheck(null, env, NOW)).status, "unknown");
+    const none = await oc.backupCheck(pool({ last_backup_at: null }), env, NOW);
     assert.equal(none.status, "fail");
     assert.match(none.fix, /backup\.sh/);
-    const old = await oc.serverBackupCheck(pool({ last_backup_at: hoursAgo(40) }), env, NOW);
+    const old = await oc.backupCheck(pool({ last_backup_at: hoursAgo(40), last_backup_source: "server" }), env, NOW);
     assert.equal(old.status, "fail");
     assert.match(old.detail, /40h old/);
-    const fresh = await oc.serverBackupCheck(pool({ last_backup_at: hoursAgo(3) }), env, NOW);
+    const fresh = await oc.backupCheck(pool({ last_backup_at: hoursAgo(3), last_backup_source: "server" }), env, NOW);
     assert.equal(fresh.status, "ok");
-    const broken = await oc.serverBackupCheck({ query: async () => { throw new Error("db down"); } }, env, NOW);
+    assert.match(fresh.detail, /on the server/);
+    const broken = await oc.backupCheck({ query: async () => { throw new Error("db down"); } }, env, NOW);
     assert.equal(broken.status, "unknown");
-    assert.equal(broken.id, "local:server-backup", "not a GitHub id — a read failure doesn't hold back the notification");
+    assert.equal(broken.id, "local:backup", "not a GitHub id — a read failure doesn't hold back the notification");
   });
 
   it("getOperatorChecks includes the on-server backup check with no GitHub token", async () => {
@@ -142,7 +143,7 @@ describe("Operator Checks on a self-hosted server", () => {
     const pool = { query: async () => ({ rows: [{ last_backup_at: new Date().toISOString() }] }) };
     const r = await oc.getOperatorChecks({ env: { SERVER_BACKUPS: "true", TOKEN_ENCRYPTION_PASSPHRASE: "x" }, pool });
     const c = byId(r.checks);
-    assert.equal(c["local:server-backup"].status, "ok");
+    assert.equal(c["local:backup"].status, "ok");
     assert.equal(r.github.configured, false);
     oc._resetCache();
   });
@@ -157,7 +158,7 @@ describe("Operator Checks on a self-hosted server", () => {
     assert.match(read("teller", "services", "database.js"), /ADD COLUMN IF NOT EXISTS last_backup_at TIMESTAMPTZ/);
     const sh = read("deploy", "vps", "backup.sh");
     const loopEnd = sh.indexOf('mv "$tmp" "$out"');
-    const stamp = sh.indexOf("UPDATE user_settings SET last_backup_at = now() WHERE id = 1");
+    const stamp = sh.indexOf("UPDATE user_settings SET last_backup_at = now(), last_backup_source = 'server' WHERE id = 1");
     assert.ok(loopEnd > 0 && stamp > loopEnd, "stamped only after both databases were verified");
     assert.match(sh.slice(stamp), /\|\| echo "[^"]*WARNING: couldn't record the backup time/);
   });

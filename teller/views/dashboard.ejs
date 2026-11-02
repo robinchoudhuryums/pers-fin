@@ -23,6 +23,22 @@
     .dash-attention .all-clear .tick { color: var(--green); margin-right: 6px; }
     .dash-attention .note { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
     .dash-summary-error { color: var(--text-muted); font-size: 13px; margin-top: 8px; }
+    /* Roadmap T4.1 A2: the "Your plan" card. */
+    .advice-headline { font-size: 16px; font-weight: 500; margin: 0 0 6px; }
+    .advice-why, .advice-note { color: var(--text-muted); font-size: 13px; margin: 0 0 10px; }
+    .advice-steps { list-style: none; margin: 8px 0 12px; padding: 0; font-size: 13px; }
+    .advice-steps li { display: flex; gap: 8px; padding: 3px 0; color: var(--text-muted); }
+    .advice-steps li.is-current { color: var(--text); font-weight: 500; }
+    .advice-steps .advice-mark { width: 14px; flex: none; text-align: center; }
+    .advice-steps li.is-done .advice-mark { color: var(--green); }
+    .advice-table { width: 100%; font-size: 13px; margin: 4px 0 10px; }
+    .advice-table td.num, .advice-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .advice-list { margin: 6px 0 10px; padding-left: 18px; font-size: 13px; color: var(--text-muted); }
+    .advice-disclaimer { color: var(--text-muted); font-size: 11px; margin: 8px 0 0; }
+    .advice-ef { margin: 6px 0 10px; font-size: 13px; }
+    .advice-ef progress { display: block; width: 100%; height: 8px; margin: 4px 0; accent-color: var(--teal); }
+    .advice-ef .advice-ef-sub { color: var(--text-muted); }
+    .advice-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .skel { display: block; border-radius: 6px; background: var(--surface-2); animation: skelPulse 1.4s ease-in-out infinite; }
     .skel.line { height: 12px; margin-top: 8px; }
     .skel.big { height: 26px; width: 60%; margin-top: 8px; }
@@ -425,6 +441,13 @@
     </details>
   </div>
 
+  <!-- Roadmap T4.1 A2: "Your plan" — GET /api/advice. services/advice.js works
+       out every figure; the card only formats them. -->
+  <section class="section" id="advice-section" aria-labelledby="advice-title" style="margin-bottom:28px;">
+    <h2 id="advice-title">Your plan</h2>
+    <div id="advice-body" aria-busy="true"><span class="skel line" style="width:60%;"></span><span class="skel line" style="width:40%;"></span></div>
+  </section>
+
   <!-- Charts -->
   <div class="charts-grid">
     <div class="chart-card">
@@ -470,6 +493,13 @@
       <div style="margin-top:12px;">
         <div id="cashflow-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
         <div id="cashflow-list"></div>
+        <!-- Cycle-8 E1b (G1): what the projection billed and left out, each with
+             its forecast setting (PATCH …/forecast). Collapsed; its open state
+             survives the section's reloads (only the body is re-rendered). -->
+        <details id="cashflow-items-wrap" style="margin-top:14px;">
+          <summary style="cursor:pointer;font-size:13px;">What's in this forecast</summary>
+          <div id="cashflow-items" style="margin-top:10px;"></div>
+        </details>
       </div>
     </details>
   </div>
@@ -1509,6 +1539,112 @@
       editManualBalance(parseInt(this.dataset.editBalance));
     });
 
+    // Roadmap T4.1 A2: "Your plan" (GET /api/advice). Pure renderers (tested in
+    // a vm): every figure is the engine's (services/advice.js), only formatted
+    // here; red only where something is wrong (a minimum that never pays a debt
+    // off), a debt in the default colour (INV-148).
+    var ADVICE_DISCLAIMER = 'Educational, based on your data \u2014 not financial advice.';
+    var ADVICE_MARKS = { done: '\u2713', current: '\u25B6', upcoming: '\u00B7' };
+    var ADVICE_STATUS = { done: 'Done: ', current: 'Now: ', upcoming: 'Later: ' };
+    function adviceMonth(ym) {
+      var m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''));
+      if (!m) return '\u2014';
+      return new Date(Number(m[1]), Number(m[2]) - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    }
+    function adviceDebtRows(p) {
+      var unit = (p.period && p.period.unit) || 'month';
+      var rows = (p.allocation && p.allocation.debts) || [];
+      if (!rows.length) return '';
+      var head = '<table class="advice-table responsive-cards"><thead><tr><th scope="col">Debt</th><th scope="col" class="num">APR</th>' +
+        '<th scope="col" class="num">Balance</th><th scope="col" class="num">Pay per ' + esc(unit) + '</th>' +
+        '<th scope="col" class="num">Paid off</th><th scope="col" class="num">Interest saved</th></tr></thead><tbody>';
+      return head + rows.map(function (d) {
+        var apr = d.apr == null ? '\u2014' : esc(String(d.apr)) + '%' + (d.apr_assumed ? ' (assumed)' : '');
+        var paidOff = d.months_to_payoff == null
+          ? '<span class="amt-bad">' + (d.minimum_never_pays_off ? 'Minimum never pays it off' : 'Not in 50 years') + '</span>'
+          : esc(adviceMonth(d.payoff_month));
+        var saved = d.interest_saved == null || !(d.extra_monthly > 0) ? '\u2014' : fmt(d.interest_saved);
+        return '<tr><td class="cell-primary" data-label="Debt">' + esc(d.name) + '</td>' +
+          '<td class="num" data-label="APR">' + apr + '</td>' +
+          '<td class="num" data-label="Balance">' + fmt(d.balance) + '</td>' +
+          '<td class="num" data-label="Pay per ' + esc(unit) + '">' + fmt(d.per_period) + '</td>' +
+          '<td class="num" data-label="Paid off">' + paidOff + '</td>' +
+          '<td class="num" data-label="Interest saved">' + saved + '</td></tr>';
+      }).join('') + '</tbody></table>';
+    }
+    function adviceList(items) {
+      items = (items || []).filter(Boolean);
+      return items.length ? '<ul class="advice-list">' + items.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('') + '</ul>' : '';
+    }
+    // Roadmap T4.1 A5: the emergency-fund tracker and goal catch-up lines.
+    function adviceEmergency(e) {
+      if (!e) return '';
+      var covered = e.months_covered == null ? '\u2014' : esc(String(e.months_covered));
+      var sub = e.reached ? 'Reached.'
+        : e.projection ? 'At this pace, reached around ' + esc(adviceMonth(e.projection.month)) + '.'
+        : esc(e.note || '');
+      return '<div class="advice-ef"><div>Emergency fund: ' + covered + ' of ' + esc(String(e.target_months)) +
+        ' months of spending (' + fmt(e.have) + ' of ' + fmt(e.target) + ')</div>' +
+        '<progress max="100" value="' + esc(String(e.pct)) + '" aria-label="Emergency fund: ' + esc(String(e.pct)) + '% of the target"></progress>' +
+        (sub ? '<div class="advice-ef-sub">' + sub + '</div>' : '') + '</div>';
+    }
+    function adviceGoalLines(goals) {
+      return (goals || []).filter(function (g) { return g && g.text && (g.status === 'behind' || g.status === 'overdue' || g.status === 'due'); })
+        .map(function (g) { return g.text; });
+    }
+    // Roadmap T4.1 A6: a raise, a bonus's split and spending creep, one line each.
+    function adviceTexts(list) {
+      return (list || []).map(function (x) { return x && x.text; });
+    }
+    function renderAdvice(p) {
+      var disclaimer = '<p class="advice-disclaimer">' + esc((p && p.disclaimer) || ADVICE_DISCLAIMER) + '</p>';
+      if (!p || !p.ok) return '<p class="advice-note">' + esc((p && p.error) || 'Your plan couldn\'t be worked out.') + '</p>' + disclaimer;
+      var months = (p.surplus && p.surplus.months) || [];
+      var history = months.filter(function (m) { return m.has_data; }).length;
+      if (!history && !(p.debts || []).length) {
+        return emptyState({ title: 'Your plan needs more history', text: p.why || 'Link an account and check back after a full month.', action: { label: 'Link an account', href: '/accounts' } }) + disclaimer;
+      }
+      var html = '<p class="advice-headline">' + esc(p.headline && p.headline.text) + '</p>';
+      if (p.why) html += '<p class="advice-why">' + esc(p.why) + '</p>';
+      html += '<ol class="advice-steps">' + (p.steps || []).map(function (st) {
+        return '<li class="is-' + esc(st.status) + '"' + (st.status === 'current' ? ' aria-current="step"' : '') + '>' +
+          '<span class="advice-mark" aria-hidden="true">' + (ADVICE_MARKS[st.status] || '') + '</span>' +
+          '<span><span class="advice-sr">' + (ADVICE_STATUS[st.status] || '') + '</span>' + esc(st.title) + '</span></li>';
+      }).join('') + '</ol>';
+      html += adviceDebtRows(p);
+      html += adviceEmergency(p.emergency);
+      html += adviceList(adviceGoalLines(p.goals));
+      html += adviceList(adviceTexts(p.raises).concat(adviceTexts(p.bonuses), adviceTexts(p.spending_creep)));
+      // Roadmap T4.1 A7: idle cash, and rebalancing directions with their note.
+      var rb = p.rebalance && p.rebalance.moves && p.rebalance.moves.length ? p.rebalance : null;
+      html += adviceList([p.idle_cash && p.idle_cash.text].concat(rb ? adviceTexts(rb.moves).concat([rb.note]) : []));
+      // Roadmap T4.1 A8: what an extra $100 a month does to each loan.
+      html += adviceList(adviceTexts(p.loan_extra));
+      // Roadmap T4.1 A9: sinking funds, overlapping subscriptions and unused memberships.
+      var sf = p.sinking_funds && p.sinking_funds.text ? p.sinking_funds : null;
+      var sr = p.subscription_review || {};
+      html += adviceList((sf ? [sf.text].concat(adviceTexts(sf.bills)) : []).concat(adviceTexts(sr.overlaps), adviceTexts(sr.unused)));
+      // Roadmap T4.1 A10: room under the yearly contribution limits you entered.
+      html += adviceList(adviceTexts(p.contribution_room && p.contribution_room.accounts));
+      html += adviceList([p.allocation && p.allocation.snowball && p.allocation.snowball.text]
+        .concat((p.debts || []).map(function (d) { return d.utilization_tip && d.utilization_tip.text; })));
+      html += adviceList(p.notes);
+      return html + disclaimer;
+    }
+    async function loadAdvice() {
+      var body = document.getElementById('advice-body');
+      if (!body) return;
+      try {
+        var res = await apiFetch('/api/advice');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        body.innerHTML = renderAdvice(await res.json());
+      } catch (e) {
+        body.innerHTML = '<p class="advice-note">Your plan couldn\'t be loaded.</p>';
+      } finally {
+        body.removeAttribute('aria-busy');
+      }
+    }
+
     // Design D3: the Summary card + Needs attention (GET /api/dashboard/summary).
     // Pure renderers (tested in a vm); every figure arrives from the server's
     // shared helpers and is only formatted here.
@@ -1594,6 +1730,8 @@
     loadAccounts();
     loadSpendingSummary();
     loadForecast();
+    loadAdvice();
+    wireForecastItems();
 
     // Load upcoming bills for calendar widget
     (async function loadCalendarWidget() {
@@ -2503,9 +2641,14 @@
         }
         body.innerHTML = html.join('');
         // Advance the watermark after a short delay so navigating away
-        // immediately doesn't lose the unseen state. Fire-and-forget.
+        // immediately doesn't lose the unseen state. Fire-and-forget. The
+        // token is what this GET read (cycle-8 E2d), so anything that arrived
+        // since shows on the next visit.
+        var seenBody = data.seen_token ? JSON.stringify({ seen_token: data.seen_token }) : undefined;
         setTimeout(function() {
-          apiFetch('/api/whats-new/seen', { method: 'POST' }).catch(function() {});
+          apiFetch('/api/whats-new/seen', seenBody
+            ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: seenBody }
+            : { method: 'POST' }).catch(function() {});
         }, 4000);
       } catch (e) { /* silently hide */ }
     })();
@@ -3146,7 +3289,105 @@
         document.getElementById('cashflow-summary').innerHTML = cashFlowSummaryHtml(data);
         var html = cashFlowTableHtml(data.by_week);
         document.getElementById('cashflow-list').innerHTML = html;
+        renderForecastItems(data);
       } catch (e) { /* non-critical */ }
+    }
+
+    // Cycle-8 E1b (G1): "What's in this forecast" — each projected bill and each
+    // item left out, with the reason in words and its forecast setting. A change
+    // is saved through writeOk; the section and the summary reload on success,
+    // a refused or failed save puts the select back.
+    var FORECAST_REASONS = {
+      card_autopay: 'Looks like a credit card payment \u2014 the card\u2019s purchases are already in your daily spending',
+      internal: 'Looks like a move between your own accounts',
+      user_internal: 'You marked it as a move between your accounts',
+      user_ignored: 'You left it out',
+    };
+    var FORECAST_TRANSFER_OPTIONS = [['auto', 'Automatic'], ['bill', 'Always a bill'], ['internal', 'Between my accounts'], ['ignore', 'Leave out']];
+    var FORECAST_SUB_OPTIONS = [['auto', 'Include'], ['ignore', 'Leave out']];
+    function cadenceWords(days) {
+      var named = { 7: 'a week', 14: 'every 2 weeks', 30: 'a month', 60: 'every 2 months', 90: 'a quarter', 365: 'a year' };
+      if (named[days]) return named[days];
+      return days ? 'every ' + days + ' days' : '';
+    }
+    function forecastSelectHtml(item) {
+      var opts = item.source === 'subscription' ? FORECAST_SUB_OPTIONS : FORECAST_TRANSFER_OPTIONS;
+      var value = item.treatment || 'auto';
+      return '<select class="fi-select" data-fi-source="' + esc(item.source) + '" data-fi-id="' + esc(item.id) + '" data-fi-prev="' + esc(value) + '"' +
+        ' aria-label="Forecast setting for ' + esc(item.name) + '" style="font-size:12px;">' +
+        opts.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === value ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') +
+        '</select>';
+    }
+    function forecastItemRow(item, detail) {
+      var editable = (item.source === 'transfer' || item.source === 'subscription') && item.id != null;
+      return '<li style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' +
+        '<span style="min-width:0;"><strong>' + esc(item.name) + '</strong> ' + fmt(item.amount) +
+        (cadenceWords(item.cadence_days) ? ' ' + esc(cadenceWords(item.cadence_days)) : '') +
+        '<br><span style="font-size:12px;color:var(--text-muted);">' + detail + '</span></span>' +
+        (editable ? forecastSelectHtml(item) : '') + '</li>';
+    }
+    function forecastItemsHtml(items, days) {
+      items = items || {};
+      var bills = items.bills || [], out = items.left_out || [];
+      if (!bills.length && !out.length) return '<div class="note">No recurring bills or transfers are projected.</div>';
+      var html = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Projected bills</div>';
+      html += bills.length ? '<ul style="list-style:none;margin:0 0 12px;padding:0;">' + bills.map(function (b) {
+        var detail = b.occurrences
+          ? b.occurrences + ' in the next ' + days + ' days, ' + fmt(b.projected_total) + (b.next_date ? ' \u00b7 next ' + esc(fmtDate(b.next_date)) : '')
+          : 'Not due in the next ' + days + ' days';
+        if (b.why === 'user') detail += ' \u00b7 you set it as a bill';
+        return forecastItemRow(b, detail);
+      }).join('') + '</ul>' : '<div class="note" style="margin-bottom:12px;">None.</div>';
+      if (out.length) {
+        html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Left out</div>';
+        html += '<ul style="list-style:none;margin:0;padding:0;">' + out.map(function (b) {
+          return forecastItemRow(b, esc(FORECAST_REASONS[b.reason] || 'Left out'));
+        }).join('') + '</ul>';
+      }
+      return html;
+    }
+    function renderForecastItems(data) {
+      var el = document.getElementById('cashflow-items');
+      if (!el) return;
+      // Keep focus on the control that was just changed across the re-render.
+      var active = document.activeElement;
+      var key = active && active.getAttribute && active.getAttribute('data-fi-id') != null
+        ? [active.getAttribute('data-fi-source'), active.getAttribute('data-fi-id')] : null;
+      el.innerHTML = forecastItemsHtml(data.forecast_items, data.forecast_days || 90);
+      if (key && el.querySelector) {
+        var again = el.querySelector('select[data-fi-source="' + key[0] + '"][data-fi-id="' + key[1] + '"]');
+        if (again) again.focus();
+      }
+    }
+    async function onForecastItemChange(sel) {
+      var source = sel.getAttribute('data-fi-source');
+      var id = sel.getAttribute('data-fi-id');
+      var prev = sel.getAttribute('data-fi-prev');
+      var value = sel.value;
+      var url = source === 'subscription' ? '/api/subscriptions/' + encodeURIComponent(id) + '/forecast'
+        : '/api/recurring-transfers/' + encodeURIComponent(id) + '/forecast';
+      var body = source === 'subscription' ? { ignore: value === 'ignore' } : { treatment: value };
+      sel.disabled = true;
+      var ok = false;
+      try {
+        var res = await apiFetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        ok = await writeOk(res, 'Could not save the forecast setting');
+      } catch (e) {
+        showMsg('Could not save the forecast setting: the server could not be reached.', false);
+      }
+      sel.disabled = false;
+      if (!ok) { sel.value = prev; return; }
+      sel.setAttribute('data-fi-prev', value);
+      await loadCashFlow();
+      loadDashboardSummary();
+    }
+    function wireForecastItems() {
+      var el = document.getElementById('cashflow-items');
+      if (!el) return;
+      el.addEventListener('change', function (e) {
+        var sel = e.target;
+        if (sel && sel.classList && sel.classList.contains('fi-select')) onForecastItemChange(sel);
+      });
     }
 
     // --- Year-over-Year Comparison ---
@@ -3794,6 +4035,10 @@
           toggle();
         });
         h2.addEventListener('keydown', function(e) {
+          // Cycle-8 F55: only a key pressed ON the heading toggles it — Space /
+          // Enter inside a control in the heading (Spending by Category's month
+          // select) used to collapse the section instead of opening the select.
+          if (e.target !== h2) return;
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
         });
       });

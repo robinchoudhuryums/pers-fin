@@ -9,16 +9,415 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-Cycle: 7
-Phase: implement
-Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
-Updated: 2026-10-27
+Cycle: 8
+Phase: audit
+Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
+Updated: 2026-11-02
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Design & UX pass — D7 DONE; the pass is complete (D1–D7)** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
+- **Cycle-8 REFLECT (2026-11-02):** block `.cycle/blocks/8-a-reflect.md`, metrics row appended. Net +1 = 13 production
+  fixes − 12 new failure modes; 19 capabilities; 54 defensive. Corrected the summaries' 15 fixes (E1 FO-b/FO-f and E5b
+  fixed this cycle's own unshipped work — none of cycle 8 is on main) and their failure modes (Batch 4 F1's stall removed
+  by E2c; E2b's serialized jobs added). INV-155..157 candidates (job-runner claim, shared-database refusal, Settings save
+  result through every wrapper) — not yet in the library.
+  - **Where I left off:** cycle 8 reflected. Next: merge the branch to main (86 commits — nothing from cycle 8 is
+    deployed), add INV-155..157 to CLAUDE.md, then a Seams & Invariants audit or the next /broad-scan (CYCLE OPEN → 9).
+- **Test-sync after E5 (2026-11-02):** npm test 3130/3130 (was 3126/3127). Fixed three date-dependent tests
+  (category C): tests/cycle8-e1a.test.js pins "today" to 2026-05-10; tests/contract/cash-alerts-l2 seeds the last
+  charge on the same day of the latest earlier month that has it (checked against cadence.seriesOccurrences for every
+  day of 2027-2028); tests/contract/persistent.contract asks for the month holding the day after the due date. Two
+  coverage gaps closed: saveToggle through the keep-alive updateSetting wrapper (tests/broad-scan-c8-batch7, F38
+  block — red with E5b's fix reverted) and loadDuplicates' empty list (tests/roadmap-t2-5-u2 — red with E5a's fix
+  reverted). Docs follow-ons for /sync-docs: the test count (3130), the three date-dependent test entries in Known
+  Open Issues are closed, the Knowledge invariants' Verify paths are relative to apps/per-sistant.
+  - **Where I left off:** test-sync and its `/sync-docs` committed and pushed (CLAUDE.md / README: 3130 tests, 91 e2e,
+    the E5c behaviour actions, INV-130's direct rows, E5 done, the closed date-dependent follow-ons, the IPC flake
+    note, the Knowledge invariants' Verify paths under apps/per-sistant/). Next: cycle 8's `/reflect`.
+- **Cycle-8 E5c (DONE, 2026-11-02) — ST4 part 3, E5 complete:** block `.cycle/blocks/8-e5c-broad-implement.md`.
+  - **Shipped:** behaviour tests 14–17 in `e2e/behaviour.spec.js` — pin a note, complete a todo + subtask (with the
+    undo toast), log today's habit (the streak and today's cell), save a Job Radar listing (Saved view, Unsave).
+  - **Decision:** test 17 inserts its own Job Radar listing (the same kind of direct insert seed.js makes) rather than
+    acting on the seeded one, and the habit / listing tests delete their own rows directly (the API only archives a
+    habit; the click sweep would Restore an archived one); the listing's source trust_weight is put back.
+  - **Verified:** npm test 3122/3124 (e1a date failure, wider than documented; k2 hit the node:test IPC flake, passes
+    alone); e2e 91/91; behaviour 17/17 twice on one server; mutations red (pinned ignored → 14, subtask completed
+    ignored → 15, job status no-op → 17). No production bug found.
+  - **Where I left off:** E5c committed and pushed; E5 is complete. Next: `/sync-docs`, then cycle 8's `/reflect`.
+- **Cycle-8 E5b (DONE, 2026-10-30) — ST4 part 2:** block `.cycle/blocks/8-e5b-broad-implement.md`.
+  - **Shipped:** behaviour tests 9–13 in `e2e/behaviour.spec.js` — a credit score logged, the theme, a dashboard widget
+    switched off / on, a refused switch going back and a saved one staying (page.route 400), Mark all read (the one direct
+    notification_log insert, deleted after); `dbUrl` moved into `e2e/helpers.js`.
+  - **Fixed (exposed by test 12):** Settings' updateSetting wrapper (the keep-alive estimate) dropped the result, so every
+    switch saved through saveToggle / the module and widget switches flipped back after a successful save (since F38).
+  - **Verified:** npm test 3126/3127 (e1a pre-existing, date); e2e 87/87; mutations red (the fix reverted → 11 + 12, the
+    credit widget's re-read → 9, read-all a no-op → 13).
+  - **Where I left off:** E5b committed and pushed. Next: `/sync-docs`, `/broad-implement E5c`, `/sync-docs`, then
+    cycle 8's `/reflect`.
+- **Cycle-8 E5a (DONE, 2026-10-30) — ST4 part 1:** block `.cycle/blocks/8-e5a-broad-implement.md`.
+  - **Shipped:** `e2e/behaviour.spec.js` (8 tests — Activity rename + note, reimbursed, duplicate delete → Undo, Review
+    Uncategorized Apply, Calendar paid, budget rollover, rent payment → Undo, subscription cancel → Restore — each checks
+    the page, the API and a reload, then puts it back), `e2e/helpers.js`, `ensureSeeded`, `workers: 1`.
+  - **Fixed (exposed by test 3):** the duplicate finder kept a deleted pair on screen once the last one was gone.
+  - **Decisions confirmed:** plan decisions 1–5 as proposed; budgets are removed with the card's own Delete.
+  - **Verified:** npm test 3126/3127 (e1a pre-existing, date); e2e 82/82; mutations red (note dropped, rollover ignored,
+    payment not marking paid).
+  - **Where I left off:** E5a committed and pushed. Next: `/sync-docs`, `/broad-implement E5b`, `/broad-implement E5c`,
+    then cycle 8's `/reflect`.
+- **Cycle-8 E5 (PLANNED, 2026-10-30) — ST4 behaviour tests:** plan `.cycle/plan-e5-behaviour-tests.md`.
+  - **Shape:** a new `e2e/behaviour.spec.js` — one test per key action (16) checking the page, the API and a reload,
+    then putting the state back; its own uniquely named data; `workers: 1`; an idempotent `ensureSeeded` in seed.js.
+  - **Batches:** E5a harness + Perfin money actions 1–8 (~3.5h); E5b Perfin settings / chrome 9–13 (~2h);
+    E5c Per-sistant 14–16 (~2.5h). Decisions are proposed — confirm at `/broad-implement E5a`.
+  - **Where I left off:** E4 docs synced (7c196a1). Next: `/broad-implement E5a`, `/broad-implement E5b`,
+    `/broad-implement E5c` (each with `/sync-docs`), then cycle 8's `/reflect`.
+- **Cycle-8 E4b (DONE, 2026-10-30) — G3, E4 complete:** block `.cycle/blocks/8-e4b-broad-implement.md`.
+  - **Shipped:** `teller/services/freshness.js` (ageInfo, readConnections, overallFreshness, connectionFreshness) behind
+    data-health's connection list (unchanged) and GET /api/data-freshness (+ connections, overall); the nav badge reads
+    `overall` — the oldest bank connection, "Reconnect <bank>" for re-auth / disconnected, the global stamps only with no
+    connection — as a link to /settings#sync-health with level classes instead of an inline colour.
+  - **Decision detail:** a connection with no complete sync recorded counts as the oldest (stale, "Not synced yet"); a
+    failed connections read falls back to the global basis; .sync-fresh keeps the quiet default colour.
+  - **Verified:** npm test 3126/3127 (18 new; e1a pre-existing, date); contract 326/328 (3 new; cash-alerts-l2 and the
+    persistent calendar test pre-existing, date); e2e 74/74 (badge check added). Mutations red.
+  - **Where I left off:** E4b committed and pushed; E4 is complete. Next: `/sync-docs`, then E5 (plan it), then `/reflect`.
+- **Cycle-8 E4a (DONE, 2026-10-30) — ST5:** block `.cycle/blocks/8-e4a-broad-implement.md`.
+  - **Shipped:** token-free go-live checks in Operator Checks (goLiveChecks: Teller cert missing while enrollments
+    exist, the shared database, PUBLIC_URL's shape, API_KEY / SHELL_SECRET strength, Plaid env ↔ secret and sandbox with
+    real items, the Teller webhook secret's parts; the cert's expiry in localChecks), and the backup record: db-backup.yml
+    stamps last_backup_at + last_backup_source='github' after verifying, backup.sh 'server', backupCheck (local:backup)
+    runs whenever the GitHub checks are off, reset-fresh keeps the record.
+  - **Decision detail:** localChecks stays pure (the cert-missing check needs the DB, so it lives in goLiveChecks under
+    the same id); a failed stamp is a workflow warning, not a failed job; no check probes the network.
+  - **Verified:** npm test 3108/3109 (14 new; e1a pre-existing, date); contract 323/325 (3 new; cash-alerts-l2 and
+    persistent "GET /api/calendar projects recurring todos" pre-existing, date); e2e 74/74. Mutations red.
+  - **Where I left off:** E4a committed and pushed. Next: `/sync-docs`, `/broad-implement E4b`, `/sync-docs`, then E5,
+    then `/reflect`.
+- **Cycle-8 E3e (DONE, 2026-10-29) — ST2 complete, E3 complete:** block `.cycle/blocks/8-e3e-broad-implement.md`.
+  - **Shipped:** Per-sistant's notification check names each entry's item (a linked task's key; housing_due's
+    housing:<month of its due date>), marks notify:false an item Perfin pushed (push_state sent) in the last 12 h —
+    read-only through perfinPool, fail-soft — and leaves housing_due out only while its own item's task is open
+    (openLinkedItems; housingDueUnlessTask generalised, also behind the briefing's rent line).
+  - **Decision detail:** bills / tax-doc tasks have no Perfin push, so no keys were invented for them; the 12 h window
+    counts from the row's created_at (a push released after quiet hours is dated by its hold).
+  - **Verified:** npm test 3095/3095 (9 new); contract 321/322 (3 new; cash-alerts-l2 pre-existing, 31-day month); e2e 74/74.
+  - **Where I left off:** E3e committed and pushed; the E3 plan is complete; `/sync-docs` done (23aa8a3). E4 planned
+    (`.cycle/plan-e4-operator-freshness.md` — E4a ST5 go-live checks + token-free backup stamp, E4b G3 freshness +
+    nav badge). Next: `/broad-implement E4a`, `/sync-docs`, `/broad-implement E4b`, `/sync-docs`, then E5, then `/reflect`.
+- **Cycle-8 E3d (DONE, 2026-10-29) — ST2 core:** block `.cycle/blocks/8-e3d-broad-implement.md`.
+  - **Shipped:** sendToAll({ item }) — an open Per-sistant linked task for the item (read through the wired pool,
+    fail-soft) makes the push `covered`: logged read with item_key, not pushed, `logged` unchanged; the release job
+    re-checks held rows; the housing reminders carry housing:<period> / utility-amount:<id> and the still-charging push
+    linked-tasks.stillChargingItem; the bell names a covered row.
+  - **Decision detail:** muted → covered → held → sent; covered beats "push not configured"; a detached task doesn't
+    cover; a malformed or "perfin:"-prefixed item is ignored; still-charging's first alert is always pushed (the task is
+    made after it, and has no due date).
+  - **Verified:** npm test 3086/3086 (11 new); contract 318/319 (3 new; cash-alerts-l2 pre-existing, 31-day month).
+  - **Where I left off:** E3d committed and pushed. Next: `/sync-docs`, then `/broad-implement E3e`.
+- **Cycle-8 E3c (DONE, 2026-10-29) — G2 complete:** block `.cycle/blocks/8-e3c-broad-implement.md`.
+  - **Shipped:** Settings → Alerts & Notifications → Quiet Hours & Muting (switch, times, the zone, a box per mutable
+    kind grouped by app — Per-sistant's under the shell only; every save through writeOk, reverted on refusal); the bell
+    names a held / expired / muted push; Per-sistant's notification check gives each entry `kind` / `notify` from
+    Perfin's prefs (read-only through perfinPool) and the dashboard raises no browser notification for notify:false;
+    Per-sistant Settings links to the section.
+  - **Verified:** npm test 3075/3075 (17 new); contract 315/316 (cash-alerts-l2 pre-existing); e2e 74/74 (1 new).
+  - **Where I left off:** E3c committed and pushed. Next: `/sync-docs`, then `/broad-implement E3d`.
+- **Cycle-8 E3b (DONE, 2026-10-29) — G2 part 2:** block `.cycle/blocks/8-e3b-broad-implement.md`.
+  - **Shipped:** sendToAll decides through notify-prefs (push_state sent / held / muted / none, `logged` unchanged, a
+    failed settings read holds nothing); releaseHeldNotifications pushes holds once quiet hours end (one summary for
+    several, 12 h expiry, marked sent only after the push); the notify-release job (15 min, in-memory gate);
+    sendCriticalAlertEmail skips a muted kind and every caller names its kind; PATCH /api/settings drops the cached prefs.
+  - **Decision detail:** a held push whose row failed to write is pushed at once (nothing to release later); a summary
+    push carries the newest row's link; the release gate is open at boot (rows held before a restart).
+  - **Verified:** npm test 3058/3058 (22 new); contract 315/316 (6 new; cash-alerts-l2 pre-existing); e2e 73/73. Mutation red.
+  - **Where I left off:** E3b committed and pushed. Next: `/sync-docs`, then `/broad-implement E3c`.
+- **Cycle-8 E3a (DONE, 2026-10-29) — G2 part 1:** block `.cycle/blocks/8-e3a-broad-implement.md`.
+  - **Shipped:** `teller/services/notify-prefs.js` (15 kinds mapped from tags / check types, isQuiet on the APP_TIMEZONE
+    wall clock, decide: muted → covered → held → sent, the PATCH parsers); user_settings.notify_quiet_hours /
+    notify_muted_types; notification_log.push_state (CHECK_LISTS) / item_key; PATCH validation + GET's catalog and zone.
+  - **Decisions confirmed:** Perfin owns the setting; security and test can't be muted or held; an unknown tag is
+    "other" (mutable); Per-sistant's housing_due is the same kind (bills) as Perfin's rent push.
+  - **Verified:** npm test 3036/3036 (20 new); contract 309/310 (cash-alerts-l2 pre-existing); migrations twice on a
+    scratch database.
+  - **Where I left off:** E3a committed and pushed. Next: `/sync-docs`, then `/broad-implement E3b`.
+- **Cycle-8 E3 (PLANNED, 2026-10-29) — G2 + ST2:** plan `.cycle/plan-e3-notifications.md`.
+  - **Batches:** E3a (the kind catalog `services/notify-prefs.js`, quiet-hours / mute settings + validation, the
+    notification_log push_state / item_key columns — no delivery change), E3b (Perfin delivery: holds during quiet
+    hours, mutes, the `notify-release` job, the critical email honouring mutes — `logged` unchanged), E3c (Settings UI,
+    the bell's words, Per-sistant's check / dashboard following the same prefs), E3d (ST2 core: item keys, a Perfin push
+    covered by an open linked task), E3e (ST2 Per-sistant half + cross-app contract). ≈ 22–23h.
+  - **Decisions to confirm at E3a:** Perfin owns the setting (Per-sistant reads it through perfinPool); the bell is
+    never silenced (only the interruption); quiet hours hold and release (one summary push), never drop; `security`
+    / `test` can't be muted.
+  - **Where I left off:** plan written and pushed. Next: `/broad-implement E3a`.
+- **Cycle-8 E2d (DONE, 2026-10-29) — ST3 complete, E2 complete:** block `.cycle/blocks/8-e2d-broad-implement.md`.
+  - **Shipped:** GET /api/whats-new returns a seen_token (the newest transaction id + the time, read before its
+    queries); the dashboard posts it back to /seen, which stores last_dashboard_view_txn_id / last_dashboard_view_at
+    from it (forward only, capped; malformed → 400; no token → "now" as before); new transactions are read by id once
+    an id is stored (created_at before that and for the daily digest).
+  - **Verified:** npm test 3016/3016 (12 new); contract 309/310 (4 new; cash-alerts-l2 date-dependent, pre-existing);
+    e2e 73/73. Mutation check red.
+  - **Where I left off:** E2d committed and pushed — E2 (ST1 + ST3) is complete. Next: `/sync-docs`, then E3
+    (`.cycle/plan-cycle8-expansion.md` — plan it into batches first if it isn't yet).
+- **Cycle-8 E2c (DONE, 2026-10-29) — ST3 part 1:** block `.cycle/blocks/8-e2c-broad-implement.md`.
+  - **Shipped:** `teller/services/txn-watermark.js` (mark / window / never-backwards advance); runAnomalyCheck and
+    runPaydayLanded on an id watermark with a 24 h overlap rescan measured from the previous check, deduped against
+    notification_log (the anomaly push now carries data.transaction_id); the pg_stat_activity read is gone; two BIGINT
+    columns backfilled once from the time watermarks; the payday switch-on sets the id.
+  - **Decision detail:** the helper is a SQL-fragment builder (windowSql) rather than plan decision 7's `newRows(db, …)`
+    — both callers keep their own queries; the overlap is measured from the previous check's time, not now().
+  - **Verified:** npm test 3004/3004 (15 new, 8 F1 / F51 tests moved out of c8-batch4); contract 305/306 (4 new;
+    cash-alerts-l2 date-dependent, pre-existing). Mutation check red.
+  - **Where I left off:** E2c committed and pushed. Next: `/sync-docs`, then `/broad-implement E2d`.
+- **Cycle-8 E2b (DONE, 2026-10-29) — ST1 complete:** block `.cycle/blocks/8-e2b-broad-implement.md`.
+  - **Shipped (ST1, part 2):** teller/startup.js schedules every job through the job runner — the setIntervals, the
+    watchdog's timers and the F27 boot runs are gone; the watchdog + 15 jobs registered lightest first at their unchanged
+    JOB_INTERVALS_MS cadences, the five activity-gated jobs with `when: isUserActive`, the away channels without.
+  - **Verified:** npm test 2996/2996 (9 new, 3 F27 boot-run tests removed); contract 301/302 (3 new; cash-alerts-l2
+    date-dependent, pre-existing); e2e 73/73. Mutation check red.
+  - **Where I left off:** E2b committed and pushed. Next: `/sync-docs`, then `/broad-implement E2c` (or E2d).
+- **Cycle-8 E2a (DONE, 2026-10-29):** block `.cycle/blocks/8-e2a-broad-implement.md`.
+  - **Shipped (ST1, part 1):** `teller/services/job-runner.js` — a due-based job runner (one job_runs read at the first
+    check, in-memory due checks every 5 min, one job at a time oldest-due first, a conditional-UPSERT claim on the new
+    job_runs.last_ran_at so two processes run a job once, an in-memory `when()` gate that keeps a job due at no query
+    cost). Not wired into startup.js yet.
+  - **Decision changed:** plan decision 5 — gated jobs use a `when()` gate before the claim instead of the body
+    returning `{ skipped: 'away' }` and releasing it (that cost two writes per check while away).
+  - **Verified:** npm test 2990/2990 (18 new); contract 298/299 (3 new; cash-alerts-l2 date-dependent, pre-existing).
+    Mutation check red.
+  - **Where I left off:** E2a committed and pushed. Next: `/broad-implement E2b` (wire startup.js onto the runner).
+- **Cycle-8 E1 follow-ons (DONE, 2026-10-29) + E2 planned:** block `.cycle/blocks/8-e1-followons-broad-implement.md`.
+  - **Shipped:** a rename rule's re-key carries the forecast setting onto the surviving row; PATCH …/forecast on an
+    incoming transfer is a 400; GET /api/deleted-transactions' batches carry `restorable` and Settings' "Restore all R"
+    notes the rows that can't come back; the batch restore counts a lifted legacy tombstone as `cleared` (and a legacy
+    manual entry as `unrestorable`); the migration batches pre-E1c Resolves (`resolve_<md5>_legacy`); `PW_CHROMIUM_PATH`
+    for `npm run test:e2e`; cash-flow-l1's seed fixed; the E1b e2e check no longer depends on the click sweep's order.
+  - **Verified:** npm test 2972/2972 (11 new); contract 295/296 (4 new; cash-alerts-l2 date-dependent, pre-existing);
+    e2e 73/73 (PW_CHROMIUM_PATH). Mutation check red.
+  - **E2 planned:** `.cycle/plan-e2-scheduler-watermarks.md` — E2a the job runner (registry, in-memory due checks, the
+    job_runs claim), E2b wiring startup.js onto it, E2c id watermarks + overlap rescan for the anomaly and payday checks,
+    E2d the same for "Since you last looked". Decisions proposed there, to confirm at E2a.
+  - **Where I left off:** committed and pushed. Next: `/sync-docs` for the follow-ons, then `/broad-implement E2a`.
+- **Cycle-8 E1c (DONE, 2026-10-29) — E1 complete:** block `.cycle/blocks/8-e1c-broad-implement.md`.
+  - **Shipped (G5):** deleted_transactions.batch_id; CSV-overlap Resolve tags its tombstones with one id and returns it;
+    POST /api/deleted-transactions/batches/:batch_id/restore restores the batch in one transaction (refused rows listed and
+    left deleted, rename rules once); GET /api/deleted-transactions returns batch_id + `batches`; Settings shows a labelled
+    "Restore all N" per batch.
+  - **Verified:** npm test 2961/2961 (13 new); contract resolve-undo-e1c 4/4 (cash-alerts-l2 / cash-flow-l1 date-dependent,
+    pre-existing); e2e 73/73. Mutation checks red.
+  - **Where I left off:** E1 (E1a–E1c) done and docs synced (CLAUDE.md: cash-flow.js + subscriptions.js entries, the Cash flow
+    forecast corrections, Resolve batches + Restore all, Commands, Database (forecast_treatment / forecast_ignore / batch_id,
+    CHECK_LISTS), INV-145 + new INV-151, Known Open Issues (E1 + follow-ons, cash-flow-l1's date-dependent seed, the e2e-in-
+    container note corrected), counts 2961 / 158 / Perfin 2240 / contract 292 / e2e 73 + the new test entries; README counts +
+    clauses). Next: plan E2 (ST1 due-based job runner + ST3 id-based watermarks).
+- **Cycle-8 E1b (DONE, 2026-10-29):** block `.cycle/blocks/8-e1b-broad-implement.md`.
+  - **Shipped (G1 UI):** a collapsed "What's in this forecast" list in the dashboard's Cash Flow section — each projected
+    bill (count and total in the window, next date) and each item left out (the reason in words), with a labelled setting
+    per transfer / subscription saved through writeOk (the section and summary reload; a refused save reverts).
+  - **Verified:** npm test 2948/2948 (14 new); e2e 73/73 (1 new) — e2e runs here with executablePath
+    /opt/pw-browsers/chromium (a throwaway local config). Mutation checks red.
+  - **Where I left off:** E1b committed and pushed. Next: `/broad-implement E1c` (G5 — bulk undo of a CSV-overlap Resolve).
+- **Cycle-8 E1a (DONE, 2026-10-29):** block `.cycle/blocks/8-e1a-broad-implement.md`.
+  - **Shipped (G1 server):** recurring_transfers.forecast_treatment (auto / bill / internal / ignore, CHECK via CHECK_LISTS)
+    and detected_subscriptions.forecast_ignore; the forecast honours them (the user's choice beats the card-autopay /
+    internal-move heuristics), returns `left_out` with a reason beside `bills`, and reports both as `forecast_items` on
+    GET /api/cash-flow; PATCH /api/recurring-transfers/:id/forecast and /api/subscriptions/:id/forecast (strict, then
+    cash-alerts invalidate). Plan decisions 1–4 taken as proposed.
+  - **Verified:** npm test 2934/2934 (17 new); contract forecast-e1a 5/5; cash-alerts-l2 and cash-flow-l1 fail on date-
+    dependent seeds (pre-existing — cash-flow-l1's fails today, Oct 29, with the changes stashed too). Mutation checks red.
+  - **Where I left off:** E1a committed and pushed. Next: `/broad-implement E1b` (the "What's in this forecast" list), then E1c.
+- **Cycle-8 expansion E1–E5 (PLANNED, 2026-10-28):** the scan's expansion plan saved as `.cycle/plan-cycle8-expansion.md`;
+  the operator wants E1–E5 done before cycle 8's `/reflect`. E1 (G1 forecast overrides + G5 bulk Resolve undo) is planned in
+  `.cycle/plan-e1-forecast-corrections.md` as three batches — E1a (G1 server), E1b (G1 UI), E1c (G5). Found while planning:
+  no page shows recurring transfers or calls CSV-overlap Resolve today (both API only).
+  - **Where I left off:** plans committed and pushed. Next: `/broad-implement E1a` (confirm the plan's proposed decisions there).
+- **Roadmap T4.1 A10 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a10-broad-implement.md`.
+  - **Shipped:** contribution room (user_settings.contribution_limits — yearly limits entered by hand per investment
+    account in Settings → Planning → Target Allocation, no account type assumed — compared with this calendar year's
+    contributions in investment_flows: room left and the per-paycheck amount that fills it by Dec 31) from a 14th,
+    non-critical `contributions` source, on the card, in the cash_plan block and Ask; and what-if in Ask (get_cash_plan
+    with extra_payment / income_change_monthly / spending_change_monthly — applyWhatIf / whatIfPlan run the same engine
+    on changed inputs and return a before / after comparison). That completes T4.1's planned batches (A1–A10).
+  - **Verified:** npm test 2917/2917 (21 new); contract 282/283 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A10 committed and pushed; docs synced (CLAUDE.md: advice.js's contributions source + contributionRoom + applyWhatIf / whatIfPlan, Ask's get_cash_plan overrides, the cash_plan block, the Target Allocation limits row, PATCH contribution_limits + the Database entry, INV-59 / INV-150, Known Open Issues (T4.1 done, fourteen sources, A10 follow-ons) + Priority Next Features (T4.1 done), counts 2917 / 155 / Perfin 2196 / contract 283 + the new test entry; README counts + clause; the plan's status line). T4.1 is complete. Next: the cycle-8 `/reflect`, or the next roadmap item.
+- **Roadmap T4.1 A9 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a9-broad-implement.md`.
+  - **Shipped:** sinking funds (each quarterly / yearly bill of $100+ — a detected subscription billed every 90+ days or
+    a manual quarterly / yearly bill — with its next date from cadence.js, "set aside $X a month until then, then $Y",
+    and the steady total) and subscription consolidation (two or more video / music streaming, cloud storage, VPN or
+    password-manager services → "keeping just one would save $X to $Y a month"; a membership — Amazon Prime, Costco,
+    Walmart+, Instacart, DashPass, Uber One, Grubhub — with no other purchase from its store in 90 days) from one new
+    non-critical `subscriptions` source; on the card, in the cash_plan block, in Ask.
+  - **Verified:** npm test 2896/2896 (13 new); contract 281/282 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A9 committed and pushed; docs synced (CLAUDE.md: advice.js's subscriptions source + sinkingFunds / subscriptionReview, the cash_plan block and Ask, Known Open Issues (A1–A9 done, thirteen sources, A9 follow-ons) + Priority Next Features (A10 next), INV-150, counts 2896 / 154 / Perfin 2175 / contract 282 + the new test entry; README counts + clause). Next: `/broad-implement A10`.
+- **Roadmap T4.1 A8 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a8-broad-implement.md`.
+  - **Shipped:** a card's last statement balance + issue date stored from Plaid Liabilities (two linked_accounts columns);
+    the 30% utilization tip names the day the next statement closes ("pay $Y before Nov 5, when its next statement
+    closes") when that's known, else its due date; the carried-balance test reads the statement (a payment after it under
+    95% → carried, at or above → paid in full); loan extra payments ("an extra $100 a month on Car Loan would save about
+    $Y and pay it off N months sooner", computeLoanPayoff; a low-APR loan's note; a loan the plan already funds left out)
+    — on the card, in the cash_plan block, in Ask; the audit counts the loan's extra $100.
+  - **Verified:** npm test 2883/2883 (13 new); contract 280/281 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A8 committed and pushed; docs synced (CLAUDE.md: advice.js's A8 statement read / tip / carried test / loan_extra, the Plaid liabilities sync, the two linked_accounts columns in Database, the audit / cash_plan block / Ask additions, Known Open Issues (A1–A8 done + A8 follow-ons) + Priority Next Features (A9 next), INV-150, counts 2883 / 153 / Perfin 2162 / contract 281 + the new test entry; README counts + clause). Next: `/broad-implement A9`.
+- **Roadmap T4.1 A7 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a7-broad-implement.md`.
+  - **Shipped:** idle cash (checking above the starter buffer for 60 days → moved in the plan's order — the card first,
+    the emergency fund to a savings account, investing to a non-tax-advantaged brokerage — only to accounts that exist,
+    outflows capped by the projected low) and rebalancing directions (a target-allocation class > 5 points off →
+    "move about $X from bond to equity", asset classes only, with a note); the Investments card's allocation moved
+    into services/allocation.js so both read one definition; on the card, in the cash_plan block, in Ask.
+  - **Verified:** npm test 2870/2870 (18 new); contract 279/280 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A7 committed and pushed; docs synced (CLAUDE.md: services/allocation.js in the tree + the Financial Analytics subsystem list, advice.js's idle / allocation sources + the A7 advisors, the performance route + Target Allocation reading the helper, the cash_plan block and Ask, Known Open Issues (A7 follow-ons) + Priority Next Features, INV-150, counts 2870 / 152 / Perfin 2149 / contract 280 + the new test entry; README counts + clause). Next: `/broad-implement A8`.
+- **Roadmap T4.1 A6 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a6-broad-implement.md`.
+  - **Shipped:** raise detection (a payer's deposits step up to a new steady level → half of it, rounded down to $25 per
+    paycheck, toward the plan's current step), bonus detection (a stand-alone deposit ≥ $500 and 1.5× usual, or a
+    $1,000+ one-off → split in the plan's order, gaps measured without it) and spending creep (a category's 3-month
+    average up ≥ $50 and 15 points faster than income over 6 completed months, top 3) — two non-critical sources
+    (deposits at your share, net category months); on the card, in the cash_plan block, in Ask; the audit counts a
+    raise's share / the raise / the freed amount; the plan-change push names a new raise or bonus once.
+  - **Verified:** npm test 2852/2852 (27 new); contract 278/279 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 test). Mutation checks turn tests red.
+  - **Where I left off:** A6 committed and pushed; docs synced (CLAUDE.md: advice.js's two new sources + the A6 advisors, advice-alerts' windfall push + advice_state.windfalls_seen, the audit / prompt / Ask additions, Known Open Issues (A6 follow-ons) + Priority Next Features, INV-150, counts 2852 / 151 / Perfin 2131 / contract 279 + the new test entry; README counts + clause). Next: `/broad-implement A7`.
+- **Roadmap T4.1 A5 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a5-broad-implement.md`.
+  - **Shipped:** the emergency-fund tracker (`plan.emergency`: months covered, progress, the date at the plan's pace or
+    after the high-interest debt) and the goal catch-up (`plan.goals`: a non-critical goals source through
+    deriveGoalProgress; behind = $5+/month short of finishing on time, "Add $X per paycheck … to finish by …", rounded
+    up; due / overdue), on the "Your plan" card (a labelled <progress>), in the cash_plan prompt block and in Ask's
+    get_cash_plan; the audit counts a goal's catch-up as a plan figure.
+  - **Verified:** npm test 2825/2825 (17 new); contract 277/278 (1 new passes; the failure is the known date-dependent
+    cash-alerts-l2 seed); mutation 6/7 (the 7th equivalent).
+  - **Where I left off:** A5 committed and pushed; docs synced (CLAUDE.md: advice.js's eighth source + the tracker / goal catch-up, the audit's goal figures, the cash_plan block, Known Open Issues (A5 follow-ons) + Priority Next Features, INV-11 / INV-150, counts 2825 / 150 / contract 278 + the new test entry; README counts + clause). Next: `/broad-implement A6`.
+- **Roadmap T4.1 A4 (DONE, 2026-10-28):** block `.cycle/blocks/8-t4-1-a4-broad-implement.md`.
+  - **Shipped:** "Tell me when my plan changes" — `teller/services/advice-alerts.js` + the hourly `advice-plan` away job
+    (at most one evaluation a local day; a silent first baseline; a push on a step change, a debt step's new target
+    or a ≥ 20% and ≥ $50 move per paycheck; push only; signature advanced only when logged), user_settings
+    advice_alerts_enabled / advice_state, the strict-boolean PATCH (switch-on resets the baseline) and the
+    "Plan Changes" checkbox in Settings → Cash Alerts. reset-fresh needed no change.
+  - **Verified:** npm test 2808/2808 (24 new); contract 276/277 (1 new passes; the 1 failure is the pre-existing,
+    date-dependent cash-alerts-l2 seed — follow-on); mutation 6/6.
+  - **Where I left off:** A4 committed and pushed; docs synced (CLAUDE.md: services/advice-alerts.js in the tree + the Financial Analytics subsystem list, the Plan-change alert feature, the advice-plan scheduled task + the away-channel list, the PATCH field, the two user_settings columns, Known Open Issues (A4 follow-ons + the date-dependent cash-alerts-l2 contract test) + Priority Next Features, INV-59 / INV-77 / INV-150, counts 2808 / 149 / contract 277; README counts + clause). Next: `/broad-implement A5`.
+- **Roadmap T4.1 A3 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a3-broad-implement.md`.
+  - **Shipped:** the `cash_plan` insight module (13 modules): the engine's plan in the prompt (cashPlanPromptBlock),
+    the debt optimizer pointed at the plan's order, the plan's current step kept as one "Plan (...)" pending action
+    (seedPlanActions), and the audit's tier-1 plan check (per-paycheck / a named debt's monthly figures against the
+    plan; hypotheticals exempt; module "cash_plan").
+  - **Verified:** npm test 2784/2784 (17 new); contract 276/276 (1 new); mutation 3/3.
+  - **Where I left off:** A3 committed and pushed; docs synced (CLAUDE.md: the cash_plan module, the audit's plan check, the insights.js / ai-audit.js entries, Known Open Issues + Priority Next Features, INV-150, counts 2784 / 148 / contract 276; README count + clause). Next: `/broad-implement A4`.
+- **Roadmap T4.1 A2 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a2-broad-implement.md`.
+  - **Shipped:** `teller/routes/advice.js` (GET /api/advice), the dashboard "Your plan" card (widget key
+    `advice`, between Review Uncategorized and the charts; steps, per-debt table, tips, disclaimer,
+    emptyState), Ask's `get_cash_plan` (8th tool) + the prompt line. The A1 choices stand unchanged.
+  - **Verified:** npm test 2767/2767 (17 new); contract 275/275 (1 new); mutation 2/2.
+  - **Where I left off:** A2 committed and pushed; docs synced (CLAUDE.md: routes/advice.js, GET /api/advice, the dashboard order, ask.js's 8 tools, Known Open Issues + Priority Next Features, the subsystem list, counts 2767 / 147 / contract 275; README count + clause). Next: `/broad-implement A3`.
+- **Roadmap T4.1 A1 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a1-broad-implement.md`.
+  - **Shipped:** `teller/services/advice.js` — getAdviceInputs (seven fail-soft reads), the pure buildAdvicePlan
+    (steps, carried-balance detection, avalanche + snowball line, surplus gate, cash-floor cap, per paycheck) and
+    getAdvicePlan; no caller yet. Thresholds as the plan proposed (none changed by the user).
+  - **Verified:** npm test 2750/2750 (38 new); contract 274/274 (2 new); mutation 5/5.
+  - **Decisions to confirm at A2:** a minimum-sized last payment stands in for "paid less than the statement";
+    loans ≥ 8% join the high step; the cash cap only on money leaving cash; minimums off the surplus first.
+  - **Where I left off:** A1 committed and pushed. Next: `/sync-docs`, then `/broad-implement A2`
+    (GET /api/advice, the "Your plan" card, Ask's get_cash_plan).
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (the advice.js entry, the Financial Analytics
+    subsystem list, Known Open Issues — T4.1 A1 choices + follow-ons, Priority Next Features, counts
+    2750 / 146 / contract 274 with the new test files), README (count + a T4.1 A1 clause).
+- **Status:** **Cycle 8 broad scan — Batch 8 DONE — every fix batch is done** (2026-10-27, branch
+  `claude/optimistic-edison-vzuc0o`). Block: `.cycle/blocks/8-batch8-broad-implement.md`.
+  - **Shipped (Batch 8 — platform hygiene):** F31 IN-list CHECKs kept in step with the code on an existing
+    table (CHECK_LISTS + syncInListChecks, NOT VALID); F32 the error log prunes in a quiet minute; F33 the
+    landing status reads single-flight + 30 s cache per pool; F52 Per-sistant returns DATE as 'YYYY-MM-DD'
+    (pool-scoped parser) with calDate / ymdOf for server code; F45 already done by the Batch 1 docs sync.
+  - **Verified:** npm test 2712/2712 (15 new); contract 272/272 (2 new); ci-migration-test passes;
+    mutation 7/7; Playwright not run (browser build missing in the container).
+  - **Where I left off:** Batch 8 committed and pushed. Next: `/sync-docs`, then the expansion batches
+    (E1–E5) or `/reflect` to close cycle 8; roadmap T4.1 (`.cycle/plan-t4-1-advisory.md`) is queued after.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (Known Open Issues — Batch 8 done + follow-ons,
+    the IN-list CHECK migration note, error-log / landing-status entries, INV-17, counts 2712 / 145 /
+    contract 272), apps/per-sistant/CLAUDE.md (db.js DATE text + calDate / ymdOf, 721, the new test
+    file), README (count + a Batch 8 clause).
+- **Batch 7 (DONE):** block `.cycle/blocks/8-batch7-broad-implement.md`.
+  - **Shipped (Batch 7 — UI correctness + accessibility):** F34 F36 F40 F48 F35 F39 F37 F38 F55 F56 F57.
+    npm 2697/2697, contract 270/270, mutation 13/13. Docs synced.
+- **Batch 6 (DONE):** block `.cycle/blocks/8-batch6-broad-implement.md`.
+  - **Shipped (Batch 6 — AI trust + Knowledge privacy):** F42 F49 F44 F24 F50 F53. npm 2666/2666, contract
+    270/270, mutation 7/7. Operator: one full Knowledge reindex after deploy (parse version 3). Docs synced.
+- **Batch 5 (DONE):** block `.cycle/blocks/8-batch5-broad-implement.md`.
+  - **Shipped (Batch 5 — linked tasks semantics):** F16 tombstones for a task deleted for good (db/031);
+    F17 aged unpaid manual-bill tasks retained, not closed; F18 an auto-close announces nothing and is left
+    out of analytics / review / Ask / stats; F19 linked tasks' webhook / Slack payload is a kind label only;
+    F20 one sync at a time (transaction + advisory lock 727274010, announce after COMMIT); F22 kicks after the
+    housing config, manual-bill writes and generated obligations; F23 housing_due / briefing rent line step
+    aside while a housing task is open; F21 the hourly tick acts once a local day after a clean run.
+  - **Verified:** npm test 2650/2650 (24 new); contract 269/269 (5 new); Playwright 72/72; mutation 10/10.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (services/linked-tasks.js, housing.js and
+    subscriptions.js entries, the Per-sistant Tasks feature, the Linked tasks scheduled-task bullet,
+    INV-77 / INV-103, new INV-149, test counts, Known Open Issues + Batch 5 follow-ons, the stale
+    "30-day purge" X1a note), apps/per-sistant/CLAUDE.md (linked tasks, services/linked-tasks.js,
+    db/031, housing-due.js, Trash, counts) and README.
+- **Batch 4 (DONE):** block `.cycle/blocks/8-batch4-broad-implement.md`.
+  - **Shipped (Batch 4 — sync watermarks + webhook hardening):** F1 the anomaly watermark is the newest
+    created_at visible before the candidate read, kept below any open writer's start, never backwards;
+    F51 "Paycheck landed" re-reads 24 h behind its watermark with a notification_log tag dedupe; F3 the
+    Plaid verifier's miss cache, lookup cap, one lookup per kid, kid format and cheap checks first.
+  - **Verified:** npm test 2626/2626 (13 new); contract 264/264 (2 new); Playwright 72/72; mutation 10/10.
+  - **Docs synced** (/sync-docs, 2026-10-27).
+- **Batch 3 (DONE):** block `.cycle/blocks/8-batch3-broad-implement.md`.
+  - **Shipped (Batch 3 — detection / rename / restore):** F41 a new rename rule takes rows other rules
+    renamed and re-keys only fully vacated keys; F46 prior_amount / amount_changed kept until a later
+    charge; F47 the watchdog's early rise (10–50%, non-utility, once per amount); F5 a restore follows its
+    rule's current state; F43 a reconcile applies the rename rules; F4 CSV-overlap Resolve tombstones what
+    it deletes; F6 bank_changed_at / bank_removed_at (Plaid) → restore 409s a removed row, flags a changed
+    one stale; F54 income top sources by display name (route + Sheets mirror).
+  - **Verified:** npm test 2613/2613 (15 new; one run hit the known x2a IPC flake); contract 262/262
+    (8 new); Playwright 72/72; mutation 10/10.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (merchant-rename.js entry, rename rules,
+    detection DC-7 + watchdog, undelete / Resolve / deleted_transactions columns, the resolve / restore /
+    income-summary endpoint notes, INV-123 / 124 / 145, test counts, Known Open Issues + Batch 3
+    follow-ons) and README.
+- **Batch 2 (DONE):** block `.cycle/blocks/8-batch2-broad-implement.md`.
+  - **Shipped (Batch 2 — money accuracy):** F7 internal transfers between spendable accounts not billed
+    (mirror credit ±5 days); F8 only card autopays skipped (linked-card credit / card phrase / issuer);
+    F9 fee rows not netted against investment income; F10 unlogged "Paycheck landed" holds the watermark;
+    F11 cash alert remembers its last notification across a clear; F12 a setting / floor change forces
+    an evaluation; F13 documents.csv dismissed day in APP_TIMEZONE; F14 int4 id bound; F15 buy to cover
+    isn't a lot.
+  - **Verified:** npm test 2598/2598 (15 new); contract 254/254 (1 new); Playwright 72/72; mutation 10/10.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (cash-flow / cash-alerts / payday / tax entries,
+    the forecast and low cash alert features, cash_alert_state, test counts, Known Open Issues + Batch 2
+    follow-ons) and README.
+- **Batch 1 (DONE):** block `.cycle/blocks/8-batch1-broad-implement.md`.
+  - **Shipped (Batch 1 — scheduler + auth safety):** F27 boot run for every scheduled job; F29 not-due /
+    off memos for bank auto-sync, the reconcile and the insights trigger (PATCH /api/settings invalidates);
+    F25 safeReturnTo refuses control characters (biometric open redirect); F26 shell refuses a missing or
+    shared PERSISTENT_DATABASE_URL (ALLOW_SHARED_DATABASE opts in — shell/boot-checks.js); F2 Teller
+    self-heal only after an authenticated fetch; F28 biometric probe limiter + challenge cap; F30 the
+    x-api-key limiter counts wrong keys only.
+  - **Verified:** npm test 2583/2583 (22 new: tests/broad-scan-c8-batch1); contract 253/253 (local
+    Postgres 16, no pgvector); Playwright 72/72 (scratch config → preinstalled Chromium); mutation 6/6.
+  - **Operator (blocks deploy):** confirm PERSISTENT_DATABASE_URL on Render is set and distinct.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (scheduler boot run + memos, INV-77, env vars,
+    security, Teller self-heal, shell/boot-checks.js in the file list and Subsystems, test counts, a cycle-8
+    Known Open Issues section), README, apps/per-sistant/CLAUDE.md. F45 (the two stale Known Open Issues
+    bullets) was closed by that sync.
+  - **Remaining scan batches** (the scan report is in the session transcript; IDs for a fresh session):
+    - ~~Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54~~ (done)
+    - ~~Batch 4 watermarks + webhook hardening: F1 F51 F3~~ (done)
+    - ~~Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21~~ (done)
+    - ~~Batch 6 AI trust + Knowledge privacy: F42 F49 F44 F24 F50 F53~~ (done)
+    - Batch 7 web UI + a11y: F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48
+    - Batch 8 platform hygiene: F31 F32 F33 F52 (F45 done in /sync-docs)
+    - Expansion: E1 (G1, G5), E2 (ST1, ST3), E3 (G2, ST2), E4 (ST5, G3), E5 (ST4); G4 → /roadmap
+  - **Queued after cycle 8 (Batches 5–8 + /reflect):** roadmap T4.1 "Where should my extra money go?" —
+    plan `.cycle/plan-t4-1-advisory.md` (batches A1–A10: the advice engine with debt-first per-card avalanche,
+    emergency fund, then a per-paycheck invest amount; dashboard card + insight module + Ask tool; one opt-in
+    notify checkbox; A5–A10 the twelve further advisors — emergency fund, goal catch-up, raise split,
+    spending creep, idle cash, rebalancing, statement-date utilization, loan extra payments, sinking funds,
+    subscription consolidation, tax-advantaged room, what-if in Ask). Decisions there are proposed — confirm at its first /broad-implement.
+- **Previous status (D7):** **Design & UX pass — D7 DONE; the pass is complete (D1–D7)** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d7-broad-implement.md`.
   - **Shipped:**
@@ -1907,7 +2306,17 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 0 (Seams & Invariants audit #3, 2026-10-22 — record below; audit #2 June 2026 below it.)
+- **Subsystem cycles since last Seams audit:** 0 (Seams & Invariants audit #4, 2026-11-02 — record below; audit #3 2026-10-22 and #2 June 2026 below it.)
+
+### Seams & Invariants audit #4 (2026-11-02 — counter reset to 0)
+Four parallel read-only reviews of cycle 8's seams (cross-app, scheduler/ops/migrations, shared
+truth, client↔server), each finding re-verified. READ-ONLY — 24 findings, none fixed yet: 6 Medium
+(A1 push_state 'sent' with no live subscription silences Per-sistant for 12 h; B2 the job-watchdog
+row reads stale ~36 h after deploy; S2 a rename rule over two same-cadence keys 500s half-applied;
+B3 the backup stamped with Per-sistant undumped; B1 one hung job stops every job; C1 a failed
+account load wipes contribution limits on Save) and 18 Low. FAIL: INV-124, INV-126; partial
+INV-142/145/148/151/153/154/157. Block: `.cycle/blocks/8-seams4-audit.md`. Two CI-only test
+failures (advice-a1 date, webhooks w1/w2 timing) fixed in d33cb7f on PR #134.
 
 ### Seams & Invariants audit #3 (2026-10-22 — counter reset to 0)
 Four parallel read-only reviews (cross-app, client↔server, ops, shared truth + mounts), each finding

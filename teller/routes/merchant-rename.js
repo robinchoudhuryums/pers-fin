@@ -64,7 +64,9 @@ async function applyRenameRules(db = pool) {
 
 // Detection rows keyed on the old merchant keys move to the new name, keeping
 // their user state; a row whose (new key, cadence[, direction]) already exists
-// is deactivated instead (the existing row wins).
+// is deactivated instead (the existing row wins). A forecast correction on the
+// deactivated row is carried to that existing row while it is still on the
+// default (cycle-8 E1 follow-on — it used to be lost with the old row).
 async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
   const keys = oldKeys.filter((k) => k && k !== newKey);
   if (!keys.length) return { subscriptions: 0, transfers: 0 };
@@ -74,6 +76,13 @@ async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
        AND NOT EXISTS (SELECT 1 FROM detected_subscriptions o WHERE o.merchant_key = $2 AND o.cadence_days = ds.cadence_days)`,
     [keys, newKey, displayName]);
   await db.query(
+    `UPDATE detected_subscriptions o SET forecast_ignore = true, updated_at = now()
+     WHERE o.merchant_key = $2 AND NOT o.forecast_ignore
+       AND EXISTS (SELECT 1 FROM detected_subscriptions ds
+                   WHERE ds.merchant_key = ANY($1::text[]) AND ds.cadence_days = o.cadence_days
+                     AND ds.is_active AND ds.source != 'manual' AND ds.forecast_ignore)`,
+    [keys, newKey]);
+  await db.query(
     "UPDATE detected_subscriptions SET is_active = false, updated_at = now() WHERE merchant_key = ANY($1::text[]) AND is_active AND source != 'manual'",
     [keys]);
   const transfers = await db.query(
@@ -82,6 +91,15 @@ async function rekeyDetectedRows(db, oldKeys, newKey, displayName) {
        AND NOT EXISTS (SELECT 1 FROM recurring_transfers o
                        WHERE o.merchant_key = $2 AND o.cadence_days = rt.cadence_days AND o.direction = rt.direction)`,
     [keys, newKey, displayName]);
+  await db.query(
+    `UPDATE recurring_transfers o SET forecast_treatment = old.forecast_treatment, updated_at = now()
+     FROM (SELECT DISTINCT ON (cadence_days, direction) cadence_days, direction, forecast_treatment
+           FROM recurring_transfers
+           WHERE merchant_key = ANY($1::text[]) AND is_active AND forecast_treatment <> 'auto'
+           ORDER BY cadence_days, direction, updated_at DESC) old
+     WHERE o.merchant_key = $2 AND o.cadence_days = old.cadence_days AND o.direction = old.direction
+       AND o.forecast_treatment = 'auto'`,
+    [keys, newKey]);
   await db.query(
     "UPDATE recurring_transfers SET is_active = false, updated_at = now() WHERE merchant_key = ANY($1::text[]) AND is_active",
     [keys]);
@@ -99,8 +117,9 @@ async function createRenameRule({ pattern, matchType = "exact", renameTo }, db =
   if (perr) return { error: perr };
   const pat = String(pattern).trim();
 
-  // Old detection keys of the rows this rule will cover (before renaming).
-  const old = await db.query(
+  // The rows this rule may cover — unnamed, or named by a rule (a hand rename
+  // always wins) — with their detection keys before the change.
+  const before = await db.query(
     `SELECT DISTINCT ${DETECT_KEY} AS k FROM transactions t
      WHERE (t.user_merchant_name IS NULL OR t.user_merchant_rule_id IS NOT NULL) AND ${ruleCondition(type)}`,
     [pat]);
@@ -115,8 +134,31 @@ async function createRenameRule({ pattern, matchType = "exact", renameTo }, db =
   await db.query(
     "UPDATE transactions SET user_merchant_name = $2 WHERE user_merchant_rule_id = $1",
     [rule.id, name]);
+  // Rows ANOTHER rule renamed that this one also matches are released, so every
+  // rule applies again most specific first (cycle-8 F41): applyRenameRules only
+  // fills unnamed rows, so a new, more specific "AMAZON PRIME" rule never took
+  // the rows a broad "amazon" rule already owned — yet the re-key below moved
+  // the "Amazon" subscription (cancelled state and all) to the new name, and
+  // the next detection run re-created "Amazon" as a fresh ACTIVE subscription.
+  await db.query(
+    `UPDATE transactions t SET user_merchant_name = NULL, user_merchant_rule_id = NULL
+     WHERE t.user_merchant_rule_id IS NOT NULL AND t.user_merchant_rule_id <> $2 AND ${ruleCondition(type)}`,
+    [pat, rule.id]);
   const renamed = await applyRenameRules(db);
-  const rekeyed = await rekeyDetectedRows(db, old.rows.map((r) => r.k), name, name);
+  // Re-key only the old keys no transaction carries any more — every row under
+  // them moved to the new name. A key some rows still use (the broad rule's
+  // other merchants, a more specific rule that kept its rows) keeps its
+  // detection row and user state.
+  const oldKeys = [...new Set(before.rows.map((r) => r.k))].filter((k) => k && k !== name);
+  let vacated = [];
+  if (oldKeys.length) {
+    const still = await db.query(
+      `SELECT DISTINCT ${DETECT_KEY} AS k FROM transactions t WHERE ${DETECT_KEY} = ANY($1::text[])`,
+      [oldKeys]);
+    const inUse = new Set(still.rows.map((r) => r.k));
+    vacated = oldKeys.filter((k) => !inUse.has(k));
+  }
+  const rekeyed = await rekeyDetectedRows(db, vacated, name, name);
   return { rule, renamed, rekeyed };
 }
 

@@ -218,13 +218,16 @@ function renderWeekGrid() {
 async function loadHeatmap() {
   var data = await fetch('/api/health/heatmap?days=90').then(function(r){return r.json();});
   var map = {};
-  (data.heatmap||[]).forEach(function(h){ map[h.day ? new Date(h.day).toISOString().split('T')[0] : ''] = parseInt(h.count); });
+  // Cycle-8 F48: day keys are calendar days -- a DATE through parseCalDate, the
+  // grid's days through ymdOfLocal, both anchored on the app's today. The grid
+  // used toISOString() on a local date, a day ahead west of UTC in the evening.
+  (data.heatmap||[]).forEach(function(h){ var hd = h.day ? parseCalDate(h.day) : null; if (hd) map[ymdOfLocal(hd)] = parseInt(h.count); });
   var max = Math.max.apply(null, (data.heatmap||[]).map(function(h){return parseInt(h.count);}).concat([1]));
   var html = '';
-  var today = new Date();
+  var today = parseCalDate(todayLocal()) || new Date();
   for (var i = 90; i >= 0; i--) {
     var d = new Date(today); d.setDate(d.getDate() - i);
-    var key = d.toISOString().split('T')[0];
+    var key = ymdOfLocal(d);
     var count = map[key] || 0;
     var intensity = count === 0 ? 0 : count <= max * 0.33 ? 1 : count <= max * 0.66 ? 2 : 3;
     var colors = ['var(--paper-2)', 'color-mix(in oklch, var(--good) 30%, transparent)', 'color-mix(in oklch, var(--good) 60%, transparent)', 'var(--good)'];

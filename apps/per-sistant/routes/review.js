@@ -18,7 +18,8 @@ module.exports = function ({ pool }) {
       const ws = weekStart.toISOString().split("T")[0];
       const we = weekEnd.toISOString().split("T")[0];
       const [completed, created, sent, notesCreated, upcoming, overdue] = await Promise.all([
-        pool.query("SELECT * FROM todos WHERE deleted_at IS NULL AND completed_at >= $1 AND completed_at < $2 ORDER BY completed_at DESC", [ws, we]),
+        // A linked task the sync closed isn't something you completed (cycle-8 F18).
+        pool.query("SELECT * FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND completed_at >= $1 AND completed_at < $2 ORDER BY completed_at DESC", [ws, we]),
         pool.query("SELECT count(*) as cnt FROM todos WHERE deleted_at IS NULL AND created_at >= $1 AND created_at < $2", [ws, we]),
         pool.query("SELECT count(*) as cnt FROM emails WHERE deleted_at IS NULL AND sent_at >= $1 AND sent_at < $2", [ws, we]),
         pool.query("SELECT count(*) as cnt FROM notes WHERE deleted_at IS NULL AND created_at >= $1 AND created_at < $2", [ws, we]),

@@ -6,7 +6,7 @@ const { serverError } = require("../errors");
 // views }, so destructuring it straight off deps left it undefined and
 // GET /api/calendar 500'd whenever an open recurring todo existed.
 module.exports = function ({ pool, helpers }) {
-  const { advanceRecurrence } = helpers;
+  const { advanceRecurrence, calDate, ymdOf } = helpers;
   const router = express.Router();
 
   router.get("/api/calendar", async (req, res) => {
@@ -27,7 +27,7 @@ module.exports = function ({ pool, helpers }) {
       const start = new Date(startDate);
       const end = new Date(endDate);
       for (const t of recurring.rows) {
-        let nextDate = new Date(t.due_date);
+        let nextDate = calDate(t.due_date); // a DATE value as local midnight (cycle-8 F52)
         let safety = 0;
         // F124: the bound is a runaway guard, not a horizon — 100 steps of a
         // daily task stopped projecting ~3 months out, so later months showed
@@ -35,13 +35,13 @@ module.exports = function ({ pool, helpers }) {
         while (nextDate < end && safety++ < 5000) {
           if (nextDate >= start && nextDate < end) {
             // Only add if not already in the actual todos
-            const dateStr = nextDate.toISOString().split("T")[0];
-            if (!todos.rows.some(x => x.id === t.id && x.event_date && new Date(x.event_date).toISOString().split("T")[0] === dateStr)) {
+            const dateStr = ymdOf(nextDate);
+            if (!todos.rows.some(x => x.id === t.id && x.event_date && ymdOf(x.event_date) === dateStr)) {
               projected.push({ id: t.id, title: t.title, event_date: dateStr, priority: t.priority, type: "todo", recurring_projection: true });
             }
           }
           // Chain anchor day keeps month-end projections on month-end (PD-2).
-          nextDate = advanceRecurrence(nextDate, t.recurrence_rule, t.recurrence_interval || 1, t.recurrence_anchor_day || new Date(t.due_date).getDate());
+          nextDate = advanceRecurrence(nextDate, t.recurrence_rule, t.recurrence_interval || 1, t.recurrence_anchor_day || calDate(t.due_date).getDate());
         }
       }
       res.json([...todos.rows, ...emails.rows, ...notes.rows, ...projected]);
@@ -61,7 +61,7 @@ module.exports = function ({ pool, helpers }) {
       const stamp = icsUtc(new Date());
       const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Per-sistant//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:Per-sistant Tasks"];
       for (const t of todos.rows) {
-        const d = new Date(t.due_date); // node-pg DATE = local midnight → local getters
+        const d = calDate(t.due_date); // the DATE's own day as local midnight → local getters
         const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
         lines.push("BEGIN:VEVENT", `UID:todo-${t.id}@per-sistant`, `DTSTAMP:${stamp}`,
           `DTSTART;VALUE=DATE:${icsDate(d)}`, `DTEND;VALUE=DATE:${icsDate(next)}`,

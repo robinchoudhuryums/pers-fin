@@ -217,7 +217,9 @@ describe("W3 — runPostSyncSteps", () => {
   function postSyncDb() {
     anomalySelects = 0;
     return async (sql) => {
-      if (sql.includes("SELECT last_anomaly_check_at FROM user_settings")) { anomalySelects++; return { rows: [{ last_anomaly_check_at: null }] }; }
+      if (sql.includes("last_anomaly_check_at FROM user_settings")) { anomalySelects++; return { rows: [{ last_anomaly_check_at: null }] }; }
+      // The mark the check reads before its candidates (cycle-8 F1 / E2c).
+      if (sql.includes("AS mark_id")) return { rows: [{ mark_id: "42", mark_at: "2026-10-27 10:00:00.123456+00" }] };
     };
   }
 
@@ -251,7 +253,7 @@ describe("W3 — runPostSyncSteps", () => {
     const real = dbModule.pool.query;
     dbModule.pool.query = async (sql, p) => {
       if (sql.includes("last_anomaly_check_at FROM")) order.push("check");
-      if (sql.includes("UPDATE user_settings SET last_anomaly_check_at")) order.push("advance");
+      if (sql.includes("UPDATE user_settings SET last_anomaly_txn_id")) order.push("advance");
       return real(sql, p);
     };
     const a = enr.runPostSyncSteps(1);
@@ -362,7 +364,7 @@ describe("W3 — through the production router", () => {
     await done;
     assert.deepEqual(statuses, ["processing", "done"]);
     assert.deepEqual(plaidCalls("transactionsSync").map((c) => c.token), ["tok_7"]);
-    assert.equal(ran(/SELECT last_anomaly_check_at FROM user_settings/).length, 1, "one anomaly check for the row it added");
+    assert.equal(ran(/last_anomaly_check_at FROM user_settings/).length, 1, "one anomaly check for the row it added");
     assert.equal(ran(/last_txn_sync_at|last_sync_result/).length, 0);
   });
 });

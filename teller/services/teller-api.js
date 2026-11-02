@@ -99,12 +99,24 @@ function getTlsAgent() {
 // can raise it as an issue and startup can log it at boot. Cached: the cert
 // only changes with a redeploy (a new env var or file means a new process).
 let certStatusCache = null;
+// The certificate's expiry (its validTo) as an ISO string, or null when the
+// PEM can't be parsed — never throws (cycle-8 E4a, ST5).
+function certExpiresAt(pem) {
+  try {
+    const valid = new crypto.X509Certificate(pem).validTo;
+    const t = new Date(valid).getTime();
+    return Number.isFinite(t) ? new Date(t).toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
 function tellerCertStatus() {
   if (certStatusCache) return certStatusCache;
   try {
     const { cert } = loadCertMaterial({ quiet: true });
     const fingerprint = certFingerprintSha256(cert);
-    certStatusCache = { configured: true, compromised: fingerprint === COMPROMISED_CERT_SHA256, fingerprint };
+    certStatusCache = { configured: true, compromised: fingerprint === COMPROMISED_CERT_SHA256, fingerprint, expires_at: certExpiresAt(cert) };
   } catch {
     // No cert configured (Plaid/CSV-only deployment) — nothing to warn about.
     certStatusCache = { configured: false, compromised: false, fingerprint: null };
@@ -192,6 +204,7 @@ module.exports = {
   getTlsAgent,
   tellerRequest,
   certFingerprintSha256,
+  certExpiresAt,
   COMPROMISED_CERT_SHA256,
   COMPROMISED_CERT_WARNING,
   tellerCertStatus,

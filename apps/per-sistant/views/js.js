@@ -34,7 +34,10 @@ module.exports = `
         var expired=res.status===401||(res.redirected&&_isLoginPath(res.url));
         if(expired&&!_authRedirecting&&!_isLoginPath(window.location.pathname)){
           _authRedirecting=true;
-          window.location.href='/login';
+          // Cycle-8 F40: carry the page (path + query, already under the mount)
+          // through login like Perfin's apiFetch (F102) -- the shell's safeReturnTo
+          // validates it; a standalone login ignores it.
+          window.location.href='/login?return_to='+encodeURIComponent(window.location.pathname+(window.location.search||''));
         }
       }catch(e){}
       return res;

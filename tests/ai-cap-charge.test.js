@@ -118,6 +118,24 @@ describe("POST /api/ask cap enforcement + charging (S3 / INV-14)", () => {
     assert.equal(state.inserts[0].params[2], 150, "tokens_used = input + output");
   });
 
+  it("cycle-8 F44: a failed charge after a finished answer still answers 200, and the finally retries it once", async () => {
+    let failNext = true;
+    const inner = dbModule.pool.query;
+    dbModule.pool.query = async (sql, params) => {
+      if (sql.includes("INSERT INTO financial_insights") && failNext) { failNext = false; state.inserts.push({ failed: true }); throw new Error("db blip"); }
+      return inner(sql, params);
+    };
+    anthropicQueue = [
+      { usage: { input_tokens: 80, output_tokens: 20 }, stop_reason: "end_turn", content: [{ type: "text", text: "You spent $40 on coffee." }] },
+    ];
+    const res = await supertest(app).post("/api/ask").send({ question: "coffee?" });
+    assert.equal(res.status, 200);
+    assert.match(res.body.answer, /coffee/);
+    assert.equal(state.inserts.length, 2, "the failed write, then the finally's retry");
+    assert.ok(state.inserts[0].failed);
+    assert.equal(state.inserts[1].params[2], 100, "the retry charged the tokens");
+  });
+
   it("returns 429 without calling Claude or charging once the monthly cap is reached", async () => {
     state.budget = 1; // 1 cent cap
     state.usageRows = [{ input_tokens: 1_000_000_000, output_tokens: 0, model_used: "claude-haiku-4-5", tokens_used: 1_000_000_000 }];

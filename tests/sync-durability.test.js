@@ -134,10 +134,15 @@ describe("GET /api/data-health", () => {
     assert.equal(res.body.freshness.transactions.level, "fresh");
   });
 
-  it("reports ok with no provider issues when everything is fresh and connected", async () => {
+  it("reports ok with no provider issues when everything is fresh and connected", async (t) => {
+    // A deployment that is set up: an API key for the backstops (cycle-8 E4a's
+    // go-live check) and a recorded backup (its token-free backup check).
+    const prevKey = process.env.API_KEY;
+    process.env.API_KEY = "k".repeat(32);
+    t.after(() => { if (prevKey === undefined) delete process.env.API_KEY; else process.env.API_KEY = prevKey; });
     dbModule.pool.query = async (sql) => {
       if (/FROM user_settings/.test(sql)) {
-        return { rows: [{ last_txn_sync_at: new Date(), last_balance_sync_at: new Date(), last_auto_sync_at: new Date(), insights_last_run: new Date(), last_reconcile_at: new Date() }] };
+        return { rows: [{ last_txn_sync_at: new Date(), last_balance_sync_at: new Date(), last_auto_sync_at: new Date(), insights_last_run: new Date(), last_reconcile_at: new Date(), last_backup_at: new Date(), last_backup_source: "github" }] };
       }
       if (/FROM teller_enrollments/.test(sql)) return { rows: [{ total: 1, disconnected: 0 }] };
       if (/FROM plaid_items/.test(sql)) return { rows: [{ total: 1, not_good: 0 }] };

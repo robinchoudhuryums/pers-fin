@@ -91,7 +91,7 @@ describe("T2.5 U1 — the delete keeps a snapshot", () => {
     assert.match(s[snapAt], /WHEN la\.teller_enrollment_id IS NOT NULL THEN 'teller'/);
     assert.match(s[snapAt], /WHEN pi\.status = 'CSV' THEN 'csv'/);
     const tomb = c.log[tombAt];
-    assert.match(tomb.sql, /ON CONFLICT \(transaction_id\) DO UPDATE\s+SET snapshot = EXCLUDED\.snapshot, source = EXCLUDED\.source, deleted_at = now\(\)/);
+    assert.match(tomb.sql, /ON CONFLICT \(transaction_id\) DO UPDATE\s+SET snapshot = EXCLUDED\.snapshot, source = EXCLUDED\.source, batch_id = NULL, deleted_at = now\(\)/);
     assert.deepEqual(JSON.parse(tomb.params[1]), SNAPSHOT);
     assert.equal(tomb.params[2], "teller");
   });
@@ -128,7 +128,7 @@ describe("T2.5 U1 — restore", () => {
 
   it("re-inserts the snapshot's current columns (no id, no dropped column), its splits, and lifts the tombstone", async () => {
     const c = fakeClient((sql, params) => {
-      if (/SELECT snapshot, source FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "teller" }] };
+      if (/SELECT snapshot, source, bank_changed_at, bank_removed_at FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "teller" }] };
       if (/SELECT 1 FROM linked_accounts/.test(sql)) return { rows: [{}] };
       if (/INSERT INTO transactions/.test(sql)) return { rows: [{ transaction_id: "txn_abc" }], rowCount: 1 };
       if (/INSERT INTO transaction_splits/.test(sql)) return { rows: [], rowCount: 2 };
@@ -154,7 +154,7 @@ describe("T2.5 U1 — restore", () => {
 
   it("a row already present isn't duplicated and its splits aren't re-added", async () => {
     const c = fakeClient((sql, params) => {
-      if (/SELECT snapshot, source FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "csv" }] };
+      if (/SELECT snapshot, source, bank_changed_at, bank_removed_at FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "csv" }] };
       if (/SELECT 1 FROM linked_accounts/.test(sql)) return { rows: [{}] };
       return catalog(sql, params);
     });
@@ -165,7 +165,7 @@ describe("T2.5 U1 — restore", () => {
 
   it("409 with nothing written when the account is no longer connected", async () => {
     const c = fakeClient((sql) => {
-      if (/SELECT snapshot, source FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "plaid" }] };
+      if (/SELECT snapshot, source, bank_changed_at, bank_removed_at FROM deleted_transactions/.test(sql)) return { rows: [{ snapshot: SNAPSHOT, source: "plaid" }] };
       return null;
     });
     const out = await txns.restoreDeleted(c, "txn_abc");
@@ -228,6 +228,8 @@ describe("T2.5 U1 — the list", () => {
   it("maps snapshot and legacy rows, and returns a cursor only when there is another page", async () => {
     let seen;
     dbModule.pool.query = async (sql, params) => {
+      // Cycle-8 E1c: the Resolve batches are a second query.
+      if (/GROUP BY batch_id/.test(sql)) return { rows: [] };
       seen = { sql, params };
       return { rows: [
         { transaction_id: "txn_abc", deleted_at: "2026-10-01T10:00:00.000Z", source: "teller", has_snapshot: true,
@@ -247,7 +249,7 @@ describe("T2.5 U1 — the list", () => {
     assert.equal(res.body.items.length, 2);
     assert.deepEqual(res.body.items[0], {
       transaction_id: "txn_abc", deleted_at: "2026-10-01T10:00:00.000Z", source: "teller", legacy: false, restorable: true,
-      date: "2026-09-14", merchant: "Starbucks", amount: 42.5, account_name: "Checking", splits_count: 2,
+      date: "2026-09-14", merchant: "Starbucks", amount: 42.5, account_name: "Checking", splits_count: 2, batch_id: null,
     });
     assert.equal(res.body.items[1].legacy, true);
     assert.equal(res.body.items[1].source, "manual");
@@ -257,7 +259,7 @@ describe("T2.5 U1 — the list", () => {
 
     dbModule.pool.query = async () => ({ rows: [] });
     const empty = await supertest(mount("../teller/routes/transactions")).get("/api/deleted-transactions").expect(200);
-    assert.deepEqual(empty.body, { items: [], next: null });
+    assert.deepEqual(empty.body, { items: [], next: null, batches: [] });
   });
 });
 

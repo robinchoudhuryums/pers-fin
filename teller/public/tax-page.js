@@ -182,7 +182,9 @@
   // Page state + loading. A load started for an older year never overwrites a
   // newer one (seq).
   // ---------------------------------------------------------------------------
-  var state = { year: null, seq: 0, forms: null };
+  // docSeq does the same for the checklist (cycle-8 F39 — two reloads for the
+  // same year used to race), and pending makes each write single-flight.
+  var state = { year: null, seq: 0, docSeq: 0, forms: null, pending: {} };
 
   function el(id) { return document.getElementById(id); }
 
@@ -205,20 +207,53 @@
     }
   }
 
+  // Cycle-8 F35: a reload redraws the whole list, so the notes typed in other
+  // rows and the focused control are carried across it — they used to be wiped
+  // by any action on any row (and focus fell back to the page).
+  function captureDocState(list) {
+    var dirty = {}, focus = null;
+    var inputs = list.querySelectorAll ? list.querySelectorAll("input[data-notes-for]") : [];
+    for (var i = 0; i < inputs.length; i++) {
+      if (inputs[i].value !== inputs[i].defaultValue) dirty[inputs[i].getAttribute("data-notes-for")] = inputs[i].value;
+    }
+    var a = document.activeElement;
+    if (a && a !== document.body && list.contains && list.contains(a)) {
+      focus = { notes: a.getAttribute("data-notes-for"), action: a.getAttribute("data-action"), id: a.getAttribute("data-id") };
+    }
+    return { dirty: dirty, focus: focus };
+  }
+
+  function restoreDocState(list, saved) {
+    Object.keys(saved.dirty).forEach(function (id) {
+      var input = list.querySelector('[data-notes-for="' + id + '"]');
+      if (input) input.value = saved.dirty[id];
+    });
+    var f = saved.focus, target = null;
+    if (!f) return;
+    if (f.notes) target = list.querySelector('[data-notes-for="' + f.notes + '"]');
+    else if (f.action && f.id) {
+      target = list.querySelector('button[data-action="' + f.action + '"][data-id="' + f.id + '"]') ||
+        list.querySelector('[data-notes-for="' + f.id + '"]');
+    }
+    if (target && target.focus) target.focus();
+  }
+
   async function loadDocuments() {
-    var year = state.year, list = el("documents-list");
+    var seq = ++state.docSeq, year = state.year, list = el("documents-list");
     try {
       var res = await win.apiFetch("/api/tax/documents?year=" + year);
       var body = await res.json().catch(function () { return {}; });
-      if (year !== state.year) return;
+      if (seq !== state.docSeq || year !== state.year) return;
       if (!res.ok) { list.innerHTML = '<li class="tax-error">' + win.esc(body.error || "Could not load the tax documents.") + "</li>"; return; }
       if (!state.forms && body.forms) {
         state.forms = body.forms;
         el("doc-form").innerHTML = body.forms.map(function (f) { return '<option value="' + win.esc(f) + '">' + win.esc(f) + "</option>"; }).join("");
       }
+      var saved = captureDocState(list);
       list.innerHTML = renderDocuments(body.documents);
+      restoreDocState(list, saved);
     } catch (e) {
-      if (year === state.year) list.innerHTML = '<li class="tax-error">Could not load the tax documents.</li>';
+      if (seq === state.docSeq && year === state.year) list.innerHTML = '<li class="tax-error">Could not load the tax documents.</li>';
     }
   }
 
@@ -243,8 +278,25 @@
     return false;
   }
 
-  async function onDocAction(btn) {
+  // One run per key at a time (a double tap shares the first); the button is
+  // disabled meanwhile and put back after — a redrawn row's button is new anyway.
+  function singleFlight(key, btn, fn) {
+    if (state.pending[key]) return state.pending[key];
+    var p = (async function () {
+      if (btn) btn.disabled = true;
+      try { return await fn(); }
+      finally { delete state.pending[key]; if (btn) btn.disabled = false; }
+    })();
+    state.pending[key] = p;
+    return p;
+  }
+
+  function onDocAction(btn) {
     var id = btn.getAttribute("data-id"), action = btn.getAttribute("data-action");
+    return singleFlight(action + ":" + id, btn, function () { return docAction(id, action, btn); });
+  }
+
+  async function docAction(id, action, btn) {
     if (action === "received" || action === "dismissed") {
       var patch = {}; patch[action] = btn.getAttribute("data-value") === "true";
       return updateDocument(id, patch, "Could not update the form");
@@ -263,7 +315,9 @@
     }
   }
 
-  async function addDocument() {
+  function addDocument() { return singleFlight("add", el("doc-add"), addDocumentNow); }
+
+  async function addDocumentNow() {
     var form = el("doc-form").value, issuer = el("doc-issuer").value;
     try {
       var res = await win.apiFetch("/api/tax/documents", jsonOpts("POST", { year: state.year, form: form, issuer: issuer }));
@@ -275,7 +329,9 @@
     } catch (e) { win.showMsg("Could not add the form: " + e.message, false); }
   }
 
-  async function suggest() {
+  function suggest() { return singleFlight("suggest", el("tax-suggest"), suggestNow); }
+
+  async function suggestNow() {
     try {
       var res = await win.apiFetch("/api/tax/documents/suggest", jsonOpts("POST", { year: state.year }));
       if (!(await win.writeOk(res, "Could not suggest forms"))) return;

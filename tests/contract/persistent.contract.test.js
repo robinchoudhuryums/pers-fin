@@ -92,8 +92,11 @@ describe("Per-sistant routes on real Postgres", { skip: SKIP }, () => {
   // off deps, which server.js never passes, so this 500'd.
   it("GET /api/calendar projects recurring todos", async () => {
     await supertest(app).post("/api/todos").send({ title: "Daily", recurring: true, recurrence_rule: "daily", due_date: tomorrow() }).expect(200);
-    const now = new Date();
-    const r = await supertest(app).get(`/api/calendar?month=${now.getMonth() + 1}&year=${now.getFullYear()}`);
+    // Ask for the month holding the day AFTER the due date: the todo itself
+    // sits on its due date, its first projection on the next day — so on the
+    // last day or two of a month this month had no projection to find.
+    const [y, m] = new Date(Date.parse(tomorrow() + "T00:00:00Z") + 86400000).toISOString().slice(0, 7).split("-").map(Number);
+    const r = await supertest(app).get(`/api/calendar?month=${m}&year=${y}`);
     assert.equal(r.status, 200);
     assert.ok(r.body.some((e) => e.recurring_projection));
   });
