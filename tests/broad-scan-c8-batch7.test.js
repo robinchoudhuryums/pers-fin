@@ -243,6 +243,32 @@ describe("F38 — a refused settings save puts the control back", () => {
     assert.equal(box2.checked, false);
   });
 
+  // Cycle-8 E5b: the page later replaces updateSetting with a keep-alive
+  // wrapper. The tests above load only the original, so run the wrapper too —
+  // it dropped the result, and every SAVED switch flipped back.
+  it("through the keep-alive wrapper: a saved switch stays, a refused one goes back, the result is passed on", async () => {
+    let estimates = 0;
+    const loadWrapped = (api) => {
+      const t = load(api);
+      t.ctx.updateKeepAliveEstimate = () => { estimates++; };
+      vm.runInNewContext(slice(src, "var _origUpdate = updateSetting;", "async function saveSnapshot()"), t.ctx);
+      return t;
+    };
+    const saved = loadWrapped(async () => fakeRes(200, {}));
+    const box = { checked: true };
+    await saved.ctx.saveToggle(box, "cash_alert_enabled");
+    assert.equal(box.checked, true, "a saved switch stays where it was put");
+    assert.equal(await saved.ctx.updateSetting("x", 1), true);
+    assert.equal(estimates, 0);
+    assert.equal(await saved.ctx.updateSetting("keep_alive_start", 7), true);
+    assert.equal(estimates, 1, "a keep-alive key refreshes the estimate");
+    const refused = loadWrapped(async () => fakeRes(400, { error: "nope" }));
+    const box2 = { checked: true };
+    await refused.ctx.saveToggle(box2, "cash_alert_enabled");
+    assert.equal(box2.checked, false);
+    assert.equal(await refused.ctx.updateSetting("x", 1), false);
+  });
+
   it("toggleModule reports failure (including an unreadable settings read)", async () => {
     assert.equal(await load(async () => fakeRes(500, {})).ctx.toggleModule("anomaly", true), false);
     const ok = load(async (url, opts) => fakeRes(200, opts ? {} : { insight_modules: {} }));

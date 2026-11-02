@@ -25,9 +25,17 @@ describe("Low projected cash alert (T2.2 L2) on real Postgres", { skip: SKIP }, 
     today = require("../../teller/services/financial-queries").todayStr();
     add = (n) => require("../../teller/services/cadence").addDaysStr(today, n);
     await q("INSERT INTO linked_accounts (account_id, name, type, subtype, is_manual, current_balance, balance_updated_at) VALUES ('chk','Checking','depository','checking',true,2000, now())");
-    // A $1,500 bill in 3 days takes the projected balance to $500.
+    // A $1,500 bill in 3 days takes the projected balance to $500. The forecast
+    // steps a 30-day cadence by CALENDAR MONTH from the last charge (INV-70), so
+    // the last charge is the same day of the latest earlier month that has it
+    // (27 days back was a day off whenever that month had 31 days).
+    const due = add(3);
+    const [dy, dm, dd] = due.split("-").map(Number);
+    let ly = dy, lm = dm;
+    do { lm -= 1; if (lm === 0) { lm = 12; ly -= 1; } } while (new Date(Date.UTC(ly, lm, 0)).getUTCDate() < dd);
+    const lastCharged = `${ly}-${String(lm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
     await q(`INSERT INTO detected_subscriptions (merchant_key, display_name, amount, cadence_days, first_seen, last_charged, next_expected, is_active)
-             VALUES ('landlord','Landlord',1500,30,$1,$2,$3,true)`, [add(-90), add(-27), add(3)]);
+             VALUES ('landlord','Landlord',1500,30,$1,$2,$3,true)`, [add(-90), lastCharged, due]);
   });
   after(async () => { if (pool) await pool.end(); });
 

@@ -83,9 +83,14 @@ describe("classifyBills", () => {
   });
 });
 
-// A fake pool for getCashFlowInputs: one subscription and the three transfers.
-function inputsPool({ subIgnore = false, treatments = {} } = {}) {
-  const tomorrow = addDaysStr(fq.todayStr(), 1);
+// A fake pool for getCashFlowInputs: one subscription and the three transfers,
+// last charged 30 days before tomorrow. The forecast steps a 30-day cadence by
+// CALENDAR MONTH from the last charge (INV-70), so the direct calls pin "today"
+// to a day whose previous month has 30 days (Apr 11 + 1 month = May 11) — on the
+// real clock the next date was a day late whenever that month had 31 days.
+const TODAY = "2026-05-10";
+function inputsPool({ subIgnore = false, treatments = {}, today = fq.todayStr() } = {}) {
+  const tomorrow = addDaysStr(today, 1);
   const last = addDaysStr(tomorrow, -30);
   const seen = [];
   const query = async (sql) => {
@@ -105,8 +110,8 @@ function inputsPool({ subIgnore = false, treatments = {} } = {}) {
 
 describe("getCashFlowInputs + projectCashFlow", () => {
   it("reads the two settings with each row's id", async () => {
-    const pool = inputsPool();
-    await cf.getCashFlowInputs(pool);
+    const pool = inputsPool({ today: TODAY });
+    await cf.getCashFlowInputs(pool, { today: TODAY });
     const subSql = pool.seen.find((s) => /FROM detected_subscriptions\s+WHERE/.test(s));
     const trSql = pool.seen.find((s) => /FROM recurring_transfers rt/.test(s));
     assert.match(subSql, /SELECT id, display_name.*forecast_ignore/s);
@@ -114,12 +119,12 @@ describe("getCashFlowInputs + projectCashFlow", () => {
   });
 
   it("auto: the subscription and the plain transfer are billed; autopay and internal left out with their reasons", async () => {
-    const inputs = await cf.getCashFlowInputs(inputsPool());
+    const inputs = await cf.getCashFlowInputs(inputsPool({ today: TODAY }), { today: TODAY });
     const out = cf.projectCashFlow(inputs, { days: 30 });
     assert.equal(out.total_projected_bills, 1515.49);
     assert.deepEqual(out.forecast_items.bills.map((b) => [b.source, b.id, b.why, b.occurrences, b.projected_total, b.next_date]), [
-      ["subscription", 10, "auto", 1, 15.49, addDaysStr(fq.todayStr(), 1)],
-      ["transfer", 3, "auto", 1, 1500, addDaysStr(fq.todayStr(), 1)],
+      ["subscription", 10, "auto", 1, 15.49, "2026-05-11"],
+      ["transfer", 3, "auto", 1, 1500, "2026-05-11"],
     ]);
     assert.deepEqual(out.forecast_items.left_out.map((b) => [b.id, b.reason, b.treatment]), [[1, "card_autopay", "auto"], [2, "internal", "auto"]]);
     const item = out.forecast_items.left_out[0];
@@ -130,7 +135,7 @@ describe("getCashFlowInputs + projectCashFlow", () => {
   });
 
   it("the user's settings move bills in and out, and the totals with them", async () => {
-    const inputs = await cf.getCashFlowInputs(inputsPool({ subIgnore: true, treatments: { 1: "bill", 2: "bill", 3: "internal" } }));
+    const inputs = await cf.getCashFlowInputs(inputsPool({ subIgnore: true, treatments: { 1: "bill", 2: "bill", 3: "internal" }, today: TODAY }), { today: TODAY });
     const out = cf.projectCashFlow(inputs, { days: 30 });
     assert.equal(out.total_projected_bills, 1100);
     assert.deepEqual(out.forecast_items.bills.map((b) => [b.id, b.why, b.treatment]), [[1, "user", "bill"], [2, "user", "bill"]]);

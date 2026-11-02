@@ -18,6 +18,15 @@ Updated: 2026-11-02
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Test-sync after E5 (2026-11-02):** npm test 3130/3130 (was 3126/3127). Fixed three date-dependent tests
+  (category C): tests/cycle8-e1a.test.js pins "today" to 2026-05-10; tests/contract/cash-alerts-l2 seeds the last
+  charge on the same day of the latest earlier month that has it (checked against cadence.seriesOccurrences for every
+  day of 2027-2028); tests/contract/persistent.contract asks for the month holding the day after the due date. Two
+  coverage gaps closed: saveToggle through the keep-alive updateSetting wrapper (tests/broad-scan-c8-batch7, F38
+  block — red with E5b's fix reverted) and loadDuplicates' empty list (tests/roadmap-t2-5-u2 — red with E5a's fix
+  reverted). Docs follow-ons for /sync-docs: the test count (3130), the three date-dependent test entries in Known
+  Open Issues are closed, the Knowledge invariants' Verify paths are relative to apps/per-sistant.
+  - **Where I left off:** test-sync committed and pushed. Next: `/sync-docs`, then cycle 8's `/reflect`.
 - **Cycle-8 E5c (DONE, 2026-11-02) — ST4 part 3, E5 complete:** block `.cycle/blocks/8-e5c-broad-implement.md`.
   - **Shipped:** behaviour tests 14–17 in `e2e/behaviour.spec.js` — pin a note, complete a todo + subtask (with the
     undo toast), log today's habit (the streak and today's cell), save a Job Radar listing (Saved view, Unsave).

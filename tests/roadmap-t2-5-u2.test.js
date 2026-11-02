@@ -347,3 +347,32 @@ describe("e2e seed", () => {
     assert.match(read("e2e/pages.spec.js"), /Restore brings it back \(T2\.5 U2\)/);
   });
 });
+
+// Cycle-8 E5a: deleting the last duplicate pair left the finder showing it —
+// loadDuplicates returned early on an empty list without touching the section.
+describe("E5a — the duplicate finder after the last pair is deleted", () => {
+  const src = read("teller/public/transactions.js");
+  const start = src.indexOf("async function loadDuplicates()");
+  const end = src.indexOf("function reloadAfterDelete()");
+  function run(dups) {
+    const els = { "dup-section": { style: { display: "block" } }, "dup-list": { innerHTML: "<div class=\"dup-card\">old pair</div>" } };
+    const ctx = {
+      apiFetch: async () => ({ ok: true, json: async () => ({ duplicates: dups }) }),
+      document: { getElementById: (id) => els[id] },
+      esc: (s) => String(s), fmt: (n) => "$" + n, fmtDate: (d) => d, parseFloat, Math,
+    };
+    vm.runInNewContext(src.slice(start, end), ctx);
+    return ctx.loadDuplicates().then(() => els);
+  }
+  it("an empty list hides the section and clears the old pair", async () => {
+    assert.ok(start > 0 && end > start);
+    const els = await run([]);
+    assert.equal(els["dup-section"].style.display, "none");
+    assert.equal(els["dup-list"].innerHTML, "");
+  });
+  it("a remaining pair is still shown", async () => {
+    const els = await run([{ merchant: "Cafe", amount: "4.50", date: "2026-10-01", account1: "A", account2: "B", id1: "x", id2: "y" }]);
+    assert.equal(els["dup-section"].style.display, "block");
+    assert.match(els["dup-list"].innerHTML, /Cafe/);
+  });
+});
