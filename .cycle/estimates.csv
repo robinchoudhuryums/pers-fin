@@ -1,0 +1,6 @@
+date,cycle,action,estimate,estimated_hours,actual_hours,calibration_note
+2026-11-02,8,S4-1 live-deploy hotfixes (A1 B2 S2 B3 C1),M,,0.3,"commit gap plan→fix; excludes docs"
+2026-11-02,8,S4-2 scheduler & operator hardening (B1 B5 B6 B4 A3),M,,0.5,commit gap
+2026-11-02,8,S4-3 forecast / freshness / restore (S1 S3 S6 S4 S5),M,,0.2,commit gap
+2026-11-02,8,S4-4 cross-app notification seam (A2 A6 A5 A4),S,,0.15,commit gap
+2026-11-02,8,S4-5 UI correctness (C2 C3 C4 C5 C6),S-M,,1.4,"commit gap; the UI batch ran longest despite the smallest size"
