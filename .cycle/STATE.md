@@ -12,12 +12,23 @@ to the "none in progress" state.
 Cycle: 8
 Phase: implement
 Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
-Updated: 2026-11-02
+Updated: 2026-11-04
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **MERGED (2026-11-02):** PR #135 (S4-1) and PR #136 (S4-2..S4-5 + the opening-screen redesign) are on main
+  (c53c498) — all of seams audit #4 and the new login are deployed. The opening screen (not a cycle batch): the shell
+  dial (direction D, 5069952) — 120 outer / 48 inner ticks, the unlock spin, the PIN keypad posting JSON to POST /login —
+  then (3bc6a56) the hairline ring field (.dial-field) and three gold ripples on unlock in place of the pointer-following
+  gold light; tests/opening-screen.test.js. #136's first e2e run failed the D4 phone test on a race (it measured a
+  summary skeleton the render replaced); e6405551 waits for aria-busy to clear — test-only.
+  - **Where I left off:** nothing open on the branch (it equals main). Next: `/reflect` for seams audit #4's five
+    batches (block S4-1..S4-5 summaries in `.cycle/blocks/8-s4-*-broad-implement.md`; no reflect row for them yet),
+    then the next `/broad-scan` (CYCLE OPEN → 9) or a targeted audit. OPERATOR (still open): set the
+    PERSISTENT_DATABASE_URL repository secret for Database Backup; the earlier ones (repo private, backup secrets,
+    re-enable the disabled workflows, the Knowledge reindex after Batch 6) are in CLAUDE.md's Known Open Issues.
 - **S4-5 (DONE, 2026-11-02) — UI correctness:** block `.cycle/blocks/8-s4-5-broad-implement.md`. C2 (a refused Settings
   select / box save puts the stored value back — saveField + markSavedFields), C3 (the emergency-fund note beside the
   projection), C4 (a summary reload un-hides the cards; a failed reload keeps them), C5 ("Since you last looked" through
