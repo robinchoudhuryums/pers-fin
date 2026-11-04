@@ -21,9 +21,9 @@ implement and reflect sessions only set Phase.)
 - **Seams audit #4 REFLECT (2026-11-04):** block `.cycle/blocks/8-b-reflect.md`, metrics row appended, `.cycle/estimates.csv`
   started. Net +1 = 7 production fixes − 6 Low new failure modes; 1 capability (opening screen); 18 defensive. Corrected the
   summaries' 9 fixes / 4 failure modes (S4 and S5 → defensive; B1's Plaid timeout and S4's post-link warning added).
-  INV-158 / INV-159 candidates (login keypad; Sync Health's jobs = JOB_INTERVALS_MS) — not yet in the library. Seams
+  INV-158 / INV-159 (login keypad; Sync Health's jobs = JOB_INTERVALS_MS) — added to the library by /sync-docs (2026-11-04). Seams
   counter left at 0: this reflect closes the seams audit, not a subsystem cycle.
-  - **Where I left off:** reflected. Next: fold INV-158..159 into CLAUDE.md (`/sync-docs`), then the next `/broad-scan`
+  - **Where I left off:** reflected. Next: the next `/broad-scan`
     (CYCLE OPEN → 9) or a targeted audit.
 - **MERGED (2026-11-02):** PR #135 (S4-1) and PR #136 (S4-2..S4-5 + the opening-screen redesign) are on main
   (c53c498) — all of seams audit #4 and the new login are deployed. The opening screen (not a cycle batch): the shell
