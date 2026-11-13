@@ -199,7 +199,11 @@ describe("F43 — a reconcile renames the rows it recovers", () => {
   const ranRules = () => log.some((s) => /FROM merchant_rename_rules WHERE is_active = true/.test(s));
 
   it("the Teller reconcile applies the rules after recovering a row — and never the anomaly check", async () => {
-    rows = [{ id: "t1", account_id: "a1", amount: "-12.00", date: "2026-10-20", description: "NETFLIX.COM", status: "posted" }];
+    // Dated from the clock (cycle-9 F59): reconcileTeller(30) keeps rows from the
+    // last 30 days of the REAL date, so a literal "2026-10-20" fell out of the
+    // window — and failed this test for good — on 2026-11-20.
+    const recent = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10);
+    rows = [{ id: "t1", account_id: "a1", amount: "-12.00", date: recent, description: "NETFLIX.COM", status: "posted" }];
     const r = await enr.reconcileTeller(30);
     assert.equal(r.transactions_added, 1);
     assert.ok(ranRules());

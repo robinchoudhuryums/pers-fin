@@ -187,6 +187,7 @@ async function backupCheck(pool, env = process.env, now = Date.now(), { underShe
 const API_KEY_MIN = 24;
 const SHELL_SECRET_MIN = 32;
 const TELLER_WEBHOOK_SECRET_MIN = 16;
+const CALENDAR_FEED_TOKEN_MIN = 24;
 const PLAID_SECRET_VARS = { production: "PLAID_SECRET_PROD", development: "PLAID_SECRET_DEV", sandbox: "PLAID_SECRET_SANDBOX" };
 
 async function countRows(pool, sql) {
@@ -280,6 +281,19 @@ async function goLiveChecks({ pool = null, persistentPool = null, env = process.
           detail: `SHELL_SECRET is shorter than ${SHELL_SECRET_MIN} characters — session cookies are signed with it.`,
           fix: "Set SHELL_SECRET to openssl rand -hex 32 on Render (everyone signs in again)." }
       : { id: "local:shell-secret", label: "Session signing secret", status: "ok", detail: "SHELL_SECRET is long enough.", fix: null });
+  }
+
+  // CALENDAR_FEED_TOKEN (cycle-9 F12): the one credential that travels in a
+  // URL (/calendar.ics?token=…), on a public route outside the login limiter —
+  // its length is its only protection against guessing. Unset = the feed is
+  // off (localChecks' note), so only a set token is judged.
+  const feedToken = set("CALENDAR_FEED_TOKEN");
+  if (feedToken) {
+    checks.push(feedToken.length < CALENDAR_FEED_TOKEN_MIN
+      ? { id: "local:calendar-feed", label: "Calendar feed", status: "warn",
+          detail: `CALENDAR_FEED_TOKEN is shorter than ${CALENDAR_FEED_TOKEN_MIN} characters — the /calendar.ics bill feed is public and guarded only by this token.`,
+          fix: "Set CALENDAR_FEED_TOKEN to a long random value (openssl rand -hex 32) on Render, then subscribe your calendar app to the new feed address." }
+      : { id: "local:calendar-feed", label: "Calendar feed", status: "ok", detail: "CALENDAR_FEED_TOKEN is long enough.", fix: null });
   }
 
   // Plaid: the secret for PLAID_ENV, and sandbox while real connections exist.

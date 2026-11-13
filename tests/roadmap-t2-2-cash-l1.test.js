@@ -18,7 +18,7 @@ process.env.APP_TIMEZONE = utcHour < 12 ? "Etc/GMT+12" : "Pacific/Kiritimati";
 if (!process.env.NEON_DATABASE_URL) process.env.NEON_DATABASE_URL = "postgres://mock:mock@localhost/mock";
 if (!process.env.TOKEN_ENCRYPTION_PASSPHRASE) process.env.TOKEN_ENCRYPTION_PASSPHRASE = "test-passphrase";
 
-const { describe, it, afterEach } = require("node:test");
+const { describe, it, before, after, afterEach, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -30,7 +30,7 @@ const originalQuery = dbModule.pool.query;
 afterEach(() => { dbModule.pool.query = originalQuery; });
 
 const fq = require("../teller/services/financial-queries");
-const { addDaysStr } = require("../teller/services/cadence");
+const { addDaysStr, stepDate } = require("../teller/services/cadence");
 const cf = require("../teller/services/cash-flow");
 
 function mountApp(mod) {
@@ -184,10 +184,21 @@ describe("getCashFlowInputs (mock pool)", () => {
 });
 
 describe("GET /api/cash-flow — a thin wrapper over the service", () => {
+  // The route reads the real clock, and a monthly bill steps by CALENDAR MONTH
+  // (INV-70) — so with "tomorrow" in February the next charge (+28 days) also
+  // fell inside the 30-day window, and these tests failed from late January to
+  // late March every year (cycle-9 F59). The clock is pinned to mid-June, at
+  // an hour where the forced zone's date still differs from UTC's (the point
+  // of the file's APP_TIMEZONE choice above).
+  before(() => mock.timers.enable({ apis: ["Date"], now: new Date(utcHour < 12 ? "2026-06-15T06:00:00Z" : "2026-06-15T18:00:00Z") }));
+  after(() => mock.timers.reset());
+
   function routePool() {
     const tomorrow = addDaysStr(fq.todayStr(), 1);
     return async (sql) => {
-      if (/FROM detected_subscriptions\s+WHERE/.test(sql)) return { rows: [{ display_name: "Gym", amount: "40", cadence_days: 30, next_expected: tomorrow, last_date: addDaysStr(tomorrow, -30) }] };
+      // Last charged one calendar month before tomorrow, so the series' day of
+      // month IS tomorrow's (tomorrow − 30 days is another day after a short month).
+      if (/FROM detected_subscriptions\s+WHERE/.test(sql)) return { rows: [{ display_name: "Gym", amount: "40", cadence_days: 30, next_expected: tomorrow, last_date: stepDate(tomorrow, 30, -1) }] };
       if (/AS cash/.test(sql)) return { rows: [{ cash: "500", debt: "0" }] };
       if (/AS avg_daily\s+FROM \(/.test(sql)) return { rows: [{ avg_daily: "25" }] };
       return { rows: [] };

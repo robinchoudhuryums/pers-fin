@@ -22,7 +22,7 @@
 if (!process.env.NEON_DATABASE_URL) process.env.NEON_DATABASE_URL = "postgres://mock:mock@localhost/mock";
 if (!process.env.TOKEN_ENCRYPTION_PASSPHRASE) process.env.TOKEN_ENCRYPTION_PASSPHRASE = "test-passphrase";
 
-const { describe, it, afterEach } = require("node:test");
+const { describe, it, before, after, afterEach, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -133,6 +133,13 @@ describe("DD-3 — Plaid personal_finance_category", () => {
 // FAN-5 / DD-4 — cash-flow
 // ---------------------------------------------------------------------------
 describe("FAN-5 / DD-4 — cash-flow forecast", () => {
+  // The route reads the real clock and a monthly transfer steps by CALENDAR
+  // MONTH (INV-70): with "tomorrow" in February its next date (+28 days) also
+  // fell inside the 30-day window and the totals doubled, failing this file from
+  // late January to late February every year (cycle-9 F59). Pinned to mid-June.
+  before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-06-15T12:00:00Z") }));
+  after(() => mock.timers.reset());
+
   function cashFlowPool(sqls) {
     const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
     return async (sql) => {

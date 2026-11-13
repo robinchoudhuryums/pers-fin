@@ -10,14 +10,77 @@ to the "none in progress" state.
 ## Current Cycle
 
 Cycle: 9
-Phase: audit
+Phase: implement
 Scope: broad (Nov 2026 broad scan — all non-frozen subsystems, weighted to the work since the cycle-8 scan: roadmap T4.1 A1–A10, cycle-8 expansion E1–E5, seams audit #4 S4-1..S4-5, the opening screen)
-Updated: 2026-11-09
+Updated: 2026-11-13
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 1 (DONE, 2026-11-13) — backups and CI can't-wait:** block `.cycle/blocks/9-batch1-broad-implement.md`.
+  F1 (db-backup.yml verifies by decrypting to a file, then `pg_restore --list` — the pipe failed on every real-size dump),
+  F9 (backup.sh enforces gpg's exit status), F12 (pg_dump's message withheld from logs; a CALENDAR_FEED_TOKEN under 24
+  characters is an operator-check warning), F59 (six date-dependent test files — `npm test` would have gone red on
+  2026-11-20). New tests/cycle9-b1.test.js runs both backup scripts in bash. npm test 3216 (also under eight shifted
+  clocks), contract 340 on a local Postgres, e2e not run. Net −1 (1 fix − 2 Low). /calendar.ics rate limit left out on
+  purpose (follow-on).
+  - **Where I left off:** Batch 1 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR yet). Next: `/sync-docs`
+    (CLAUDE.md / README: the backup verify, the token check, counts 3216 / 178 files), then `/broad-implement Batch 2`
+    (F3 F2 F5 F4 F10 F11 — pre-auth and scheduler safety). The scan's report (F1–F79, G1–G5, ST1–ST5, Batches 1–10,
+    E1–E3) is in the cycle-9 scan session; Batches 2–10 and the Deferred list (F7 F25 F29 F51 F57 F62 F64) are open.
+    OPERATOR: set the three backup secrets, re-enable Database Backup, run it once and do a restore drill.
+- **Cycle 9 scan (2026-11-09):** 79 findings, no Critical, two High (F1 the backup verify; F59 calendar-dependent
+  tests). Top by impact: F1, F59, F20 (a series detected as both subscription and transfer → double-billed forecast),
+  F39 / F40 (the insight audit's false criticals), F28 / F44 (a paycheck dropped on payday; quiet-hours holds that expire).
+  - **Open batch plan (the scan report itself was chat-only — this is the record):**
+    - **Batch 2 — pre-auth and scheduler safety:** F3 (shell/middleware/auth.js `verify` / `handleLogin`: a non-string
+      session cookie `j:{}` or a PIN object with no toString throws in an async handler → hung request + false "New server
+      error"), F2 (the "Scheduled jobs missed" push can't fire: the runner ticks every job, then the watchdog flushes before
+      it reads — startup.js onCheck, job-health checkMissedJobs), F5 (a failed job outcome sticks once the job stops running
+      its body: a digest switched off after failing, notify-release after one failed push, a watchdog timeout), F4 (standalone
+      Perfin: `/api/…​.js|.css` skips the PIN gate when API_KEY is unset — teller/server.js:154), F10 (keep-alive.yml green
+      when its schedule call is rejected; keep-alive's fallback cached 6 h), F11 (shutdown during the runner's 20 s gap logs a
+      false "still running" error).
+    - **Batch 3 — forecast and detection accuracy:** F20 (a series detected as BOTH subscription and transfer — the two
+      keyword lists differ — is billed twice in the forecast), F28 (the forecast starts tomorrow, so today's unlanded paycheck
+      is dropped → false low-cash alert; Teller per-enrollment sync doesn't refresh balances), F21 (price-rise watchdog:
+      prior_amount is the merchant's previous charge of any amount → false / monthly alerts), F22 (Utility → Subscription
+      reverted by the next detection), F23 (a manual subscription's next_expected never advances), F24 (exact rules store the
+      trimmed pattern, compare the untrimmed merchant).
+    - **Batch 4 — AI audit trust:** F39 (false criticals: subscription total includes utilities, any % near "savings rate",
+      monthly-equivalent vs month-to-date), F40 (plan check: "per paycheck" bleeds to the next figure, contribution-room
+      figures missing, an invented amount passes when the plan recommends nothing), F41 (Ask's 12,000-char slice drops
+      what_if), F42 (entity check doesn't know account names; monthly totals fetched, never checked), F43 (an empty insight run
+      stamps insights_last_run).
+    - **Batch 5 — notifications and settings:** F44 (quiet windows ≥ 12 h: early holds expire unpushed), F34 (rent push
+      tests only this month's window; item key names the wrong month), F45 (with linked tasks on, the rent lead-time reminder
+      reaches no one), F47 (GET /api/settings 200-with-defaults on a read error; toggle race; idle-timeout 7.5 → 500;
+      "false" → true), F46 (a transient push failure never retried), F48 (auto_closed not cleared on a hand reopen), F49
+      (standalone SSO non-string token; spring-forward release an hour late).
+    - **Batch 6 — cash plan:** F30 (raise detection half-size + alert key churn), F31 (a ≥ 8% loan with no payment dropped →
+      "Invest"), F32 (spending average always ÷ 3; emergency date ignores the debt step), F33 (FIRE income averaged over
+      months with rows only), F37, F38 (smaller plan / forecast-label / payday-order / whats-new-count / year-end-cancel items).
+    - **Batch 7 — bank-sync recovery:** F13 (a Teller reconnect strands the old enrollment), F14 (a manual account with
+      transactions can't be deleted — FK → 500), F15 (generic CSV with separate Debit / Credit columns), F17 (investments-only
+      unlink leaves accounts; guard refuses the re-link), F16, F18, F19, F35 (goal re-link resets progress), F36 (budget alert
+      rollover depends on an activity-gated snapshot).
+    - **Batch 8 — Per-sistant:** F52 (task edit wipes the month-end anchor), F53 (Job Radar profile save clears all fit
+      scores), F50 (frontmatter privacy value on the next line fails open — needs one reindex), F65–F72 (mini-calendar reads
+      `ev.date`; automation / webhook toggles send the current state; "Use template" opens an empty form; bulk checkbox opens
+      the editor; single-key shortcuts ignore Ctrl / Cmd; Theme select does nothing; vault error hidden; quick parsers), F54,
+      F55, F56, F58, F26, F27.
+    - **Batch 9 — Perfin UI:** F73 (Settle Up treats a failed leg as $0), F74 (card limit / APR typing wiped by the
+      re-render), F76 (Perfin entry overlay has no pageshow handler), F75 (`hidden` overridden by the element's own display
+      rule ×2), F77, F78, F79.
+    - **Batch 10 — test honesty, docs, hygiene:** F61 (tests/api.test.js 29 of 33 replica tests; Sheets pins weak), F60 (doc
+      drift), F6 (three script pools ignore PGSSLMODE=disable — before any VPS cutover), F8 (18 dependency advisories), F63.
+    - **Deferred:** F7 (no timeout on push sends / queries — ST4), F25 (= G2), F29 (= G1), F51 (Per-sistant's service worker
+      is never registered — product decision, ST3), F57 (= G4), F62 (POST /api/cleanup — keep with a confirm or remove), F64
+      (frozen legacy Plaid server has no auth).
+    - **Expansion:** E1 = G1 (manual bills in the forecast) + G2 (a due month for quarterly / yearly manual bills); E2 = ST1
+      (the audit checks what the model was shown) + ST2 (a shared test clock + shifted-date CI job); E3 = ST4 (timeouts) +
+      ST5 (dependency check in CI) + G3 (a restore drill). Not batched: ST3, G4 (attachments UI), G5 (Job Radar preferences).
 - **Seams audit #4 REFLECT (2026-11-04):** block `.cycle/blocks/8-b-reflect.md`, metrics row appended, `.cycle/estimates.csv`
   started. Net +1 = 7 production fixes − 6 Low new failure modes; 1 capability (opening screen); 18 defensive. Corrected the
   summaries' 9 fixes / 4 failure modes (S4 and S5 → defensive; B1's Plaid timeout and S4's post-link warning added).

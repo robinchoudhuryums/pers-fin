@@ -419,7 +419,9 @@ describe("DD-11 — YoY compares the same days, consecutive years only", () => {
     };
     const res = await supertest(mountApp("../teller/routes/spending-analytics")).get("/api/spending-yoy");
     assert.deepEqual(params, [m, y, d]);
-    assert.equal(res.body.through_day, d);
+    // On the 31st the cap IS the whole month, which the route reports as null
+    // (cycle-9 F59: this asserted `d` and failed on every 31st).
+    assert.equal(res.body.through_day, d < 31 ? d : null);
     assert.equal(res.body.comparisons.length, 1);
     assert.equal(res.body.comparisons[0].previous_year, String(y - 1));
   });

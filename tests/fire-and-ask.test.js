@@ -101,7 +101,12 @@ describe("GET /api/fire-projection", () => {
   afterEach(() => { dbModule.pool.query = originalPoolQuery; });
 
   it("assembles net worth + completed-month averages + settings into a projection", async () => {
-    const lastMonth = new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().slice(0, 7);
+    // The previous calendar month by month arithmetic (cycle-9 F59):
+    // setMonth(month − 1) on the 29th–31st overflows back into THIS month (Mar 31
+    // → "Feb 31" → Mar 3), so the fixture's row read as the partial month and the
+    // test failed on those days.
+    const fq = require("../teller/services/financial-queries");
+    const lastMonth = fq.previousMonthKey(fq.currentMonth());
     dbModule.pool.query = async (sql) => {
       if (/fire_expected_return_pct/.test(sql)) return { rows: [{ fire_expected_return_pct: "5", fire_withdrawal_rate_pct: "4", fire_monthly_spending_override: null }] };
       if (/total_income/i.test(sql)) return { rows: [{ month: lastMonth, total_income: "8000" }] };
