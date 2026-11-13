@@ -39,7 +39,7 @@ implement and reflect sessions only set Phase.)
       error"), F2 (the "Scheduled jobs missed" push can't fire: the runner ticks every job, then the watchdog flushes before
       it reads — startup.js onCheck, job-health checkMissedJobs), F5 (a failed job outcome sticks once the job stops running
       its body: a digest switched off after failing, notify-release after one failed push, a watchdog timeout), F4 (standalone
-      Perfin: `/api/…​.js|.css` skips the PIN gate when API_KEY is unset — teller/server.js:154), F10 (keep-alive.yml green
+      Perfin: `/api/….js|.css` skips the PIN gate when API_KEY is unset — teller/server.js:154), F10 (keep-alive.yml green
       when its schedule call is rejected; keep-alive's fallback cached 6 h), F11 (shutdown during the runner's 20 s gap logs a
       false "still running" error).
     - **Batch 3 — forecast and detection accuracy:** F20 (a series detected as BOTH subscription and transfer — the two
