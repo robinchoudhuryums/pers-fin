@@ -34,9 +34,12 @@ const DETECT_KEY = "TRIM(COALESCE(t.user_merchant_name, t.merchant_name, LOWER(R
 const ESC_PAT = "REPLACE(REPLACE(REPLACE(LOWER($1), '\\', '\\\\'), '%', '\\%'), '_', '\\_')";
 const MATCH_TYPES = ["exact", "starts_with", "contains"];
 
-// SQL condition on `t` for a rule's pattern ($1).
+// SQL condition on `t` for a rule's pattern ($1). An exact rule compares the
+// TRIMmed merchant with the trimmed pattern (cycle-9 F24): a rule is stored
+// trimmed, so one made from a bank name with a trailing space ("HULU ")
+// matched nothing — and still reported success.
 function ruleCondition(matchType) {
-  if (matchType === "exact") return `${RAW_MERCHANT} = LOWER($1)`;
+  if (matchType === "exact") return `TRIM(${RAW_MERCHANT}) = LOWER(TRIM($1))`;
   if (matchType === "starts_with") return `${RAW_MERCHANT} LIKE ${ESC_PAT} || '%' ESCAPE '\\'`;
   return `${RAW_MERCHANT} LIKE '%' || ${ESC_PAT} || '%' ESCAPE '\\'`;
 }

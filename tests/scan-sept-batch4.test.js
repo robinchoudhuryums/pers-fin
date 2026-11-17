@@ -141,7 +141,8 @@ describe("DC-7 — a price increase is reported at the new price", () => {
     // upsert compares EXCLUDED.amount to the previous run's 15.49).
     const upsert = log.find(q => /INSERT INTO detected_subscriptions/.test(q.sql));
     assert.equal(upsert.params[2], 17.99);
-    assert.match(upsert.sql, /amount_changed = CASE WHEN EXCLUDED\.amount <> detected_subscriptions\.amount THEN true/);
+    // Cycle-9 F21: true unless the new anchor is another plan under the same key ($11).
+    assert.match(upsert.sql, /amount_changed = CASE WHEN EXCLUDED\.amount <> detected_subscriptions\.amount THEN NOT \$11::boolean/);
   });
   it("at the transition charge the in-memory row reports the old price as prior", async () => {
     const amounts = [...Array(18).fill(15.49), ...Array(3).fill(17.99)];

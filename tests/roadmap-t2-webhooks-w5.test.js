@@ -202,7 +202,9 @@ describe("W5 — syncTellerEnrollment with the real Teller sync engine", () => {
     const gate = new Promise((res) => { open = res; });
     let calls = 0;
     setup({ teller: async (endpoint) => {
-      if (/from_id/.test(endpoint)) return [];
+      // Only the transaction fetches count — each run also refreshes the
+      // enrollment's balances (cycle-9 F28: /accounts, here with none).
+      if (/from_id/.test(endpoint) || !/\/transactions/.test(endpoint)) return [];
       calls++;
       if (calls === 1) await gate;
       return [tx("t" + calls)];

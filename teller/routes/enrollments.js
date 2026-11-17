@@ -373,9 +373,11 @@ async function syncOneTellerEnrollment(enrollment, { backfillFrom = null } = {})
 // request while that enrollment's sync runs makes it go round once more and
 // shares its promise. Returns { ok: false, error: "not_found" } (no
 // non-suspended enrollment with that id) or { ok: true, runs, added (summed),
-// errors, failed (the last run's) }. Records nothing globally (no
-// last_txn_sync_at / last_sync_result — the enrollment's last_synced_at only)
-// and runs no post-sync steps; the caller runs runPostSyncSteps(added).
+// errors, failed (the last run's), balances_updated }. Records nothing globally
+// (no last_txn_sync_at / last_sync_result — the enrollment's last_synced_at
+// only) and runs no post-sync steps; the caller runs runPostSyncSteps(added).
+// Each run that didn't fail also refreshes that enrollment's balances
+// (refreshTellerEnrollmentBalances — cycle-9 F28).
 const _tellerSyncs = new Map(); // teller_enrollments.id → { again, promise }
 function syncTellerEnrollment(enrollmentDbId) {
   const running = _tellerSyncs.get(enrollmentDbId);
@@ -394,6 +396,15 @@ function syncTellerEnrollment(enrollmentDbId) {
         total.added += r.added;
         total.errors = r.errors;
         total.failed = r.failed;
+        // Balances too (cycle-9 F28): the transactions this run brought in
+        // have moved them, and the cash forecast starts from the balance. A
+        // failed refresh is logged — the next balance sync retries it — and
+        // never fails the transaction sync.
+        if (!r.failed) {
+          const bal = await refreshTellerEnrollmentBalances(rows[0]);
+          total.balances_updated = (total.balances_updated || 0) + bal.updated;
+          for (const e of bal.errors) console.error(`Teller balance refresh after sync (${e.institution}):`, e.error);
+        }
       } while (state.again);
       return total;
     } finally {
@@ -1421,6 +1432,108 @@ router.patch("/api/accounts/:id", async (req, res) => {
 // double-fetching every Teller balance when the auto-sync and a manual
 // "Sync Balances" / daily-sync.yml call overlap.
 let _syncAllBalancesInFlight = null;
+// refreshTellerEnrollmentBalances — one enrollment's balance refresh: register
+// accounts opened since enrollment (DD-9), fetch each account's balances, write
+// linked_accounts + the day's snapshot. Never throws: { updated, changed,
+// registered, errors[] }. The body of syncAllBalances' loop, shared with
+// syncTellerEnrollment since cycle-9 F28 — a Teller webhook sync brought in the
+// paycheck but left the balance from before it, so the forecast had the deposit
+// in neither the transactions it projects nor the balance it starts from.
+async function refreshTellerEnrollmentBalances(enrollment) {
+  let updated = 0, changed = 0, registered = 0;
+  const errors = [];
+  try {
+    const accounts = await tellerRequest("/accounts", enrollment.access_token);
+    for (const acct of accounts) {
+      // Register accounts opened AFTER enrollment (DD-9). Rows were only
+      // created at /api/enroll, so a new savings account at the same bank
+      // never got a balance or transactions (syncEnrollment iterates
+      // linked_accounts). ON CONFLICT DO NOTHING — never re-points or
+      // renames an existing row.
+      try {
+        const reg = await pool.query(
+          `INSERT INTO linked_accounts (teller_enrollment_id, account_id, name, official_name, type, subtype, mask)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (account_id) DO NOTHING
+           RETURNING id`,
+          [enrollment.id, acct.id, acct.name, acct.name, acct.type, acct.subtype || acct.type, acct.last_four || null]
+        );
+        if (reg.rows.length) {
+          registered++;
+          console.log(`Teller ${enrollment.institution_name}: registered new account ${acct.name || acct.id}`);
+        }
+      } catch (regErr) {
+        console.error("Teller account register error for", acct.id, ":", regErr.message);
+      }
+
+      let balances = null;
+      try {
+        balances = await tellerRequest(`/accounts/${acct.id}/balances`, enrollment.access_token);
+      } catch (err) {
+        // Surface per-account failures (DD-10) — they were only logged, so a
+        // stale balance sat behind a green "Synced" badge.
+        console.error("Balance fetch error for", acct.id, ":", err.message);
+        errors.push({
+          institution: enrollment.institution_name,
+          error: `balance fetch failed for ${acct.name || acct.id}` + (err.status ? ` (${err.status})` : ""),
+        });
+      }
+
+      const available = balances?.available || acct.balance?.available || null;
+      const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
+
+      if (available !== null || ledger !== null) {
+        const availNum = available ? parseFloat(available) : null;
+        const ledgerNum = ledger ? parseFloat(ledger) : null;
+        // Persist current values to linked_accounts AND append a daily
+        // history row so we can chart per-account performance over time.
+        // RETURNING gets the linked_accounts.id we need for the snapshot
+        // FK without a second SELECT round-trip. The snapshot UPSERT keeps
+        // intra-day re-syncs to one row per account per day.
+        // `changed` compares against the PRE-update values (the CTE reads the
+        // statement's snapshot) at the column's 2-decimal precision, so a
+        // re-fetch of an unchanged balance isn't reported as activity
+        // (PSC-1 / DD-7: every Teller fetch counted, so "Auto-sync complete"
+        // was pushed on every run).
+        const updateResult = await pool.query(
+          `WITH prev AS (
+             SELECT id, available_balance, current_balance FROM linked_accounts WHERE account_id = $3
+           )
+           UPDATE linked_accounts la
+           SET available_balance = $1, current_balance = $2, balance_updated_at = now()
+           FROM prev
+           WHERE la.id = prev.id
+           RETURNING la.id,
+             (prev.available_balance IS DISTINCT FROM ROUND($1::numeric, 2)
+              OR prev.current_balance IS DISTINCT FROM ROUND($2::numeric, 2)) AS changed`,
+          [availNum, ledgerNum, acct.id]
+        );
+        // Count only rows that actually matched (DD-9: an unknown account
+        // matched 0 rows but was still counted).
+        if (updateResult.rows.length) updated++;
+        if (updateResult.rows[0] && updateResult.rows[0].changed) changed++;
+        const linkedAcctId = updateResult.rows[0]?.id;
+        if (linkedAcctId) {
+          const dailyBalance = ledgerNum !== null ? ledgerNum : availNum;
+          await pool.query(
+            `INSERT INTO account_balance_snapshots
+               (source, source_id, snapshot_date, balance, available_balance, current_balance)
+             VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
+             ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+               balance = EXCLUDED.balance,
+               available_balance = EXCLUDED.available_balance,
+               current_balance = EXCLUDED.current_balance`,
+            [linkedAcctId, dailyBalance, availNum, ledgerNum]
+          ).catch(e => console.error("balance snapshot insert error:", e.message));
+        }
+      }
+    }
+  } catch (err) {
+    errors.push({ institution: enrollment.institution_name, error: err.message });
+  }
+  return { updated, changed, registered, errors };
+}
+
 function syncAllBalances() {
   if (!_syncAllBalancesInFlight) {
     _syncAllBalancesInFlight = syncAllBalancesOnce().finally(() => { _syncAllBalancesInFlight = null; });
@@ -1446,95 +1559,11 @@ async function syncAllBalancesOnce() {
       errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
       continue;
     }
-    try {
-      const accounts = await tellerRequest("/accounts", enrollment.access_token);
-      for (const acct of accounts) {
-        // Register accounts opened AFTER enrollment (DD-9). Rows were only
-        // created at /api/enroll, so a new savings account at the same bank
-        // never got a balance or transactions (syncEnrollment iterates
-        // linked_accounts). ON CONFLICT DO NOTHING — never re-points or
-        // renames an existing row.
-        try {
-          const reg = await pool.query(
-            `INSERT INTO linked_accounts (teller_enrollment_id, account_id, name, official_name, type, subtype, mask)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (account_id) DO NOTHING
-             RETURNING id`,
-            [enrollment.id, acct.id, acct.name, acct.name, acct.type, acct.subtype || acct.type, acct.last_four || null]
-          );
-          if (reg.rows.length) {
-            registered++;
-            console.log(`Teller ${enrollment.institution_name}: registered new account ${acct.name || acct.id}`);
-          }
-        } catch (regErr) {
-          console.error("Teller account register error for", acct.id, ":", regErr.message);
-        }
-
-        let balances = null;
-        try {
-          balances = await tellerRequest(`/accounts/${acct.id}/balances`, enrollment.access_token);
-        } catch (err) {
-          // Surface per-account failures (DD-10) — they were only logged, so a
-          // stale balance sat behind a green "Synced" badge.
-          console.error("Balance fetch error for", acct.id, ":", err.message);
-          errors.push({
-            institution: enrollment.institution_name,
-            error: `balance fetch failed for ${acct.name || acct.id}` + (err.status ? ` (${err.status})` : ""),
-          });
-        }
-
-        const available = balances?.available || acct.balance?.available || null;
-        const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
-
-        if (available !== null || ledger !== null) {
-          const availNum = available ? parseFloat(available) : null;
-          const ledgerNum = ledger ? parseFloat(ledger) : null;
-          // Persist current values to linked_accounts AND append a daily
-          // history row so we can chart per-account performance over time.
-          // RETURNING gets the linked_accounts.id we need for the snapshot
-          // FK without a second SELECT round-trip. The snapshot UPSERT keeps
-          // intra-day re-syncs to one row per account per day.
-          // `changed` compares against the PRE-update values (the CTE reads the
-          // statement's snapshot) at the column's 2-decimal precision, so a
-          // re-fetch of an unchanged balance isn't reported as activity
-          // (PSC-1 / DD-7: every Teller fetch counted, so "Auto-sync complete"
-          // was pushed on every run).
-          const updateResult = await pool.query(
-            `WITH prev AS (
-               SELECT id, available_balance, current_balance FROM linked_accounts WHERE account_id = $3
-             )
-             UPDATE linked_accounts la
-             SET available_balance = $1, current_balance = $2, balance_updated_at = now()
-             FROM prev
-             WHERE la.id = prev.id
-             RETURNING la.id,
-               (prev.available_balance IS DISTINCT FROM ROUND($1::numeric, 2)
-                OR prev.current_balance IS DISTINCT FROM ROUND($2::numeric, 2)) AS changed`,
-            [availNum, ledgerNum, acct.id]
-          );
-          // Count only rows that actually matched (DD-9: an unknown account
-          // matched 0 rows but was still counted).
-          if (updateResult.rows.length) updated++;
-          if (updateResult.rows[0] && updateResult.rows[0].changed) changed++;
-          const linkedAcctId = updateResult.rows[0]?.id;
-          if (linkedAcctId) {
-            const dailyBalance = ledgerNum !== null ? ledgerNum : availNum;
-            await pool.query(
-              `INSERT INTO account_balance_snapshots
-                 (source, source_id, snapshot_date, balance, available_balance, current_balance)
-               VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
-               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
-                 balance = EXCLUDED.balance,
-                 available_balance = EXCLUDED.available_balance,
-                 current_balance = EXCLUDED.current_balance`,
-              [linkedAcctId, dailyBalance, availNum, ledgerNum]
-            ).catch(e => console.error("balance snapshot insert error:", e.message));
-          }
-        }
-      }
-    } catch (err) {
-      errors.push({ institution: enrollment.institution_name, error: err.message });
-    }
+    const r = await refreshTellerEnrollmentBalances(enrollment);
+    updated += r.updated;
+    changed += r.changed;
+    registered += r.registered;
+    errors.push(...r.errors);
   }
 
   // Auto-snapshot net worth after balance sync. Uses the shared getNetWorth

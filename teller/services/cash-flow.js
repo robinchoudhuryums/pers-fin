@@ -232,6 +232,18 @@ function weekdayOf(ymd) {
 
 const cents = (n) => Math.round(n * 100) / 100;
 
+// Cycle-9 F28: has the payday a stream expects on `date` landed? A stream's
+// `last` is its newest deposit. A deposit within PAYDAY_LANDED_DAYS before the
+// expected date IS that payday (a day early, or today); an older `last` means
+// it hasn't arrived — every cadence here pays at least a week apart.
+const PAYDAY_LANDED_DAYS = 5;
+function paydayLanded(stream, date) {
+  const last = stream && stream.last ? Date.parse(String(stream.last).slice(0, 10) + "T00:00:00Z") : NaN;
+  const on = Date.parse(date + "T00:00:00Z");
+  if (!Number.isFinite(last) || !Number.isFinite(on)) return false;
+  return (on - last) / 86400000 <= PAYDAY_LANDED_DAYS;
+}
+
 function projectCashFlow(inputs, { days }) {
   const { today, incomeStreams = [], bills = [], left_out = [], startingBalance = 0, avgDailySpend = 0, dowSpend = {} } = inputs;
   const end = addDaysStr(today, days);
@@ -275,10 +287,23 @@ function projectCashFlow(inputs, { days }) {
     }),
     left_out: left_out.map((b) => ({ ...itemOf(b), reason: b.reason })),
   };
+  // The projection starts tomorrow, on today's balance. A payday expected
+  // TODAY that hasn't landed was therefore in neither — on payday morning the
+  // forecast dropped a whole paycheck, and the low-cash alert could fire and
+  // then clear in silence once the deposit synced (cycle-9 F28). It is carried
+  // to the first projected day; a payday that has landed is in the balance.
   const incomeByDate = new Map();
+  const carriedIncome = [];
+  const firstDay = addDaysStr(today, 1);
   for (const stream of incomeStreams) {
     for (const date of incomeEventsBetween(stream, today, end)) {
-      incomeByDate.set(date, (incomeByDate.get(date) || 0) + stream.amount);
+      let on = date;
+      if (date === today) {
+        if (paydayLanded(stream, today)) continue;
+        on = firstDay;
+        carriedIncome.push({ source: stream.source, amount: cents(stream.amount), expected_date: today, projected_date: firstDay });
+      }
+      incomeByDate.set(on, (incomeByDate.get(on) || 0) + stream.amount);
     }
   }
 
@@ -334,6 +359,8 @@ function projectCashFlow(inputs, { days }) {
     ending_balance: (projection[projection.length - 1] && projection[projection.length - 1].balance) || 0,
     surplus_shortfall: cents(totalIncome - totalBills - totalDiscretionary),
     recurring_income: recurringIncome,
+    // Paydays expected today that haven't landed, counted on day 1 (F28).
+    carried_income: carriedIncome,
     by_week: byWeek,
     forecast_items: forecastItems,
     projection,
@@ -351,4 +378,4 @@ async function getCashFlowForecast(pool, { days, today = todayStr() } = {}) {
   return projectCashFlow(await getCashFlowInputs(pool, { today }), { days });
 }
 
-module.exports = { getCashFlowInputs, projectCashFlow, firstBelow, getCashFlowForecast, isCardAutopay, isInternalMove, transferTreatment, classifyBills, CARD_PAYMENT_RE, CADENCE_DAYS, DETECT_KEY_T };
+module.exports = { getCashFlowInputs, projectCashFlow, firstBelow, getCashFlowForecast, paydayLanded, PAYDAY_LANDED_DAYS, isCardAutopay, isInternalMove, transferTreatment, classifyBills, CARD_PAYMENT_RE, CADENCE_DAYS, DETECT_KEY_T };

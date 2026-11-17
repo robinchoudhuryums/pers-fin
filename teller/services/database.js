@@ -666,6 +666,12 @@ async function runMigrationsOnce() {
     // subscription. Forecast-only; the detectors' upserts never write either.
     await client.query(`ALTER TABLE recurring_transfers ADD COLUMN IF NOT EXISTS forecast_treatment TEXT NOT NULL DEFAULT 'auto' CHECK (forecast_treatment IN (${inList(CHECK_LISTS.recurring_transfers.forecast_treatment)}))`);
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS forecast_ignore BOOLEAN NOT NULL DEFAULT false");
+    // Cycle-9 F22: the user chose this row's category (Subscription / Utility) —
+    // detection's Subscription → Utility promotion leaves it alone.
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS category_user_set BOOLEAN NOT NULL DEFAULT false");
+    // Cycle-9 F21: the early price-rise alert's own memory (the amount it last
+    // announced); price_alerted_amount stays the re-anchored rise's.
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS early_price_alerted_amount NUMERIC(12,2)");
     // Per-sistant integration: webhook target + enabled flag.
     // (The webhook HMAC secret is added below as encrypted BYTEA — older DBs
     // may have a plaintext TEXT column from before; that path migrates it.)

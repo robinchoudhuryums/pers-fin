@@ -18,6 +18,32 @@ Updated: 2026-11-17
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 3 (DONE, 2026-11-17) — forecast and detection accuracy:** block `.cycle/blocks/9-batch3-broad-implement.md`.
+  F20 (scripts/transfer-keywords.js is the one keyword source; detect-subscriptions skips a row the transfer classifier
+  takes — unless the user dismissed that transfer — and retires active non-manual subscription rows keyed on a transfer
+  merchant), F28 (projectCashFlow carries today's unlanded payday to day 1 — paydayLanded, carried_income; the Teller
+  per-enrollment sync calls refreshTellerEnrollmentBalances, extracted from syncAllBalances), F21 (a new row's prior price
+  is its own series'; isOtherPlan → the upsert's $11 records no price change for a second plan under one key; new column
+  early_price_alerted_amount — each rule writes its own memory and reads both; the early rule skips an amount already
+  being charged), F22 (new column category_user_set; detection's promotion adds AND NOT category_user_set), F23
+  (rollManualSubscriptions in detection and GET /api/subscriptions), F24 (exact rules compare TRIMmed values in
+  merchant-rename and both categorize sites). New tests/cycle9-b3.test.js (35) and tests/contract/c9-batch3 (9); six
+  older tests' pins / stubs updated. npm test 3298 (180 files, Perfin 2555), contract 349, Playwright 93 / 93, five
+  shifted clocks, the contract file fails 7 of 9 pre-fix. Net +1 (F20, F28 − 1 Low).
+  - **Where I left off:** Batch 3 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
+    for Batches 2 and 3 — run `/sync-docs` (each block's DOCUMENTATION UPDATES NEEDED has the list; the new file
+    scripts/transfer-keywords.js needs a Subsystems entry). Next: `/broad-implement Batch 4` (F39 F40 F41 F42 F43 — AI
+    audit trust).
+  - **Decisions:** F20 — the transfer detector is unchanged and wins; a dismissed transfer is the user's way to keep a
+    series as a subscription (so a duplicate the user already resolved by dismissing the transfer isn't lost). F21 —
+    "another plan" = the new amount was already charged within two cadences up to the old price's last charge (same
+    price = within a cent or 0.5%). F28 — only TODAY's payday is carried (the plan's wording); a late one is a follow-on.
+    F23 — the anchor (last_charged) is kept so the day of month doesn't drift.
+  - **Follow-ons:** a paycheck a day late is still dropped; carried_income isn't shown on the dashboard; a two-plan key
+    still has one row per cadence; a variable-amount subscription alerts on each $1+ increase; daily-sync's two sync steps
+    leave transactions newer than balances for minutes; a raw-description transfer can't become a subscription by
+    dismissing it. OPERATOR: after the first detection run, look for real subscriptions that moved to Recurring Transfers
+    (dismiss the transfer to bring one back).
 - **Cycle 9 Batch 2 (DONE, 2026-11-17) — pre-auth and scheduler safety:** block `.cycle/blocks/9-batch2-broad-implement.md`.
   F3 (auth.js: `verify` takes a string only, the PIN a string or number — a `j:{}` cookie or a PIN object no longer
   throws in an async handler), F2 (the missed-jobs push can fire: job-runner `onLoad` hands its first read of
@@ -31,8 +57,7 @@ implement and reflect sessions only set Phase.)
   (179 files, Perfin 2520), contract 340, browser smoke 10 / 10, four shifted clocks, mutation 41 of 47 fail pre-fix.
   Net −1 (0 fixes this month − 1 Low: keep-alive.yml is red while its secret is wrong or the server is down).
   - **Where I left off:** Batch 2 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
-    for Batch 2 — run `/sync-docs` (the list is in the block's DOCUMENTATION UPDATES NEEDED). Next: `/broad-implement
-    Batch 3` (F20 F28 F21 F22 F23 F24 — forecast and detection accuracy).
+    for Batch 2 — run `/sync-docs` (the list is in the block's DOCUMENTATION UPDATES NEEDED). Batch 3 followed (above).
   - **Decisions:** F2 judges the outage from last_ran_at (the claim stamp) rather than the heartbeat, because heartbeats
     are flushed only while the user is active (a "read before flush" would false-alarm after the user was away with the
     process up, and lose the alert when a dashboard load flushed first). Gated jobs are left out of the outage list.
@@ -70,7 +95,7 @@ implement and reflect sessions only set Phase.)
       Perfin: `/api/….js|.css` skips the PIN gate when API_KEY is unset — teller/server.js:154), F10 (keep-alive.yml green
       when its schedule call is rejected; keep-alive's fallback cached 6 h), F11 (shutdown during the runner's 20 s gap logs a
       false "still running" error).
-    - **Batch 3 — forecast and detection accuracy:** F20 (a series detected as BOTH subscription and transfer — the two
+    - **Batch 3 (DONE) — forecast and detection accuracy:** F20 (a series detected as BOTH subscription and transfer — the two
       keyword lists differ — is billed twice in the forecast), F28 (the forecast starts tomorrow, so today's unlanded paycheck
       is dropped → false low-cash alert; Teller per-enrollment sync doesn't refresh balances), F21 (price-rise watchdog:
       prior_amount is the merchant's previous charge of any amount → false / monthly alerts), F22 (Utility → Subscription

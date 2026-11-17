@@ -26,6 +26,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 router.get("/api/subscriptions", async (req, res) => {
   const filter = req.query.filter || "active";
   try {
+    // F23: a manual subscription's next date moves on when the list is read
+    // too, so the page is right without waiting for a detection run. Fail-soft.
+    try { await rollManualSubscriptions(); }
+    catch (err) { console.error("Manual subscription roll-forward error:", err.message); }
     let where;
     switch (filter) {
       case "dismissed": where = "WHERE ds.is_dismissed = true AND ds.cancelled_at IS NULL"; break;
@@ -189,7 +193,9 @@ router.patch("/api/subscriptions/:id/category", async (req, res) => {
   }
   try {
     const result = await pool.query(
-      "UPDATE detected_subscriptions SET category = $1, updated_at = now() WHERE id = $2 RETURNING *",
+      // category_user_set (cycle-9 F22): detection never re-flips a category
+      // the user chose — Utility → Subscription used to be undone by the next run.
+      "UPDATE detected_subscriptions SET category = $1, category_user_set = true, updated_at = now() WHERE id = $2 RETURNING *",
       [category, req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
@@ -207,23 +213,51 @@ router.patch("/api/subscriptions/:id/category", async (req, res) => {
 const transactionRoutes = require("./transactions");
 router.use(transactionRoutes);
 
+// Manual subscriptions (cycle-9 F23): detection never touches a manual row, so
+// its next_expected stayed the first date ever computed — after one cycle it
+// read as overdue forever and never counted as upcoming (the Subscriptions
+// page, Per-sistant's widget, the Sheets tabs). Move a past next_expected to
+// the series' first date on or after today. The series keeps its anchor
+// (last_charged — the day the subscription was added), so a monthly bill added
+// on the 31st stays "the 31st, clamped" (INV-70). A date that is today stays.
+async function rollManualSubscriptions(db = pool, today = todayStr()) {
+  const due = await db.query(
+    `SELECT id, cadence_days, last_charged::text AS anchor, next_expected::text AS next
+       FROM detected_subscriptions
+      WHERE source = 'manual' AND is_active = true AND cancelled_at IS NULL
+        AND next_expected IS NOT NULL AND next_expected < $1::date`, [today]);
+  let rolled = 0;
+  for (const s of (due && due.rows) || []) {
+    const cadence = parseInt(s.cadence_days, 10);
+    if (!(cadence > 0)) continue;
+    // One cadence (plus a month of slack for clamped month ends) always holds
+    // the next occurrence.
+    const next = seriesOccurrences(s.anchor || s.next, null, cadence, today, addDaysStr(today, cadence + 31))[0];
+    if (!next || next === s.next) continue;
+    await db.query("UPDATE detected_subscriptions SET next_expected = $2, updated_at = now() WHERE id = $1 AND source = 'manual'", [s.id, next]);
+    rolled++;
+  }
+  return rolled;
+}
+
 // runSubscriptionDetection — orchestration extracted from POST /api/detect so
 // the scheduler can invoke detection in-process. Returns the same shape the
 // HTTP handler used to send: { detected_count, subscriptions }.
 async function runSubscriptionDetection() {
   const detected = await detectSubscriptions(pool);
+  // F23: manual subscriptions have no charges to detect — move their next date on.
+  try { await rollManualSubscriptions(); }
+  catch (err) { console.error("Manual subscription roll-forward error:", err.message); }
   for (const sub of detected) {
     const cat = categorizeSubscription(sub.display_name);
     const dbCategory = cat === "utility" ? "utility" : "subscription";
-    // Only promote 'subscription' → 'utility' on re-detection. The WHERE
-    // clause's `category = 'subscription'` guard intentionally preserves
-    // any user-set classification: a row already marked 'utility' (either
-    // by an earlier auto-detect or via PATCH /api/subscriptions/:id/category)
-    // is never re-flipped, even if categorizeSubscription happens to
-    // re-classify the merchant differently on a later run.
+    // Only promote 'subscription' → 'utility' on re-detection, and never a
+    // row whose category the user set (category_user_set — cycle-9 F22: the
+    // `category = 'subscription'` guard alone protected a user's Utility but
+    // not a user's Subscription, which the next run flipped back to Utility).
     if (dbCategory !== "subscription") {
       await pool.query(
-        "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription'",
+        "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription' AND NOT category_user_set",
         [dbCategory, sub.merchant_key]
       );
     }
@@ -303,7 +337,8 @@ async function runSubscriptionWatchdog(db = pool) {
       AND amount_changed AND prior_amount > 0 AND amount > prior_amount
       AND (amount - prior_amount >= $1 OR (amount - prior_amount) / prior_amount >= $2)
       AND last_charged >= CURRENT_DATE - 45
-      AND price_alerted_amount IS DISTINCT FROM amount`, [PRICE_RISE_ABS, PRICE_RISE_PCT]);
+      AND price_alerted_amount IS DISTINCT FROM amount
+      AND early_price_alerted_amount IS DISTINCT FROM amount`, [PRICE_RISE_ABS, PRICE_RISE_PCT]);
   for (const r of rises.rows) {
     const sent = await sendToAll({
       title: `${r.display_name} went up from ${money(r.prior_amount)} to ${money(r.amount)}`,
@@ -323,8 +358,14 @@ async function runSubscriptionWatchdog(db = pool) {
   // plan, and never for a yearly one. A later charge from the same merchant key,
   // within 45 days, between 10% and 50% above the subscription's amount, is read
   // as the new price. Utilities are left out (a winter bill isn't a price rise).
-  // Once per price: price_alerted_amount holds the charged amount, which the
-  // rule above then matches when detection re-anchors on it.
+  // Once per price. Cycle-9 F21: this rule keeps its OWN memory
+  // (early_price_alerted_amount) — sharing price_alerted_amount with the rule
+  // above let each erase the other's, so a merchant key that carries several
+  // plans (Apple, Google) alerted again every month. The rule above reads this
+  // column too, so a price announced here isn't announced again when detection
+  // re-anchors on it. And an amount that was ALREADY being charged in the two
+  // cadences up to the subscription's last charge is another plan under the
+  // same key, not a new price (the detector's isOtherPlan rule).
   const early = await db.query(`
     SELECT ds.id, ds.display_name, ds.amount, c.amount AS charged
     FROM detected_subscriptions ds
@@ -340,7 +381,15 @@ async function runSubscriptionWatchdog(db = pool) {
     ) c ON true
     WHERE ds.is_active AND NOT ds.is_dismissed AND ds.cancelled_at IS NULL
       AND ds.amount > 0 AND ds.category <> 'utility'
-      AND ds.price_alerted_amount IS DISTINCT FROM c.amount`);
+      AND ds.price_alerted_amount IS DISTINCT FROM c.amount
+      AND ds.early_price_alerted_amount IS DISTINCT FROM c.amount
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions t
+        WHERE t.amount > 0 AND t.pending = false
+          AND ${SUB_MERCHANT_KEY_SQL} = ds.merchant_key
+          AND t.date <= ds.last_charged AND t.date >= ds.last_charged - 2 * ds.cadence_days
+          AND ABS(t.amount - c.amount) <= GREATEST(0.01, 0.005 * c.amount)
+      )`);
   for (const r of early.rows) {
     const sent = await sendToAll({
       title: `${r.display_name} went up from ${money(r.amount)} to ${money(r.charged)}`,
@@ -349,7 +398,7 @@ async function runSubscriptionWatchdog(db = pool) {
       data: { url: "/subscriptions" },
     });
     if (!sent.logged) continue;
-    await db.query("UPDATE detected_subscriptions SET price_alerted_amount = $2 WHERE id = $1", [r.id, r.charged]);
+    await db.query("UPDATE detected_subscriptions SET early_price_alerted_amount = $2 WHERE id = $1", [r.id, r.charged]);
     out.price_rises++;
   }
   return out;
@@ -1678,6 +1727,7 @@ function paidKey(billSource, billId, paidDate) {
 module.exports = router;
 module.exports.runSubscriptionDetection = runSubscriptionDetection;
 module.exports.runSubscriptionWatchdog = runSubscriptionWatchdog;
+module.exports.rollManualSubscriptions = rollManualSubscriptions;
 module.exports.buildBillCalendarIcs = buildBillCalendarIcs;
 module.exports.icsFold = icsFold; // test seam (cycle-7 F59)
 module.exports.paidKey = paidKey;

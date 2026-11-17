@@ -151,8 +151,10 @@ async function runCategorizeOnce() {
       // produced: REPLACE(REPLACE(REPLACE(LOWER($2),'\','\\'),'%','\%'),'_','\_')
       // with ESCAPE '\'.)
       const escPat = "REPLACE(REPLACE(REPLACE(LOWER($2), '\\', '\\\\'), '%', '\\%'), '_', '\\_')";
+      // An exact rule compares TRIMmed values (cycle-9 F24): the pattern is
+      // stored trimmed, so a merchant with a trailing space never matched.
       const cond = rule.match_type === "exact"
-        ? "LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) = LOWER($2)"
+        ? "TRIM(LOWER(COALESCE(user_merchant_name, merchant_name, name, ''))) = LOWER(TRIM($2))"
         : rule.match_type === "starts_with"
         ? `LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE ${escPat} || '%' ESCAPE '\\'`
         : `LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE '%' || ${escPat} || '%' ESCAPE '\\'`;
@@ -840,7 +842,7 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
       const escPat = "REPLACE(REPLACE(REPLACE(LOWER($1), '\\', '\\\\'), '%', '\\%'), '_', '\\_')";
       let condition;
       if (rule.match_type === "exact") {
-        condition = "LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) = LOWER($1)";
+        condition = "TRIM(LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, ''))) = LOWER(TRIM($1))"; // F24
       } else if (rule.match_type === "starts_with") {
         condition = `LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE ${escPat} || '%' ESCAPE '\\'`;
       } else {
