@@ -15,7 +15,7 @@ Scope: broad (Nov 2026 broad scan — all non-frozen subsystems, weighted to the
 Updated: 2026-11-13
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
-/targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
+/targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
 - **Cycle 9 Batch 1 (DONE, 2026-11-13) — backups and CI can't-wait:** block `.cycle/blocks/9-batch1-broad-implement.md`.
@@ -25,8 +25,13 @@ implement and reflect sessions only set Phase.)
   2026-11-20). New tests/cycle9-b1.test.js runs both backup scripts in bash. npm test 3216 (also under eight shifted
   clocks), contract 340 on a local Postgres, e2e not run. Net −1 (1 fix − 2 Low). /calendar.ics rate limit left out on
   purpose (follow-on).
-  - **Where I left off:** Batch 1 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR yet). Next: `/sync-docs`
-    (CLAUDE.md / README: the backup verify, the token check, counts 3216 / 178 files), then `/broad-implement Batch 2`
+  - **Where I left off:** Batch 1 and its `/sync-docs` committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR
+    yet). Docs synced 2026-11-17: CLAUDE.md (the two-step backup verify in Operator state item 4 and deploy/vps, the
+    calendar-token check, tests/cycle9-b1.test.js, counts 3216 / 178 files / Perfin 2473, two new Key Design Decisions —
+    calendar-proof tests and never piping a verify — a cycle-9 Known Open Issues entry listing every open batch, INV-103 /
+    INV-126 wording, the Google Sheets env vars, and stale text fixed: the cosmic transition, SSO "on both apps", the
+    knowledge-reindex follow-on), README (counts, backups, 13 modules, archives, the dial), apps/per-sistant/CLAUDE.md
+    (offline support is not active — F51). Next: `/broad-implement Batch 2`
     (F3 F2 F5 F4 F10 F11 — pre-auth and scheduler safety). The scan's report (F1–F79, G1–G5, ST1–ST5, Batches 1–10,
     E1–E3) is in the cycle-9 scan session; Batches 2–10 and the Deferred list (F7 F25 F29 F51 F57 F62 F64) are open.
     OPERATOR: set the three backup secrets, re-enable Database Backup, run it once and do a restore drill.

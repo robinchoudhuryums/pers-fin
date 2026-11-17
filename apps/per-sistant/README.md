@@ -146,6 +146,8 @@ Personal assistant tool for task management, email scheduling, and note-taking. 
 - **Download/delete**: Manage attachments per entity
 
 ### Offline Support
+> **Not active today:** the service worker is served at `/sw.js` but no page registers it, so the caching and the mutation queue below don't run in a browser (an offline write simply fails). Tracked in the root `CLAUDE.md` → Known Open Issues (cycle-9 F51).
+
 - **Service worker**: Caches pages and API responses
 - **Mutation queue**: Queues changes for sync when back online
 - **Offline banner**: Visual indicator when disconnected
@@ -277,7 +279,7 @@ Installable as a home screen icon:
 - **iPhone**: Open in Safari → Share → "Add to Home Screen"
 - **Android**: Chrome → Menu → "Install app"
 - **Mobile-optimized**: Bottom navigation bar, hamburger menu, swipe between pages, floating action button
-- **Offline support**: Service worker caches pages and API responses, queues mutations for sync
+- **Offline support** (not active today — the worker is never registered; see Offline Support above): Service worker caches pages and API responses, queues mutations for sync
 
 ### Security
 - **Helmet CSP**: Content Security Policy with strict directives — all inline event handlers eliminated via event delegation pattern (`bindEvents()`/`onDelegate()`), enabling `script-src-attr: 'none'`

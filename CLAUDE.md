@@ -264,7 +264,9 @@ teller/
                            local:plaid-config (with PLAID_CLIENT_ID: fail without
                            PLAID_ENV's PLAID_SECRET_*, warn on an unknown env or
                            sandbox with GOOD items); local:teller-webhook-secret
-                           (a part < 16). backupCheck (local:backup, replaced
+                           (a part < 16); local:calendar-feed (cycle-9 F12 — a SET
+                           CALENDAR_FEED_TOKEN < 24 chars → warn, else ok; unset
+                           stays localChecks' info note). backupCheck (local:backup, replaced
                            serverBackupCheck) runs under SERVER_BACKUPS AND whenever
                            the GitHub checks are off: user_settings.last_backup_at
                            + last_backup_source (server / github / github-perfin-only)
@@ -1556,9 +1558,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3204 tests as of latest); use
+  Perfin and Per-sistant test files (3216 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3204 tests across 177 test files (incl.
+  Current count: 3216 tests across 178 test files (incl.
+  `tests/cycle9-b1.test.js` — cycle 9 Batch 1: db-backup.yml's `backup_db` and a copy of `deploy/vps/backup.sh` RUN in
+  bash with the real gpg and stubbed Postgres tools (a `pg_restore --list` that, like the real one, reads only the start
+  of its input): the old decrypt-into-pg_restore pipe fails on a 2 MB dump, the new function verifies it and leaves only
+  the .dump.gpg, a truncated .gpg / an unreadable archive / a failed pg_dump each fail with nothing left behind and no
+  host name printed (five pg_dump messages → the five reasons); backup.sh keeps and stamps two verified files, refuses a
+  truncated one (not kept, not stamped) and an archive with no tables; source pins for both scripts; the
+  CALENDAR_FEED_TOKEN length check (warn without the value or its length, ok, unset, reaching data-health). The bash half
+  skips without bash + GNU coreutils + gpg;
   `tests/opening-screen.test.js` — the opening screen (direction D): POST /login's JSON answer to the keypad
   (ok + the safeReturnTo'd redirect, 401 / 429 errors, a form post still redirecting / rendering), transition.js run in
   a vm over a fake DOM (the dial's 120 / 48 ticks and arc, setProgress, the entry overlay's fill → spin → navigate,
@@ -2867,7 +2877,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   forced-command target of `.github/workflows/deploy-vps.yml`: validates the tag,
   pulls, restarts, waits for the image healthcheck, rolls back to the previous
   tag on failure), `backup.sh` (nightly gpg-AES256 dumps in db-backup.yml's
-  format, verified with `pg_restore --list`, rclone offsite, healthchecks ping)
+  format, each verified in two steps — decrypted in full to a temporary file, so
+  gpg's integrity check decides, then read with `pg_restore --list`; cycle-9 F9: the
+  old pipe discarded gpg's exit status and a truncated file passed — rclone
+  offsite, healthchecks ping)
   and `RUNBOOK.md` (harden → rehearse → cutover from Neon with `pg_dump` /
   `pg_restore -L` minus extension entries, `--role=app` → verify counts + token
   decryption → repoint → rollback → decommission). `backup.sh` stamps
@@ -4421,7 +4434,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   needed) the go-live checks — a Teller cert missing while Teller connections exist or
   expiring within 30 days, both apps on one database, a PUBLIC_URL that isn't a bare https
   origin, a missing / short API_KEY, a short SHELL_SECRET, PLAID_ENV without its secret or
-  sandbox with real connections, a short Teller webhook secret — and, whenever the GitHub
+  sandbox with real connections, a short Teller webhook secret, a CALENDAR_FEED_TOKEN
+  shorter than 24 characters (cycle-9 F12) — and, whenever the GitHub
   checks are off, the last backup recorded by db-backup.yml or backup.sh (none or older
   than 36h → fail). Warn / fail checks also reach the dashboard strip, and the 6-hour
   watchdog pushes one "Operator checks: N need attention" notification (tag
@@ -4730,7 +4744,9 @@ shared session cookie. Cross-app surface area today:
 **Legacy two-services integration** (still in code as standalone fallback):
 - **Cross-app SSO**: HMAC-signed token exchange (60s expiry, per-token nonce
   for replay protection). Format: `sso:<timestamp>:<nonce>:<signature>`.
-  Required `SSO_SECRET` set on both apps. Unused under the unified shell.
+  Perfin's side only (`POST /api/sso/generate` / `/validate`, needs `SSO_SECRET`) —
+  Per-sistant has no SSO route, so nothing consumes or issues the other half.
+  Unused under the unified shell.
 - **Webhook system**: HMAC-signed event notifications. Perfin itself sends only
   the four email events and `test`; `POST /api/persistent/webhook/send` can send
   any event by hand (the receiver stores the email events and logs the rest).
@@ -4825,9 +4841,19 @@ on the operator's machine (or fed via env vars) before the app boots:
    DBs → gpg symmetric AES-256 `.dump.gpg` artifacts, 90-day retention; runs
    from GitHub's runners so it works while Render sleeps). **Not set as of Oct
    2026 — no backup has ever been taken (F3); the workflow's FIRST step now
-   names any missing secret.** Each backup is VERIFIED in the run (the
-   encrypted file is decrypted and its archive read with `pg_restore --list`);
-   gpg's integrity check makes a damaged or altered file fail to decrypt.
+   names any missing secret.** Each backup is VERIFIED in the run in two steps
+   (cycle-9 F1): the encrypted file is decrypted IN FULL to a file — gpg's
+   integrity check makes a damaged, truncated or altered file fail there — and
+   that file's archive is then read with `pg_restore --list`. (Until cycle 9 the
+   two were one pipe under `pipefail`: `pg_restore --list` stops reading after the
+   table of contents, gpg died on the broken pipe, and the step failed on any dump
+   larger than about one pipe buffer — before the upload. No run had ever got that
+   far, so it was never seen.) A failed `pg_dump` prints which kind of failure it
+   was (client older than the server / credentials refused / unreachable / a table
+   it can't read) and never pg_dump's own message, which names the database host
+   (F12). After setting the secrets, run the workflow once by hand (Actions →
+   Database Backup → Run workflow) and confirm an artifact with two `.dump.gpg`
+   files and "Backup recorded.".
    Restore with `gpg --decrypt --output perfin.dump perfin-YYYY-MM-DD.dump.gpg`
    then `pg_restore` (runbook in the workflow header). Keep a copy of the
    backup passphrase OUTSIDE GitHub — the artifacts are unreadable without it.
@@ -4973,7 +4999,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3204 tests passing across 177 test files (Perfin 2461 + Per-sistant 743), plus the real-Postgres route contract suite (340 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
+- 3216 tests passing across 178 test files (Perfin 2473 + Per-sistant 743), plus the real-Postgres route contract suite (340 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5805,7 +5831,7 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 - `SHELL_PIN` — unified PIN that fronts both apps (use at least 6 digits — boot warns otherwise; a global 30-failures/hour ceiling locks PIN login for 30 min, PSC-14). Compared as fixed-length SHA-256 digests (`auth.safeEqual` — the old padded raw-buffer compare threw on a multibyte PIN of the right length and crashed the process before login, cycle-7 F1), with a 750ms throttle on incorrect attempts, backed by an IP rate limiter (10 failed attempts / 15 min) on `/login` and the biometric authenticate endpoints.
 - `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. **Required — the shell refuses to boot without it** (PSC-11). Rotating it invalidates every active session.
 - `SHELL_PORT` — optional listener port override (defaults to `PORT` or `3000`)
-- `CALENDAR_FEED_TOKEN` — optional long random token enabling the public `/calendar.ics` bill feed (unset = feature off)
+- `CALENDAR_FEED_TOKEN` — optional long random token enabling the public `/calendar.ics` bill feed (unset = feature off). Use at least 24 characters (`openssl rand -hex 32`): the route is public and has no rate limit, so the token's length is its only protection — a shorter one is an Operator Checks warning (cycle-9 F12).
 - `GITHUB_OPS_TOKEN` / `GITHUB_OPS_REPO` — optional (cycle-7 G1): a fine-grained, READ-ONLY GitHub token (Actions, Metadata, Secrets) and the repo as `owner/repo`, so Settings → Sync Health → Operator Checks can see disabled / failing backstop workflows, the last successful backup, missing workflow secrets (names only) and repo visibility. Unset = GitHub checks off. Never stored, logged or returned.
 
 ### Databases (one per sub-app)
@@ -5850,6 +5876,10 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 - `ALWAYS_ON` — `true` when the host never sleeps: neither app starts the keep-alive ping (`startKeepAlive` returns false), both `/api/keep-alive-schedule` endpoints report `enabled: false` (so `keep-alive.yml` stops pinging), Settings → Keep-Alive shows a note instead of its controls (`GET /api/settings` returns `always_on`), and Operator Checks lists the Keep Alive workflow as "not needed" (info).
 - `HEARTBEAT_URL` — optional (roadmap T1.4): a healthchecks.io ping URL (period 1 hour, grace 1 hour). Pinged every 30 minutes by `services/uptime.js`, or `<url>/fail` while a scheduled job's last run in this process failed; the service alerts on /fail and when pings stop. Not activity-gated and no database call. On a sleeping host (Render free tier) the pings stop whenever it sleeps — use it on an always-on server or with keep-alive on. Unset = an info line in Operator Checks.
 - `SERVER_BACKUPS` — `true` when `deploy/vps/backup.sh` takes the backups: Operator Checks drops the GitHub backup check and the Database Backup workflow's secrets, lists that workflow as "not needed", and adds the `local:backup` check on `user_settings.last_backup_at` (fail when missing or older than 36h; needs no GitHub token — since cycle-8 E4a the same check also runs whenever the GitHub checks are off, reading the stamp db-backup.yml writes).
+
+### Google Sheets (Perfin — optional)
+- `GOOGLE_SHEETS_ID` — the spreadsheet the server sync writes (`scripts/sheets-sync.js`); unset = Sheets sync off.
+- `GOOGLE_SERVICE_ACCOUNT_KEY` — the service account's JSON key (share the spreadsheet with its email as Editor). Both are read when `scripts/sheets-sync.js` loads.
 
 ### Plaid (Perfin — investments + transactions for banks Teller doesn't cover)
 - `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — Plaid API credentials
@@ -7012,6 +7042,26 @@ SX3-pinned — the Sheets Income tab.
   server.js mount order. A bug a real-code test exposes is recorded as a
   node:test `{ todo }` (or a guard `KNOWN_GAPS` entry) in a test-only batch and
   fixed separately — never by weakening the assertion.
+- **A test's result never depends on the calendar (cycle-9 F59).** A fixture
+  date is either derived from the clock the code under test reads
+  (`fq.todayStr()` / `Date.now()` plus an offset) or the clock is pinned for
+  that block (`mock.timers.enable({ apis: ["Date"], now })` from node:test —
+  `todayStr()` reads `new Date()`, so the pin reaches it). Never a literal date
+  compared with a window measured from the real clock (a row dated 2026-10-20
+  inside "the last 30 days" passed until 2026-11-20), never `setMonth(month − 1)`
+  on today's day for "last month" (it overflows on the 29th–31st — use
+  `previousMonthKey(currentMonth())`), and remember a monthly series steps by
+  CALENDAR month (INV-70): "tomorrow, then nothing for 30 days" is false in
+  February. Before merging a test that reads the date, run its file under a
+  shifted clock (a 31st, mid-February, Jan 2, Feb 29).
+- **A verify step never pipes a writer into a reader that stops early (cycle-9
+  F1 / F9).** `gpg --decrypt file | pg_restore --list` under `pipefail` fails on
+  any real-size dump (pg_restore exits after the table of contents and gpg dies
+  on the broken pipe), and adding `|| true` to survive that discards gpg's exit
+  status — the integrity check the verify exists for. Decrypt to a file with the
+  exit status checked, then read the file. Both backup scripts are run for real
+  in `tests/cycle9-b1.test.js`; a workflow's bash is only trustworthy once it has
+  been executed on realistic input (the pipe passed on a 50 KB dump).
 - **No new bare catch in server code (cycle-7 policy response).** A catch that
   swallows an error must log it or carry a comment saying why ignoring it is
   safe. `tests/scan-oct-batch3.test.js` scans the server-side files (teller
@@ -7325,9 +7375,10 @@ SX3-pinned — the Sheets Income tab.
   why `/perfin/api/sync` works from cron even though it's behind the
   shell auth gate.
 - **Cross-app transition animations are auto-init modules.** Both the
-  cosmic mask reveal (Per-sistant entry) and the Iron Man materialize
+  shell dial's unlock (Per-sistant entry — it replaced the cosmic mask
+  reveal) and the Iron Man materialize
   (Perfin entry) live as CSS+JS pairs under `shell/public/`. Each JS
-  file scans for a marker attribute on init (`[data-atrans]` for cosmic,
+  file scans for a marker attribute on init (`[data-atrans="dial"]` for the dial,
   `[data-perfin-materialize]` for Iron Man), populates per-overlay
   decorations once, and binds click handlers that activate the overlay
   then navigate. Pages that want the animation just add the attribute
@@ -7549,6 +7600,89 @@ SX3-pinned — the Sheets Income tab.
   by `tests/scan-sept-fixes.test.js`, which mounts modules in server.js order).
 
 ## Known Open Issues
+**Cycle 9 (Nov 2026 broad scan) — open until their batches run** (79 findings, F1–F79; no Critical, two High — both in
+Batch 1; the batch plan with every finding's one-line description is in `.cycle/STATE.md`, the per-batch summaries in
+`.cycle/blocks/9-*-broad-implement.md`). **Batch 1 is done** (`.cycle/blocks/9-batch1-broad-implement.md`): F1 (the
+backup workflow's verify failed on every real-size dump), F9 (backup.sh discarded gpg's exit status), F12 (pg_dump's
+message withheld from logs; a short CALENDAR_FEED_TOKEN warns), F59 (six date-dependent test files — `npm test` would
+have gone red on 2026-11-20). Batch 1 follow-ons: `/calendar.ics` still has no rate limit (left out on purpose — a 24+
+character token can't be guessed and a limiter could block a calendar app's polling); db-backup.yml no longer shows
+anything pg_dump writes to stderr, warnings on a successful dump included, so an unclassified failure has to be
+reproduced locally; backup.sh needs room for one plaintext copy of each dump while it verifies; the shifted-clock
+preload used to check F59 is not in the repo (ST2). OPERATOR: set the three backup secrets, re-enable Database Backup,
+run it once by hand and do one restore drill; if production's CALENDAR_FEED_TOKEN is under 24 characters, replace it
+(one "Operator checks" push says so).
+Still open, by batch:
+- **Batch 2 — pre-auth and scheduler safety:** a non-string session cookie (`shell_session=j:{}`) or a PIN object with
+  no `toString` makes an async shell handler throw — a hung request and a false "New server error" push (F3); the
+  "Scheduled jobs missed" push can never fire, because the runner ticks every job before the watchdog flushes and reads
+  (F2); a failed job outcome sticks once the job stops running its body — a digest switched off after failing, the
+  quiet-hours release after one failed push, a watchdog timeout (F5); standalone Perfin lets `/api/….js` / `.css` past
+  its PIN gate when API_KEY is unset (F4); keep-alive.yml stays green when its schedule call is rejected, and a failed
+  keep-alive settings read is cached as "disabled" for 6 h (F10); a shutdown during the runner's 20 s gap logs a false
+  "still running" error (F11).
+- **Batch 3 — forecast and detection accuracy:** a steady mortgage payment, brokerage contribution or savings transfer
+  is detected as BOTH a subscription and a recurring transfer (the two keyword lists differ) and billed twice in the
+  forecast (F20); the forecast starts tomorrow, so a paycheck expected today that hasn't synced is in neither the balance
+  nor the projection — a false "Low cash ahead" on payday (F28); the price-rise watchdog compares with the merchant's
+  previous charge of ANY amount (false alert on a new subscription, monthly alerts on a multi-plan merchant key) (F21);
+  Utility → Subscription is undone by the next detection run (F22); a manual subscription's next date never advances
+  (F23); exact rules store the trimmed pattern but compare the untrimmed merchant (F24).
+- **Batch 4 — AI audit trust:** the audit raises false criticals on correct text — its subscription total includes
+  utilities (the prompt's doesn't), any percentage near "savings rate" is read as the rate, monthly-equivalent figures
+  are compared with month-to-date spend (F39); the cash-plan check lets "per paycheck" bleed onto the next figure, lacks
+  the contribution-room amounts and passes an invented amount when the plan recommends nothing (F40); Ask cuts a tool
+  result at 12,000 characters, dropping a large plan's what-if comparison (F41); the entity check doesn't know account
+  names, and monthly totals are fetched but never checked (F42); an empty insight run stamps `insights_last_run`, so the
+  retry waits a full cadence (F43).
+- **Batch 5 — notifications and settings:** with a quiet window of 12 h or more, pushes held early in it are marked
+  expired at release and never pushed (F44); the rent payment-due push tests only this month's window, so an unpaid
+  earlier month gets none from the 1st until the lead window opens, and its item key names the wrong month (F34); with
+  Per-sistant Tasks on, the rent lead-time reminder reaches no one until the due date (F45); `GET /api/settings` answers
+  200 with defaults on a read error, the widget / module toggles race, a 7.5 idle timeout is a 500 (not the documented
+  strict-integer 400) and ten switches coerce `"false"` to true (F47); a push that failed everywhere is never retried
+  (F46); `auto_closed` isn't cleared when a linked task is reopened by hand (F48); standalone SSO crashes on a non-string
+  token, and held pushes release an hour late on the spring-forward night (F49).
+- **Batch 6 — cash plan:** raise detection reports half a raise after one deposit when paychecks differ by cents, and
+  its alert key changes with each deposit (F30); a loan with a known APR ≥ 8% but no monthly payment drops out and the
+  plan says "Invest" (F31); the spending average always divides by 3, and the emergency date in the starter-buffer step
+  ignores the debt step (F32); FIRE averages income only over months with income rows (F33); smaller plan, forecast-label,
+  payday-order, whats-new-count and year-end-cancel items (F37, F38).
+- **Batch 7 — bank-sync recovery:** a Teller reconnect leaves the old enrollment stranded with no accounts and no Unlink
+  button (F13); a manual account with any transaction can't be deleted — a foreign-key 500 (F14); the generic CSV parser
+  reads one amount column, so a Debit / Credit file drops or mis-signs a side (F15); an investments-only unlink with an
+  unreadable token leaves the accounts active and the duplicate guard refuses the re-link (F17); a Plaid row first
+  inserted through `modified` skips the post-sync steps (F16); `last_txn_sync_at` is stamped on runs that synced nothing,
+  and — contrary to the Liabilities gotcha above — the transaction-sync path calls `liabilitiesGet` for every Item, not
+  only one with a card or loan (F18); the Plaid webhook dedupe key can be re-encoded for a replay (F19); re-linking a goal
+  resets its progress (F35); the budget alert's rollover depends on an activity-gated snapshot (F36).
+- **Batch 8 — Per-sistant:** any save from the task edit dialog clears the month-end anchor (F52); saving the Job Radar
+  profile clears every fit score, and salary / locations / remote preference are never used (F53); a frontmatter privacy
+  value on the NEXT line (`sensitivity:` then an indented `secret`) resolves to normal — the file is embedded and sent to
+  the model (F50; its fix needs one full reindex); the dashboard mini-calendar reads `ev.date` (the API returns
+  `event_date`), the automation / webhook On-Off buttons send the current state, "Use template" opens an empty form, a
+  note's bulk-select checkbox opens the editor, single-key shortcuts ignore Ctrl / Cmd, the Theme select has no effect, a
+  refused vault setting is written into a hidden element, and the quick-entry parsers mis-read "email to Bob" / "wedding"
+  / "jan 5" (F65–F72); past-due scheduled emails sit silently without SMTP (F54); Skip counts as a completion, a snooze
+  past month-end skips an occurrence (F55); a todo made from a secret note copies its text to webhooks — API-only (F56);
+  the finance gate fires on ordinary words (F58); a categorize batch with no tool block is re-sent and re-charged (F26, F27).
+- **Batch 9 — Perfin UI:** Settle Up treats a failed leg as $0 and still offers "Mark settled" (F73); typing a card's
+  limit then APR is wiped by the grid re-render (F74); the Perfin entry overlay has no back/forward-cache handler (F76);
+  `hidden` is overridden by the element's own `display` rule on the dashboard summary cards and the Accounts CSV sign
+  select (F75); missing `res.ok` checks, double-submit windows and smaller access / theme items (F77–F79).
+- **Batch 10 — test honesty, docs, hygiene:** `tests/api.test.js` — 29 of its 33 tests assert on values built inside the
+  test, and the Sheets "pinned" tests check fragment text (mutations to the Income / Tax / Transactions tab queries
+  survive) (F61); remaining doc drift (F60); `scripts/sheets-sync.js`, `reset-fresh.js` and `import-csv-cli.js` build
+  pools that ignore `PGSSLMODE=disable`, so they can't connect on the planned VPS (F6); 18 advisories in production
+  dependencies, most cleared by `npm audit fix` (F8); `npm run sheets-sync` can't read its config from `.env` (F63).
+- **Deferred (need a decision):** no timeout on web-push sends or database queries, with the post-sync steps on one
+  serialized chain (F7); manual bills are not in the cash forecast or the low-cash alert (F29) and a quarterly / yearly
+  manual bill can only fall in its creation month (F25); **Per-sistant's service worker is never registered** — no page
+  calls `serviceWorker.register`, so its offline caching, write queue and replay (INV-92) don't run in a browser, while
+  the offline banner still says changes will sync (F51); attachments, links and note-to-task have no UI (F57); `POST
+  /api/cleanup` deletes transactions older than 36 months with no confirmation or tombstone, cutting mid-month (F62);
+  [FROZEN] `plaid/server.js` has no auth on any route (F64).
+
 **Seams & Invariants audit #4 (2026-11-02 — `.cycle/blocks/8-seams4-audit.md`, plan `.cycle/plan-seams4.md`):**
 24 findings in five batches. S4-1 (A1 push_state 'none' when nothing was delivered, B2 Sync Health reads only the
 watched jobs, S2 rename-rule re-key one survivor per cadence in one transaction, B3 a Perfin-only backup warns under
@@ -7965,9 +8099,7 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   page and `/api/rag/status` don't show the parse version; the GitHub checks support
   github.com only; a SHELL_PIN under 6 characters is a standing dashboard warning.
 - Batch 18 follow-ons: daily-sync's net-worth snapshot and detection steps still hold
-  one request open; `knowledge-reindex.yml` prints its `{reindex, vault}` status JSON on
-  a failed reindex (the vault block can carry repo / file names — an INV-103 gap that
-  predates the batch); the background job slots are in memory, so a restart mid-run
+  one request open; the background job slots are in memory, so a restart mid-run
   reads as "lost" (the step fails though the next run recovers); a deploy must reach
   the server before the next daily-sync — an old server answers 200 to
   `background: true`, which run_background reports as a failure.
@@ -8434,7 +8566,7 @@ INV-93 | Every stored automation is validated by helpers.validateAutomationRule 
 INV-94 | A change to route SQL or router mounting keeps the real-Postgres contract suite green: tests/contract/ runs both apps' own migrations and mounts every router in the order parsed from teller/server.js and apps/per-sistant/server.js with the real deps object — if either server.js's mount spelling changes, the parser regexes (pinned by scan-sept-batch15) must be updated, never bypassed | Subsystem: Test Coverage Quality (all route subsystems) | Verify: CI migrations job (npm run test:contract) + tests/scan-sept-batch15.test.js (contract wiring)
 INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS vars) carry a KNOWN_GAPS list that only shrinks: a new offender fails, and so does a listed entry that no longer occurs; a test never re-implements production logic inline (TQ-1) | Subsystem: Test Coverage Quality | Verify: tests/scan-sept-batch15.test.js
 INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
-INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public. Likewise Per-sistant's outbound webhooks and Slack never carry a linked task's title, description or snapshot (Perfin's amounts, payees, merchants) — only a kind label, dates and state (helpers.linkedTaskWebhookData, cycle-8 F19) | Subsystem: Platform, Shell & Auth / Per-sistant Backend | Verify: tests/scan-oct-batch1.test.js (F2 block) + apps/per-sistant/tests/broad-scan-c8-batch5.test.js
+INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public. Likewise Per-sistant's outbound webhooks and Slack never carry a linked task's title, description or snapshot (Perfin's amounts, payees, merchants) — only a kind label, dates and state (helpers.linkedTaskWebhookData, cycle-8 F19). Nor does a workflow print a tool's own error text that can name a host: db-backup.yml sends pg_dump's stderr to a file it removes and prints a fixed reason instead (cycle-9 F12) | Subsystem: Platform, Shell & Auth / Per-sistant Backend | Verify: tests/scan-oct-batch1.test.js (F2 block) + apps/per-sistant/tests/broad-scan-c8-batch5.test.js + tests/cycle9-b1.test.js
 INV-105 | Every scheduled job in teller/startup.js that ran its body records its outcome via jobHealth.result({ok, error}) (job_runs.last_status / last_error); GET /api/data-health flushes in-memory ticks + outcomes before reading and raises a failed job as an issue; every ticked job is in JOB_INTERVALS_MS | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch3.test.js (F8 block)
 INV-107 | A Plaid link (exchange-transactions / hosted-link-complete / the investments-only exchange — G3) that duplicates a connected Item is refused before anything is stored: the new Item is released at Plaid and the route answers 409 — a second Item never doubles transactions or holdings | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/bank-durability.contract.test.js (F18) + tests/contract/plaid-update.contract.test.js
 INV-108 | The CSV workflow deletes only files the CLI imported (CSV_IMPORTED_LIST); the CLI exits non-zero on any failed file | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch4.test.js (F19 block)
@@ -8460,7 +8592,7 @@ INV-124 | A merchant rename rule matches the RAW merchant (never the user overri
 INV-129 | Per-sistant client code disables a button for a pending action only through withPending(btn, key, fn, busyText) (views/js.js — guardPending single-flight + disabled + aria-busy, each button's prior state restored in a finally); no page re-enables a button or sets aria-busy by hand (shrinking KNOWN_GAPS guard); the e2e click sweep never presses a data-e2e-skip control, so every destructive, off-app or device-permission control carries it | Subsystem: Per-sistant Web UI / Test Coverage Quality | Verify: apps/per-sistant/tests/scan-oct-batch20.test.js + e2e/pages.spec.js
 INV-128 | Plaid re-authentication and new accounts at a connected login go through Link UPDATE MODE on the same Item: link-token-update sends the item's own access_token (perfin_try_decrypt) with no products; update-complete never exchanges a token, registers new accounts BEFORE the cursor walk, clears last_error_code and syncs only that Item under withPlaidTxnLock (investments: syncAllPlaidHoldings({ itemId })); only a token that won't decrypt is sent to unlink + link | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch19.test.js + tests/contract/plaid-update.contract.test.js
 INV-127 | A background sync (POST /api/sync, /api/sync-balances, /api/sync/reconcile with background:true) answers 202 with a job id at once and runs the SAME body as the synchronous call (records last_sync_result / freshness identically); for sync / sync-balances a POST during a run of that kind joins it (sharedRun) and a second background start is a 409 carrying the running id; a reconcile runs one at a time — either route answers 409 while any reconcile runs (background, synchronous or the weekly heal, which skips) and only a background run writes the slot (seams audit #3); the status's error is a fixed sentence, never an exception message (the reconcile slot included); the backstop workflows poll by id and fail on an error, a lost run or the deadline without printing the error text | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/scan-oct-batch18.test.js + tests/contract/async-sync.contract.test.js
-INV-126 | Operator checks are fail-soft and read-only: the go-live checks (cycle-8 E4a — goLiveChecks, the cert expiry, backupCheck) read the environment and the databases only — never the network, never a secret's value or more of its length than "shorter than N" — and each is fail-soft (a failed read omits it); the GitHub client only GETs, with GITHUB_OPS_TOKEN read from the environment per call — never stored, logged or returned (errors carry only the HTTP status) — and never requests a secret's value; any failure is an "unknown" check with a reason, never a throw into data-health; data-health reads cached GitHub results only; the notification fires once per change in the failing set | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch17.test.js + tests/contract/operator-checks.contract.test.js + tests/cycle8-e4a.test.js + tests/contract/operator-freshness-e4a
+INV-126 | Operator checks are fail-soft and read-only: the go-live checks (cycle-8 E4a — goLiveChecks, the cert expiry, backupCheck) read the environment and the databases only — never the network, never a secret's value or more of its length than "shorter than N" — and each is fail-soft (a failed read omits it); the GitHub client only GETs, with GITHUB_OPS_TOKEN read from the environment per call — never stored, logged or returned (errors carry only the HTTP status) — and never requests a secret's value; any failure is an "unknown" check with a reason, never a throw into data-health; data-health reads cached GitHub results only; the notification fires once per change in the failing set | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch17.test.js + tests/contract/operator-checks.contract.test.js + tests/cycle8-e4a.test.js + tests/contract/operator-freshness-e4a + tests/cycle9-b1.test.js (the calendar-feed token)
 INV-125 | A generic CSV's sign is applied identically by preview, import and CLI: positive_means goes through parseCsvUpload's one parseOpts (default 'charges' — the old reading, so earlier imports keep their dedup IDs); an unknown value is a 400; known bank formats ignore it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch16.test.js + tests/contract/batch16-perfin.contract.test.js (F26)
 INV-130 | The e2e page run is SEEDED through the apps' own routes (the direct inserts are a Job Radar listing and one linked task — plus the behaviour file's one unread notification and one Job Radar listing, deleted after their tests, with its habit deleted directly since the API only archives one), once per run (ensureSeeded), and fails a page on an uncaught page error, a browser console.error or a non-501 5xx; its click sweep never presses a data-e2e-skip or destructively-labelled control; since cycle-8 E5 a behaviour test per key action checks the page, the API and a reload after the action and puts the state back, acting only on rows it created; one worker, so the behaviour file never runs beside the sweep | Subsystem: Test Coverage Quality | Verify: e2e/pages.spec.js + e2e/behaviour.spec.js + e2e/seed.js
 INV-131 | A Plaid item's re-authentication notification is sent once per transition into a re-auth code (last_error_code NULL → set, setPlaidItemErrorCode's prev CTE), never on every failing sync | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-oct-batch19.test.js
