@@ -12,12 +12,35 @@ to the "none in progress" state.
 Cycle: 9
 Phase: implement
 Scope: broad (Nov 2026 broad scan — all non-frozen subsystems, weighted to the work since the cycle-8 scan: roadmap T4.1 A1–A10, cycle-8 expansion E1–E5, seams audit #4 S4-1..S4-5, the opening screen)
-Updated: 2026-11-13
+Updated: 2026-11-17
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 2 (DONE, 2026-11-17) — pre-auth and scheduler safety:** block `.cycle/blocks/9-batch2-broad-implement.md`.
+  F3 (auth.js: `verify` takes a string only, the PIN a string or number — a `j:{}` cookie or a PIN object no longer
+  throws in an async handler), F2 (the missed-jobs push can fire: job-runner `onLoad` hands its first read of
+  job_runs.last_ran_at to `jobHealth.noteBootSnapshot`; ungated watched jobs last claimed 36 h+ ago are the outage,
+  reported by one watchdog pass), F5 (`jobOff` — a job that finds itself switched off records a clean outcome;
+  notify-release records every run past quiet hours; the watchdog records its finished pass; cash-alerts only when both
+  checks are off), F4 (standalone gate: the .js / .css exemption only outside /api, any case), F10 (keep-alive.js never
+  caches a failed read and serves the last good schedule; keep-alive.yml retries a waking host and fails on a rejected /
+  unanswered schedule call), F11 (job-runner `gap()` ends on stop()). New tests/cycle9-b2.test.js (47; the workflow step
+  run in bash against a fake server); four older tests that pinned "records nothing when off" updated. npm test 3263
+  (179 files, Perfin 2520), contract 340, browser smoke 10 / 10, four shifted clocks, mutation 41 of 47 fail pre-fix.
+  Net −1 (0 fixes this month − 1 Low: keep-alive.yml is red while its secret is wrong or the server is down).
+  - **Where I left off:** Batch 2 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
+    for Batch 2 — run `/sync-docs` (the list is in the block's DOCUMENTATION UPDATES NEEDED). Next: `/broad-implement
+    Batch 3` (F20 F28 F21 F22 F23 F24 — forecast and detection accuracy).
+  - **Decisions:** F2 judges the outage from last_ran_at (the claim stamp) rather than the heartbeat, because heartbeats
+    are flushed only while the user is active (a "read before flush" would false-alarm after the user was away with the
+    process up, and lose the alert when a dashboard load flushed first). Gated jobs are left out of the outage list.
+    cash-alerts clears only when both checks are off (an enabled check that is "unchanged" may still owe a retry).
+  - **Follow-ons:** run the watchdog first after a load that finds a gap; a frozen-and-resumed process isn't detected;
+    job-watchdog's outcome is memory-only; the outage signature dedup hides a second long sleep with no normal wake
+    between. OPERATOR: before re-enabling Keep Alive, confirm SERVER_URL + API_KEY secrets (a wrong key now fails every
+    run); expect one "Scheduled jobs missed" push after a boot following 36 h+ asleep.
 - **Cycle 9 Batch 1 (DONE, 2026-11-13) — backups and CI can't-wait:** block `.cycle/blocks/9-batch1-broad-implement.md`.
   F1 (db-backup.yml verifies by decrypting to a file, then `pg_restore --list` — the pipe failed on every real-size dump),
   F9 (backup.sh enforces gpg's exit status), F12 (pg_dump's message withheld from logs; a CALENDAR_FEED_TOKEN under 24
@@ -31,15 +54,15 @@ implement and reflect sessions only set Phase.)
     calendar-proof tests and never piping a verify — a cycle-9 Known Open Issues entry listing every open batch, INV-103 /
     INV-126 wording, the Google Sheets env vars, and stale text fixed: the cosmic transition, SSO "on both apps", the
     knowledge-reindex follow-on), README (counts, backups, 13 modules, archives, the dial), apps/per-sistant/CLAUDE.md
-    (offline support is not active — F51). Next: `/broad-implement Batch 2`
-    (F3 F2 F5 F4 F10 F11 — pre-auth and scheduler safety). The scan's report (F1–F79, G1–G5, ST1–ST5, Batches 1–10,
-    E1–E3) is in the cycle-9 scan session; Batches 2–10 and the Deferred list (F7 F25 F29 F51 F57 F62 F64) are open.
+    (offline support is not active — F51). Batch 2 followed (above). The scan's report (F1–F79, G1–G5, ST1–ST5,
+    Batches 1–10, E1–E3) is in the cycle-9 scan session; Batches 3–10 and the Deferred list (F7 F25 F29 F51 F57 F62
+    F64) are open.
     OPERATOR: set the three backup secrets, re-enable Database Backup, run it once and do a restore drill.
 - **Cycle 9 scan (2026-11-09):** 79 findings, no Critical, two High (F1 the backup verify; F59 calendar-dependent
   tests). Top by impact: F1, F59, F20 (a series detected as both subscription and transfer → double-billed forecast),
   F39 / F40 (the insight audit's false criticals), F28 / F44 (a paycheck dropped on payday; quiet-hours holds that expire).
   - **Open batch plan (the scan report itself was chat-only — this is the record):**
-    - **Batch 2 — pre-auth and scheduler safety:** F3 (shell/middleware/auth.js `verify` / `handleLogin`: a non-string
+    - **Batch 2 (DONE) — pre-auth and scheduler safety:** F3 (shell/middleware/auth.js `verify` / `handleLogin`: a non-string
       session cookie `j:{}` or a PIN object with no toString throws in an async handler → hung request + false "New server
       error"), F2 (the "Scheduled jobs missed" push can't fire: the runner ticks every job, then the watchdog flushes before
       it reads — startup.js onCheck, job-health checkMissedJobs), F5 (a failed job outcome sticks once the job stops running

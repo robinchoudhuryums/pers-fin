@@ -227,10 +227,13 @@ describe("the cash-alerts job", () => {
     assert.deepEqual(scheduled("cash-alerts"), { name: "cash-alerts", everyMs: 3600e3, gated: false, timeoutMs: 15 * 60 * 1000 });
   });
 
-  it("records an outcome only when it evaluated; a failure or an unlogged alert as an error", async () => {
+  // Cycle-9 F5: with BOTH checks switched off (the payday check is, above) the
+  // job records a clean outcome, so a failure from before doesn't stay in Sync
+  // Health; an enabled check that is merely "unchanged" still records nothing.
+  it("records an outcome when it evaluated or everything is off; a failure or an unlogged alert as an error", async () => {
     for (const [result, expect] of [
       [{ status: "unchanged", ran: false }, undefined],
-      [{ status: "disabled", ran: false }, undefined],
+      [{ status: "disabled", ran: false }, { status: "ok", error: null }],
       [{ status: "clear", ran: true }, { status: "ok", error: null }],
       [{ status: "unlogged", ran: true }, { status: "error", error: "cash alert: notification not logged" }],
     ]) {

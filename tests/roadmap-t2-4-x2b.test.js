@@ -120,15 +120,21 @@ describe("runLinkedTasks", () => {
 
 describe("the hourly job", () => {
   const startup = require("../teller/startup");
-  it("is watched hourly and records an outcome only when it ran", async () => {
+  // Cycle-9 F5: off (or standalone) records a clean outcome; "fresh" nothing.
+  it("is watched hourly and records an outcome when it ran or found itself off", async () => {
     assert.equal(jobHealth.JOB_INTERVALS_MS["linked-tasks"], 3600e3);
     const recorded = [];
     const origResult = jobHealth.result;
     jobHealth.result = (n, o) => recorded.push([n, o]);
     try {
-      lt.runLinkedTasks = async () => ({ status: "disabled", ran: false });
+      lt.runLinkedTasks = async () => ({ status: "fresh", ran: false });
       await startup._awayJobs.runLinkedTasksTick();
       assert.deepEqual(recorded, []);
+      lt.runLinkedTasks = async () => ({ status: "disabled", ran: false });
+      await startup._awayJobs.runLinkedTasksTick();
+      lt.runLinkedTasks = async () => ({ status: "no_persistent", ran: false });
+      await startup._awayJobs.runLinkedTasksTick();
+      assert.deepEqual(recorded.splice(0), [["linked-tasks", { ok: true }], ["linked-tasks", { ok: true }]]);
       lt.runLinkedTasks = async () => ({ status: "ok", ran: true });
       await startup._awayJobs.runLinkedTasksTick();
       lt.runLinkedTasks = async () => ({ status: "partial", ran: true, errors: [{ kind: "bill", error: "Could not read this source." }] });

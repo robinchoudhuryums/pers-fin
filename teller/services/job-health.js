@@ -12,12 +12,19 @@
 // heartbeat UPDATE would keep it awake 24/7.
 //
 // The watchdog (checkMissedJobs) flushes memory, then compares each job's
-// last persisted heartbeat against a generous threshold. Because in-process
-// ticks are always fresh, the only way a job goes stale is a gap where the
-// process wasn't running at all (Render free-tier sleep with keep-alive off,
-// a crash loop, a wedged deploy) — exactly the silent-failure mode this
-// exists to surface. Thresholds are sized so normal overnight sleeps don't
-// alarm; only a 36h+ outage does.
+// last persisted heartbeat against a generous threshold. In-process ticks are
+// always fresh — the runner ticks every watched job on each check — so after
+// the flush that comparison only catches a watched job nothing ticks any more.
+// The outage it exists for (the process not running at all: Render free-tier
+// sleep with keep-alive off, a crash loop, a wedged deploy) is judged from a
+// different stamp, read BEFORE this process ran anything (cycle-9 F2): the job
+// runner's one read of job_runs.last_ran_at at its first check
+// (noteBootSnapshot). An ungated job is claimed at every cadence while the
+// process is up, whether or not the user is around, so one whose last claim is
+// older than its threshold means the scheduler wasn't running. (Flush-then-read
+// alone could never fire: the heartbeats it had just written were seconds old.)
+// Thresholds are sized so normal overnight sleeps don't alarm; only a 36h+
+// outage does.
 //
 // Alert dedup: the sorted list of missed job names is the signature, stored
 // on the job_runs row `_watchdog`. A persisting outage notifies once; a
@@ -71,8 +78,33 @@ const flushedTicks = new Map();
 // database call, so a job whose last run failed reports /fail.
 const latestOutcomes = new Map();
 
+// The outage found at boot, kept until the watchdog reports it:
+// [{ job, stale_hours }].
+let bootGap = [];
+
 function tick(jobName) {
   memoryTicks.set(jobName, Date.now());
+}
+
+// The job runner's first read of job_runs.last_ran_at, taken before this
+// process claimed anything: { at, lastRan: Map(name → epoch ms), jobs: [{ name,
+// gated }] }. A watched, UNGATED job whose last claim is older than its
+// threshold is a missed job. Gated jobs are left out — their claims stop while
+// the user is away (or nothing is held), so an old one proves nothing — and so
+// is a job that has never been claimed. Returns what it found.
+function noteBootSnapshot({ at = Date.now(), lastRan, jobs } = {}) {
+  const found = [];
+  for (const job of jobs || []) {
+    if (!job || job.gated || !(job.name in JOB_INTERVALS_MS)) continue;
+    const ran = lastRan && lastRan.get(job.name);
+    if (ran == null || !Number.isFinite(Number(ran))) continue;
+    const ageMs = at - Number(ran);
+    if (ageMs > thresholdMs(job.name)) found.push({ job: job.name, stale_hours: Math.round(ageMs / HOUR) });
+  }
+  // A second runner started in the same process reads fresh stamps; it must
+  // not erase a gap the watchdog hasn't reported yet.
+  if (found.length) bootGap = found;
+  return found;
 }
 
 // Record how a job's run went. Call it only when the body actually ran — a
@@ -124,8 +156,11 @@ async function flush(pool) {
 }
 
 // Flush heartbeats, find jobs whose last persisted tick is older than their
-// threshold, and notify (via the injected sendToAll) when the missed-set
-// signature changes. Returns { missed: [{ job, stale_hours }] }.
+// threshold — plus the outage the runner's boot snapshot found — and notify
+// (via the injected sendToAll) when the missed-set signature changes. The boot
+// gap is reported by one pass (the pass after it sees none, which resets the
+// signature, so the next outage notifies again). Returns
+// { missed: [{ job, stale_hours }] }.
 async function checkMissedJobs(pool, { sendToAll } = {}) {
   await flush(pool);
 
@@ -155,6 +190,11 @@ async function checkMissedJobs(pool, { sendToAll } = {}) {
       missed.push({ job, stale_hours: Math.round(ageMs / HOUR) });
     }
   }
+
+  for (const gap of bootGap) {
+    if (!missed.some((m) => m.job === gap.job)) missed.push(gap);
+  }
+  bootGap = [];
 
   const signature = missed.map((m) => m.job).sort().join("|");
   const prevSignature = byName[WATCHDOG_ROW] ? (byName[WATCHDOG_ROW].last_error || "") : "";
@@ -199,6 +239,7 @@ module.exports = {
   failingJobs,
   flush,
   checkMissedJobs,
+  noteBootSnapshot,
   thresholdMs,
   JOB_INTERVALS_MS,
   // exported for tests
@@ -206,4 +247,5 @@ module.exports = {
   _memoryResults: memoryResults,
   _latestOutcomes: latestOutcomes,
   _flushedTicks: flushedTicks,
+  _resetBootGap: () => { bootGap = []; },
 };

@@ -151,7 +151,10 @@ function requireAuth(req, res, next) {
   if (req.app.get("embedded")) return next();
   if (!AUTH_SECRET) return next();
   if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg", "/api/sso/validate"].includes(req.path)) return next();
-  if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
+  // Static-looking paths, but never under /api (cycle-9 F4): the suffix alone
+  // let "DELETE /api/watchlist/1.js" past the PIN gate when API_KEY is unset
+  // (the id parses as 1). Express routes case-insensitively, so "/API/…" counts.
+  if (!/^\/api(\/|$)/i.test(req.path) && (req.path.endsWith(".css") || req.path.endsWith(".js"))) return next();
   // Allow API key authenticated requests through (validated later in API key
   // middleware) — only when an API_KEY is configured: with none set, that
   // middleware lets everything through, so the bare header was a full auth

@@ -260,7 +260,7 @@ describe("the shared cash-alerts tick", () => {
     assert.deepEqual(jobHealth._memoryResults.get("cash-alerts"), { status: "error", error: "cash alert: db down" });
   });
 
-  it("ok when only the payday check evaluated; nothing when neither did", async () => {
+  it("ok when only the payday check evaluated; nothing when neither did; ok when both are off (cycle-9 F5)", async () => {
     ca.runCashAlerts = async () => ({ status: "disabled", ran: false });
     pa.runPaydayMissed = async () => ({ status: "done", ran: true });
     await startup._awayJobs.runCashAlertsTick();
@@ -268,7 +268,11 @@ describe("the shared cash-alerts tick", () => {
     jobHealth._memoryResults.delete("cash-alerts");
     pa.runPaydayMissed = async () => ({ status: "unchanged", ran: false });
     await startup._awayJobs.runCashAlertsTick();
-    assert.equal(jobHealth._memoryResults.get("cash-alerts"), undefined);
+    assert.equal(jobHealth._memoryResults.get("cash-alerts"), undefined, "one off, one unchanged: an earlier failure may be the enabled check's");
+    pa.runPaydayMissed = async () => ({ status: "disabled", ran: false });
+    await startup._awayJobs.runCashAlertsTick();
+    assert.deepEqual(jobHealth._memoryResults.get("cash-alerts"), { status: "ok", error: null }, "both off: nothing is left to fail");
+    jobHealth._memoryResults.delete("cash-alerts");
     pa.runPaydayMissed = async () => ({ status: "unlogged", ran: true });
     await startup._awayJobs.runCashAlertsTick();
     assert.deepEqual(jobHealth._memoryResults.get("cash-alerts"), { status: "error", error: "payday alert: notification not logged" });

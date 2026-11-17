@@ -79,6 +79,14 @@ function localHourNow() {
   } catch { return new Date().getUTCHours(); }
 }
 
+// A job that finds its feature switched off has nothing left to fail at, so
+// it records a clean outcome (cycle-9 F5). Outcomes used to be recorded only
+// when a body ran: a digest that failed and was then switched off kept "failed
+// its last run" in Sync Health, and the uptime heartbeat kept pinging /fail,
+// until the process restarted. A skip for "not due" or "user away" still
+// records nothing — the last real run's outcome stands.
+function jobOff(job) { jobHealth.result(job, { ok: true }); }
+
 async function runBudgetAlertTick() {
   jobHealth.tick("budget-alerts");
   try {
@@ -164,7 +172,7 @@ async function runWeeklyDigestTick() {
       "SELECT weekly_digest_enabled, weekly_digest_day FROM user_settings WHERE id = 1"
     );
     const s = settings.rows[0];
-    if (!s || !s.weekly_digest_enabled) { markAwaySettled("weekly-digest"); return; }
+    if (!s || !s.weekly_digest_enabled) { markAwaySettled("weekly-digest"); jobOff("weekly-digest"); return; }
     // 0=Sun, 1=Mon, etc. Default 1 (Monday). The weekday is the LOCAL
     // (APP_TIMEZONE) day, not the server's UTC day (AIN-15).
     const localWeekday = new Date(localDay() + "T00:00:00Z").getUTCDay();
@@ -216,7 +224,7 @@ async function runCsvReminderTick() {
       "SELECT csv_reminder_enabled, csv_reminder_days, last_csv_reminder_at FROM user_settings WHERE id = 1"
     );
     const s = settings.rows[0];
-    if (!s || !s.csv_reminder_enabled) { markAwaySettled("csv-reminder"); return; }
+    if (!s || !s.csv_reminder_enabled) { markAwaySettled("csv-reminder"); jobOff("csv-reminder"); return; }
     if (s.last_csv_reminder_at && Date.now() - new Date(s.last_csv_reminder_at).getTime() < 24 * 60 * 60 * 1000) {
       markAwaySettled("csv-reminder");
       return;
@@ -263,13 +271,15 @@ async function runCsvReminderTick() {
 // (and then no DB read for the rest of the local day), evaluated only when new
 // bank data arrived since the last check or on a new local day, never on
 // balances older than 36 h, deduped through cash_alert_state. An outcome is
-// recorded only when it evaluated; "unchanged" / "disabled" record nothing.
+// recorded when it evaluated, or (clean) when both checks are switched off —
+// cycle-9 F5; "unchanged" records nothing.
 // The same job runs the "Payday missed?" check (roadmap T2.2 L3 —
 // services/payday-alerts.js), gated the same way; each check is isolated so one
 // failing doesn't skip the other.
 async function runCashAlertsTick() {
   jobHealth.tick("cash-alerts");
   let ran = false;
+  let off = 0;
   const errors = [];
   const checks = [
     ["cash alert", () => require("./services/cash-alerts").runCashAlerts(pool)],
@@ -279,6 +289,7 @@ async function runCashAlertsTick() {
     try {
       const r = await fn();
       if (r.ran) ran = true;
+      if (r.status === "disabled") off++;
       if (r.status === "unlogged") errors.push(name + ": notification not logged");
     } catch (err) {
       console.error("Cash alert scheduler error (" + name + "):", err.message);
@@ -287,20 +298,24 @@ async function runCashAlertsTick() {
     }
   }
   if (errors.length) jobHealth.result("cash-alerts", { ok: false, error: errors.join("; ") });
-  else if (ran) jobHealth.result("cash-alerts", { ok: true });
+  // Both checks switched off: nothing is left to fail (cycle-9 F5). With one
+  // still on and merely "unchanged", an earlier failure may be its own — an
+  // unlogged alert waits for new data before it retries — so it stands.
+  else if (ran || off === checks.length) jobHealth.result("cash-alerts", { ok: true });
 }
 
 // "Tell me when my plan changes" (roadmap T4.1 A4 — services/advice-alerts.js).
 // An away channel (INV-77): NOT activity-gated, ticks hourly but evaluates at
 // most once a local day (an in-memory memo skips even the settings read once
 // it has checked or found itself off; a Settings change clears it). Push only.
-// An outcome is recorded only when it evaluated.
+// An outcome is recorded when it evaluated, or (clean) while it is off.
 async function runAdvicePlanTick() {
   jobHealth.tick("advice-plan");
   try {
     const r = await require("./services/advice-alerts").runAdviceAlerts(pool);
     if (r.status === "unlogged") jobHealth.result("advice-plan", { ok: false, error: "notification not logged" });
     else if (r.ran) jobHealth.result("advice-plan", { ok: true });
+    else if (r.status === "disabled") jobOff("advice-plan");
   } catch (err) {
     console.error("Plan alert scheduler error:", err.message);
     jobHealth.result("advice-plan", { ok: false, error: err.message });
@@ -311,14 +326,18 @@ async function runAdvicePlanTick() {
 // quiet hours held once they've ended (one summary for several). Its runner
 // gate is in memory (releaseDue — something is held and quiet hours are over),
 // so it costs no query while nothing is held; NOT activity-gated (an away user
-// is who quiet hours are for). An outcome is recorded only when it pushed or
-// failed to.
+// is who quiet hours are for). An outcome is recorded for every run that got
+// past quiet hours (cycle-9 F5).
 async function runNotifyReleaseTick() {
   jobHealth.tick("notify-release");
   try {
     const r = await require("./routes/notifications").releaseHeldNotifications();
     if (!r.ok) jobHealth.result("notify-release", { ok: false, error: r.error });
-    else if (r.outcome === "released") jobHealth.result("notify-release", { ok: true });
+    // Every run that got past quiet hours and didn't fail is a clean outcome
+    // (cycle-9 F5) — it used to be recorded only for "released", so one failed
+    // push stayed "failed" after its holds expired or were left with no device
+    // to reach. "quiet" attempted nothing: an earlier failure still stands.
+    else if (r.outcome !== "quiet") jobHealth.result("notify-release", { ok: true });
   } catch (err) {
     console.error("Quiet-hours release error:", err.message);
     jobHealth.result("notify-release", { ok: false, error: err.message });
@@ -332,13 +351,14 @@ async function runNotifyReleaseTick() {
 // change invalidates it), after a clean run it does nothing until the next
 // local day (writes kick their own refresh — cycle-8 F21), and with no
 // Per-sistant pool wired (a standalone Perfin) it does nothing at all. An
-// outcome is recorded only when it ran.
+// outcome is recorded when it ran, or (clean) while it is off or standalone.
 async function runLinkedTasksTick() {
   jobHealth.tick("linked-tasks");
   try {
     const r = await require("./services/linked-tasks").runLinkedTasks(pool, undefined, { scheduled: true });
     if (r.status === "partial") jobHealth.result("linked-tasks", { ok: false, error: (r.errors || []).map((e) => (e.kind ? e.kind + ": " : "") + e.error).join("; ") });
     else if (r.ran) jobHealth.result("linked-tasks", { ok: true });
+    else if (r.status === "disabled" || r.status === "no_persistent") jobOff("linked-tasks");
   } catch (err) {
     console.error("Linked tasks scheduler error:", err.message);
     jobHealth.result("linked-tasks", { ok: false, error: err.message });
@@ -385,14 +405,14 @@ const INSIGHTS_RETRY_MS = 24 * 60 * 60 * 1000;
 async function runInsightsAutoTriggerTick() {
   jobHealth.tick("insights-auto-trigger");
   try {
-    if (!process.env.ANTHROPIC_API_KEY) return;
+    if (!process.env.ANTHROPIC_API_KEY) { jobOff("insights-auto-trigger"); return; }
     // Off for the day, or not due yet: no settings read (cycle-8 F29).
     if (awaySettledToday("insights-auto-trigger") || notDueYet("insights-auto-trigger")) return;
     const settings = await pool.query(
       "SELECT insights_enabled, insights_cadence_days, insights_last_run, insights_last_attempt_at FROM user_settings WHERE id = 1"
     );
     const s = settings.rows[0];
-    if (!s || !s.insights_enabled) { markAwaySettled("insights-auto-trigger"); return; }
+    if (!s || !s.insights_enabled) { markAwaySettled("insights-auto-trigger"); jobOff("insights-auto-trigger"); return; }
     const cadenceDays = s.insights_cadence_days || 30;
     const lastRun = s.insights_last_run ? new Date(s.insights_last_run) : null;
     const now = new Date();
@@ -471,7 +491,7 @@ async function runBankAutoSyncTick() {
       "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_sync_result, sync_notifications_enabled FROM user_settings WHERE id = 1"
     );
     const s = settings.rows[0];
-    if (!s || !s.auto_sync_enabled) { markAwaySettled("bank-auto-sync"); return; }
+    if (!s || !s.auto_sync_enabled) { markAwaySettled("bank-auto-sync"); jobOff("bank-auto-sync"); return; }
     const intervalHours = Math.max(1, Math.min(168, parseInt(s.auto_sync_interval_hours) || 6));
     const lastSync = s.last_auto_sync_at ? new Date(s.last_auto_sync_at) : null;
     const now = new Date();
@@ -839,13 +859,17 @@ function startBackgroundJobs({ runnerOptions = {} } = {}) {
   // runAdvicePlanTick — at most one evaluation a local day.
 
   // Missed-job watchdog (F4). Flushes the in-memory job heartbeats to the
-  // job_runs table and alerts (once per outage, signature-deduped) when any
-  // scheduled job hasn't ticked for 36h+ — i.e. the process was asleep or
-  // dead long enough that data is going stale (Render free tier with
-  // keep-alive off, crash loops). Registered with the runner first, every 6
-  // hours (WATCHDOG_EVERY_MS) — so a wake after a long sleep, when the gap is
-  // visible, checks first (boot counts as user activity). Activity-gated like
-  // the other jobs so it doesn't keep Neon awake.
+  // job_runs table and alerts (once per outage, signature-deduped) when the
+  // scheduler wasn't running for 36h+ — the process was asleep or dead long
+  // enough that data is going stale (Render free tier with keep-alive off,
+  // crash loops). The outage is judged from the runner's first read of
+  // job_runs.last_ran_at, taken before this process claimed anything
+  // (jobHealth.noteBootSnapshot, cycle-9 F2): the heartbeats themselves are
+  // always fresh by the time this runs, so reading them back could never
+  // alert. The gap is kept in memory until a pass reports it. Registered with
+  // the runner first, every 6 hours (WATCHDOG_EVERY_MS); after a sleep it
+  // runs in due-time order with the other jobs. Activity-gated like the other
+  // jobs so it doesn't keep Neon awake (a boot counts as activity).
   const runWatchdog = async () => {
     if (!isUserActive()) return;
     try {
@@ -871,6 +895,10 @@ function startBackgroundJobs({ runnerOptions = {} } = {}) {
     } catch (err) {
       console.error("Operator checks error:", err.message);
     }
+    // A pass that finished clears a deadline failure the runner recorded for
+    // an earlier one (onTimeout) — nothing else ever cleared it, so the uptime
+    // heartbeat pinged /fail until the next restart (cycle-9 F5).
+    jobHealth.result("job-watchdog", { ok: true });
   };
   // The job runner (cycle-8 E2a / E2b, ST1). Each job runs when its last run
   // (job_runs.last_ran_at) is older than its cadence — checked a minute after
@@ -894,6 +922,9 @@ function startBackgroundJobs({ runnerOptions = {} } = {}) {
     pool,
     onCheck: (name) => { if (name in jobHealth.JOB_INTERVALS_MS) jobHealth.tick(name); },
     onTimeout: (name, ms) => jobHealth.result(name, { ok: false, error: `didn't finish within ${Math.round(ms / 60000)} minutes` }),
+    // The first read of job_runs, before this process claimed anything: how
+    // long the scheduler had been away (the watchdog's outage — cycle-9 F2).
+    onLoad: (snapshot) => jobHealth.noteBootSnapshot(snapshot),
     ...runnerOptions,
   });
   const active = () => isUserActive();

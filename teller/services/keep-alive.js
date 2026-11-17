@@ -12,24 +12,39 @@ let keepAliveInterval = null;
 // from querying (and so waking) Neon around the clock. PATCH /api/settings
 // invalidates it, so a schedule change still applies on the next probe.
 const KEEP_ALIVE_CACHE_MS = 6 * 60 * 60 * 1000;
+const FALLBACK_CONFIG = { keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" };
 let _keepAliveCache = null; // { config, at }
 async function getKeepAliveConfigCached() {
   if (_keepAliveCache && Date.now() - _keepAliveCache.at < KEEP_ALIVE_CACHE_MS) return _keepAliveCache.config;
-  const config = await loadKeepAliveConfig();
-  _keepAliveCache = { config, at: Date.now() };
-  return config;
+  const { config, ok } = await readKeepAliveConfig();
+  if (ok) {
+    _keepAliveCache = { config, at: Date.now() };
+    return config;
+  }
+  // A failed read is never cached (cycle-9 F10): one database blip used to be
+  // stored as "disabled" for 6 hours, so the self-ping and keep-alive.yml both
+  // stopped and the host slept. The last good schedule — however old — is a
+  // better answer than the fallback; the next probe reads again.
+  return _keepAliveCache ? _keepAliveCache.config : config;
 }
 function invalidateKeepAliveCache() { _keepAliveCache = null; }
 
-async function loadKeepAliveConfig() {
+// → { config, ok }: ok is false when the read failed and config is the
+// fallback (keep-alive off).
+async function readKeepAliveConfig() {
   try {
     const result = await pool.query(
       "SELECT keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone FROM user_settings WHERE id = 1"
     );
-    return result.rows[0] || { keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" };
-  } catch {
-    return { keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" };
+    return { config: result.rows[0] || { ...FALLBACK_CONFIG }, ok: true };
+  } catch (err) {
+    console.warn("Keep-alive settings read failed:", err && err.message);
+    return { config: { ...FALLBACK_CONFIG }, ok: false };
   }
+}
+
+async function loadKeepAliveConfig() {
+  return (await readKeepAliveConfig()).config;
 }
 
 function isWithinActiveHours(startHour, endHour, timezone) {

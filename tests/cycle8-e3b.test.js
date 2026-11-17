@@ -368,13 +368,17 @@ describe("wiring", () => {
     assert.match(src, /const heldReady = \(\) => require\("\.\/routes\/notifications"\)\.releaseDue\(\);/);
   });
 
-  it("the job records an outcome only when it pushed or failed to", async () => {
+  // Cycle-9 F5: every run that got past quiet hours records its outcome — a
+  // clean one used to be recorded only for "released", so one failed push stayed
+  // "failed" once its holds expired or had no device left to reach.
+  it("the job records an outcome for every run past quiet hours; a quiet run records nothing", async () => {
     const jobHealth = require("../teller/services/job-health");
     const startup = require("../teller/startup");
     const real = notifications.releaseHeldNotifications;
     try {
       for (const [r, want] of [
-        [{ ok: true, outcome: "none" }, undefined],
+        [{ ok: true, outcome: "none" }, "ok"],
+        [{ ok: true, outcome: "expired" }, "ok"],
         [{ ok: true, outcome: "quiet" }, undefined],
         [{ ok: true, outcome: "released", released: 2 }, "ok"],
         [{ ok: false, outcome: "failed", error: "x" }, "error"],
