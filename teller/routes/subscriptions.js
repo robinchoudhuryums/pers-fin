@@ -8,7 +8,7 @@ const multer = require("multer");
 const { parse } = require("csv-parse/sync");
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { categorizeSubscription, findCancelUrl } = require("../data/reference-data");
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, POSITIVE_MEANS, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, isTwoColumnGeneric, POSITIVE_MEANS, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
 const { NOT_TRANSFER, currentMonth, todayStr, getLiveIncomeStreams } = require("../services/financial-queries");
@@ -461,7 +461,9 @@ function parseCsvUpload(buffer, body = {}) {
   if (fmt.headerless && fmt.columns) {
     records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
   }
-  const generic = formatName === "generic";
+  // A generic file with separate Debit / Credit columns has a known sign
+  // (cycle-9 F15), so — like a known bank format — it takes no positive_means.
+  const generic = formatName === "generic" && !isTwoColumnGeneric(headers);
   const positiveMeans = generic ? (pm || "charges") : null;
   const signGuess = generic ? guessGenericSign(records) : null;
   return { formatName, fmt, institution, accountLabel, records, headers, positiveMeans, signGuess, parseOpts: { positiveMeans } };

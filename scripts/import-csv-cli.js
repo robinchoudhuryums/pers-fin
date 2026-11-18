@@ -31,7 +31,7 @@ const { parse } = require("csv-parse/sync");
 // CSV_FORMATS is the single source of truth in teller/data/csv-formats.js;
 // this CLI used to redefine it inline (and drift). We now import it so any
 // future bank-format change propagates to both the API route and the CLI.
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, POSITIVE_MEANS, parseDate, makeCsvTxnIdGenerator } = require("../teller/data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, isTwoColumnGeneric, POSITIVE_MEANS, parseDate, makeCsvTxnIdGenerator } = require("../teller/data/csv-formats");
 
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 const pool = new Pool({
@@ -98,8 +98,10 @@ async function importCsvFile(filePath, opts = {}) {
 
   // Generic files only: what a positive amount means (F26) — same default and
   // parser option as /api/import-csv, so the two produce the same dedup IDs.
-  const parseOpts = { positiveMeans: format === "generic" ? (opts.positiveMeans || "charges") : null };
-  if (format === "generic") {
+  // A file with separate Debit / Credit columns has a known sign (cycle-9 F15).
+  const signUnknown = format === "generic" && !isTwoColumnGeneric(Object.keys(records[0] || {}));
+  const parseOpts = { positiveMeans: signUnknown ? (opts.positiveMeans || "charges") : null };
+  if (signUnknown) {
     const guess = guessGenericSign(records);
     if (guess !== parseOpts.positiveMeans) {
       console.warn(`  ! ${filename}: positive amounts look like ${guess}, importing them as ${parseOpts.positiveMeans} — pass --positive-means=${guess} if that's wrong`);

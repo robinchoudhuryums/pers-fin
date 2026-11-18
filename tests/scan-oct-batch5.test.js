@@ -63,7 +63,7 @@ describe("F40 — the budget push", () => {
   it("compares against the effective limit (prior-month rollover) via getBudgetStatus", async () => {
     const sent = await runWith(120, 100, 50); // 120 of 150 → 80%
     assert.match(sent[0].title, /^Budget warning/);
-    assert.match(read("teller", "startup.js"), /const budgets = await getBudgetStatus\(pool, currentMonth\(\)\);/);
+    assert.match(read("teller", "startup.js"), /let budgets = await getBudgetStatus\(pool, currentMonth\(\)\);/);
   });
 
   it("100% exactly is exceeded", async () => {

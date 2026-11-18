@@ -71,7 +71,10 @@ function createTellerEventHandler({
       if (!r || !r.ok) continue; // removed / suspended while queued
       synced++;
       added += r.added || 0;
-      if (r.failed) failed = true;
+      // A partial sync (an account's fetch failed and the watermark was held —
+      // errors[] says so) is not "done" either (cycle-9 F18): the event read as
+      // handled while rows were still missing.
+      if (r.failed || (Array.isArray(r.errors) && r.errors.length)) failed = true;
     }
     if (!synced) return { status: "ignored" };
     // Rows a partly failed run did add still get named + checked.

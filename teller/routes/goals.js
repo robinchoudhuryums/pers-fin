@@ -333,11 +333,25 @@ router.patch("/api/goals/:id", async (req, res) => {
         linkingAccount
           ? pool.query("SELECT COALESCE(available_balance, current_balance) AS balance FROM linked_accounts WHERE id = $1", [coercedBody.funding_account_id])
           : pool.query("SELECT balance FROM investment_accounts WHERE id = $1", [coercedBody.funding_investment_id]),
-        pool.query("SELECT current_amount FROM financial_goals WHERE id = $1", [req.params.id]),
+        // The goal WITH its present funding source (cycle-9 F35): its progress
+        // is the derived amount (balance − baseline) when it is already linked.
+        // The stored current_amount is the pre-link figure, so re-linking to
+        // another account — or saving the same link again — reset the goal to
+        // what it had before it was ever linked.
+        pool.query(
+          `SELECT g.current_amount, g.funding_account_id, g.funding_investment_id, g.goal_baseline_amount,
+                  la.name AS funding_account_name,
+                  COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+                  ia.name AS funding_investment_name,
+                  ia.balance AS funding_investment_balance
+             FROM financial_goals g
+             LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
+             LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+            WHERE g.id = $1`, [req.params.id]),
       ]);
       if (acctRow.rows.length && goalRow.rows.length) {
         const accountBalance = parseFloat(acctRow.rows[0].balance || 0);
-        const goalCurrent = parseFloat(goalRow.rows[0].current_amount || 0);
+        const goalCurrent = deriveGoalProgress(goalRow.rows[0]).current;
         inferredBaseline = Math.max(0, accountBalance - goalCurrent);
       } else {
         console.error("funding baseline inference: account or goal not found, skipping link");

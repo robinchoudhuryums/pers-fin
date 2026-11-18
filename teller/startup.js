@@ -95,8 +95,23 @@ async function runBudgetAlertTick() {
     // tz month (FAN-13), the PRIOR month's rollover (FA-1) and the one-time
     // budget rule (F18) — the same numbers as GET /api/budgets and the in-app
     // alerts. This tick used to re-implement all three.
-    const budgets = await getBudgetStatus(pool, currentMonth());
+    let budgets = await getBudgetStatus(pool, currentMonth());
     if (budgets.length === 0) { jobHealth.result("budget-alerts", { ok: true }); return; }
+    // A rolled-over budget's limit needs LAST month's snapshot, which only the
+    // activity-gated budget-snapshot job wrote (cycle-9 F36): with the user
+    // away over a month end there was none, the rollover read $0 and this
+    // away channel pushed "Budget exceeded" at the base limit. Take it here
+    // (runBudgetSnapshot — refreshed on days 1-5, else created only if
+    // missing) and read the status again. Fail-soft: without it the alert
+    // falls back to what it had.
+    if (budgets.some((b) => b.rollover_enabled)) {
+      try {
+        const snap = await require("./routes/budgets").runBudgetSnapshot(pool);
+        if (snap && snap.mode !== "exists") budgets = await getBudgetStatus(pool, currentMonth());
+      } catch (e) {
+        console.error("Budget alert: last month's snapshot couldn't be taken:", e.message);
+      }
+    }
 
     const { sendToAll, sentRecently } = require("./routes/notifications");
     for (const b of budgets) {

@@ -9,6 +9,31 @@ const { tellerRequest } = require("../services/teller-api");
 const { INCOME_PREDICATE, NOT_TRANSFER, INVESTMENT_ACCOUNT_TYPES, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth } = require("../services/financial-queries");
 const { readMark, windowSql, advanceSql } = require("../services/txn-watermark");
 
+// Retire Teller enrollments that hold no accounts while another enrollment at
+// the same institution does (cycle-9 F13). Reconnecting a bank creates a NEW
+// enrollment and re-points the accounts to it (DD-8); the old row was left
+// behind with nothing under it — never listed (GET /api/items groups by
+// account), so no Unlink button, reported DISCONNECTED or decryption_failed
+// on every sync, and the nav badge read "Reconnect <bank>" for good. It has no
+// accounts and so no transactions; deleting the row loses nothing. Not
+// revoked at Teller: its token is usually the reason for the re-link, and the
+// accounts now belong to the new enrollment. `keepId` (the enrollment a link
+// just created) is never retired by its own request.
+const RETIRE_EMPTY_ENROLLMENTS_SQL = `
+  DELETE FROM teller_enrollments te
+   WHERE ($1::int IS NULL OR te.id <> $1::int)
+     AND NOT EXISTS (SELECT 1 FROM linked_accounts la WHERE la.teller_enrollment_id = te.id)
+     AND EXISTS (
+       SELECT 1 FROM teller_enrollments other
+         JOIN linked_accounts la2 ON la2.teller_enrollment_id = other.id
+        WHERE other.id <> te.id
+          AND LOWER(other.institution_name) = LOWER(te.institution_name))
+  RETURNING te.id, te.institution_name`;
+async function retireEmptyEnrollments(db = pool, keepId = null) {
+  const { rows } = await db.query(RETIRE_EMPTY_ENROLLMENTS_SQL, [keepId]);
+  return rows || [];
+}
+
 // POST /api/enroll — store Teller Connect enrollment
 router.post("/api/enroll", async (req, res) => {
   const { accessToken, enrollment } = req.body;
@@ -68,13 +93,17 @@ router.post("/api/enroll", async (req, res) => {
       linked++;
     }
 
+    // The enrollment this link replaced, if the accounts all moved (F13).
+    const retired = await retireEmptyEnrollments(client, enrollmentDbId);
+
     await client.query("COMMIT");
 
-    console.log(`Enrolled ${institutionName}: ${linked} accounts linked.`);
+    console.log(`Enrolled ${institutionName}: ${linked} accounts linked` + (retired.length ? `, ${retired.length} emptied enrollment(s) retired.` : "."));
     res.json({
       enrollment_id: enrollment.id,
       institution: institutionName,
       accounts_linked: linked,
+      retired_enrollments: retired.length,
     });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -431,6 +460,16 @@ async function syncAllEnrollments(opts = {}) {
     backfillFrom = d.toISOString().split("T")[0];
   }
 
+  // An enrollment a re-link emptied before this fix (or by any other path) is
+  // retired here, so it stops reporting an error on every run (cycle-9 F13).
+  // Fail-soft: the sync never depends on it.
+  try {
+    const gone = await retireEmptyEnrollments(pool);
+    if (gone.length) console.log(`Retired ${gone.length} Teller enrollment(s) with no accounts (replaced by a newer link).`);
+  } catch (e) {
+    console.error("retire empty Teller enrollments failed:", e.message);
+  }
+
   const { rows: enrollments } = await pool.query(TELLER_ENROLLMENTS_SQL + " ORDER BY te.id", [ENCRYPTION_PASSPHRASE]);
 
   let totalAdded = 0;
@@ -656,7 +695,19 @@ async function recordSyncResultNow(parts) {
       }
     }
   } catch (e) {
-    console.error("read last sync result error:", e.message);
+    // Without the stored map this call can't merge into it (cycle-9 F18): it
+    // used to carry on from an empty map and write, which dropped every other
+    // provider's recorded errors. Nothing is written; the caller still gets
+    // this run's own outcome.
+    console.error("read last sync result error — this run's outcome was not recorded:", e.message);
+    const own = {};
+    for (const { provider, result } of parts) {
+      if (result === null || result === undefined || isNotConfigured(result)) continue;
+      own[provider] = { at, errors: flattenSyncErrors(provider, result) };
+    }
+    const ownErrors = [];
+    for (const k of Object.keys(own).sort()) ownErrors.push(...own[k].errors);
+    return { at, errors: ownErrors, providers: own, recorded: false };
   }
   for (const { provider, result } of parts) {
     if (result === null || result === undefined || isNotConfigured(result)) continue;
@@ -820,15 +871,29 @@ function startBackground(res, kind, run, extra) {
   return res.status(202).json({ started: true, running: true, kind, id: job.id, started_at: job.started_at });
 }
 
+// Did a syncAllTransactions run sync anything? Yes when a connection synced
+// (fully or partly), or when it ran clean with nothing to do (no connections,
+// or none with an error). No when it reported errors and no connection synced.
+function transactionRunSynced(result) {
+  if (!result) return false;
+  if ((result.enrollments_synced || 0) > 0) return true;
+  return !(Array.isArray(result.errors) && result.errors.length);
+}
+
 // The work behind POST /api/sync, shared by the synchronous and background
 // paths. Returns { status, body, failure? } (failure = the status's error).
 async function runTransactionSync() {
   // Teller AND Plaid (BSI-2) — last_txn_sync_at now honestly covers both.
   const result = await syncAllTransactions();
-  // Update data freshness timestamp
-  await pool.query(
-    "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
-  ).catch(e => console.error("last_txn_sync_at update failed:", e.message));
+  // The freshness stamp moves only when the run synced something (cycle-9
+  // F18): a run in which every connection failed used to stamp it too, so the
+  // "Synced Xm ago" basis for an account with no per-connection stamp read
+  // fresh after a sync that brought nothing in.
+  if (transactionRunSynced(result)) {
+    await pool.query(
+      "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
+    ).catch(e => console.error("last_txn_sync_at update failed:", e.message));
+  }
   await recordSyncResult([
     { provider: "teller_txn", result: result.teller },
     { provider: "plaid_txn", result: result.plaid },
@@ -1358,14 +1423,48 @@ router.patch("/api/accounts/:id/shared", async (req, res) => {
 });
 
 // DELETE /api/accounts/manual/:id — Delete a manual account
+// An account with transactions (cycle-9 F14): transactions.account_id has no
+// delete action, so the bare DELETE failed on the foreign key and the route
+// answered 500 — a manual account with one cash entry could never be removed.
+// Now: 409 { reason: "has_transactions", transactions } until the caller
+// confirms with ?delete_transactions=1, then the account's transactions (and
+// their splits, by cascade) and balance snapshots go with it in one database
+// transaction — what unlinking a bank does for its accounts.
 router.delete("/api/accounts/manual/:id", async (req, res) => {
+  const id = /^\d{1,9}$/.test(String(req.params.id)) ? parseInt(req.params.id, 10) : null;
+  if (!id) return res.status(404).json({ error: "Manual account not found" });
+  const confirmed = req.query.delete_transactions === "1" || (req.body && req.body.delete_transactions === true);
+  let client;
   try {
-    const result = await pool.query("DELETE FROM linked_accounts WHERE id = $1 AND is_manual = true RETURNING id", [parseInt(req.params.id)]);
-    if (!result.rows.length) return res.status(404).json({ error: "Manual account not found" });
-    res.json({ deleted: true });
+    client = await pool.connect();
+    await client.query("BEGIN");
+    const acct = await client.query(
+      "SELECT id, account_id, name FROM linked_accounts WHERE id = $1 AND is_manual = true FOR UPDATE", [id]);
+    if (!acct.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Manual account not found" });
+    }
+    const a = acct.rows[0];
+    const count = (await client.query("SELECT count(*)::int AS n FROM transactions WHERE account_id = $1", [a.account_id])).rows[0].n;
+    if (count > 0 && !confirmed) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: `${a.name} has ${count} transaction${count === 1 ? "" : "s"}. Removing the account removes ${count === 1 ? "it" : "them"} too.`,
+        reason: "has_transactions",
+        transactions: count,
+      });
+    }
+    if (count > 0) await client.query("DELETE FROM transactions WHERE account_id = $1", [a.account_id]);
+    await client.query("DELETE FROM account_balance_snapshots WHERE source = 'linked' AND source_id = $1", [a.id]);
+    await client.query("DELETE FROM linked_accounts WHERE id = $1 AND is_manual = true", [a.id]);
+    await client.query("COMMIT");
+    res.json({ deleted: true, transactions_deleted: count });
   } catch (err) {
+    if (client) await client.query("ROLLBACK").catch(() => {});
     console.error("delete manual account error:", err.message);
     res.status(500).json({ error: "Failed to delete account" });
+  } finally {
+    if (client) client.release();
   }
 });
 
@@ -1792,5 +1891,8 @@ module.exports.runAnomalyCheck = runAnomalyCheck;
 module.exports.runPostSyncSteps = runPostSyncSteps;
 module.exports.runTransactionSync = runTransactionSync;
 module.exports.runBalanceSync = runBalanceSync;
+module.exports.retireEmptyEnrollments = retireEmptyEnrollments; // cycle-9 F13
+module.exports.RETIRE_EMPTY_ENROLLMENTS_SQL = RETIRE_EMPTY_ENROLLMENTS_SQL;
+module.exports.transactionRunSynced = transactionRunSynced; // cycle-9 F18
 module.exports._bgJobs = bgJobs;
 module.exports.lookbackFloor = lookbackFloor; // exported for testing (BSI-8)

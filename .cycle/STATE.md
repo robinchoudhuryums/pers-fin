@@ -18,6 +18,41 @@ Updated: 2026-11-18
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 7 (DONE, 2026-11-18) — bank-sync recovery:** block `.cycle/blocks/9-batch7-broad-implement.md`.
+  F13 (enrollments.js `retireEmptyEnrollments`: a Teller enrollment with no accounts, while another at the same
+  institution has some, is deleted — inside POST /api/enroll's transaction, never the one just created, and fail-soft at
+  the top of syncAllEnrollments for one stranded earlier), F14 (DELETE /api/accounts/manual/:id: 409 `has_transactions`
+  with the count until `?delete_transactions=1`, then transactions + snapshots + account in one transaction; the Accounts
+  page asks and retries), F15 (csv-formats.js: a generic file with Debit / Credit columns and no Amount column is
+  |debit| − |credit|; `isTwoColumnGeneric`; such a file has positive_means null in the route, CLI and both forms), F16
+  (a Plaid `modified` row the upsert inserted counts in `added`), F17 (findDuplicateInvestmentItem inner-joins the
+  registry; the investments-only unlink falls back to the institution name when it can't list the accounts, unless
+  another connection has that name), F18 (`transactionRunSynced` gates the last_txn_sync_at stamp; a failed read in
+  recordSyncResultNow writes nothing and returns `recorded: false`; a partial webhook sync fails its event in both
+  handlers), F19 (the Plaid dedupe key is the hash of header.payload), F35 (the goal PATCH's inferred baseline uses
+  deriveGoalProgress of the goal with its present funding source), F36 (runBudgetAlertTick calls runBudgetSnapshot when
+  a budget has rollover on, then re-reads the status).
+  - **Tests:** `npm test` 3544 / 3544 (52 new — tests/cycle9-b7.test.js; 187 files; Perfin 2775, Per-sistant 769);
+    contract 393 / 393 (10 new — tests/contract/c9-batch7); Playwright 93 / 93; five shifted clocks 217 / 217 each;
+    mutation check 39 of 52 unit and 10 of 10 contract fail against the pre-fix source. A double and three pins updated
+    (cycle-fixes' recordSyncResult double, w2's dedupe key, batch16's sign-select pin, batch5's `let budgets` pin).
+  - **Decisions:** F13 — delete (not SUSPEND) and no revoke at Teller: the row has no accounts or transactions, and its
+    token is usually why the bank was re-linked; the sync-time call also clears enrollments stranded before the fix.
+    F14 — confirm-then-delete rather than a silent cascade or a bare 409, since a manual account's entries exist nowhere
+    else. F15 — the two-column read only when there is no Amount column, and the sign option dropped for such a file.
+    F17 — both the recommended guard change and the unlink fallback, the fallback only when no other connection shares
+    the institution name. F18 — a partly synced run still stamps; only a run of errors with nothing synced doesn't. F36 —
+    the existing runBudgetSnapshot (so days 1–5 refresh), called only when a budget has rollover on.
+  - **Net score:** 0 − 2 = −2 (no fix I can confirm fired this month; a zero-account second login at the same bank is
+    retired at the next sync; a stranded investment account is listed twice after a now-permitted re-link).
+  - **Open follow-ons:** Teller issuing new account ids on a reconnect still duplicates transactions (no Teller
+    duplicate guard); an empty enrollment with no same-institution replacement is still unlisted; unlinking a bank
+    doesn't remove its balance snapshots; a re-link doesn't deactivate a stranded same-mask investment account; the
+    two-column names are a fixed list; recordSyncResult's write still only logs a failure; two identical Plaid
+    deliveries in one second share a key; the in-app budget alerts still depend on the snapshot job.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs not yet synced for
+    Batches 6 and 7 — run `/sync-docs` (both blocks list what). Then `/broad-implement Batch 8` (Per-sistant: F52 F53
+    F50 F65–F72 F54 F55 F56 F58 F26 F27 — read the list from the plan below).
 - **Cycle 9 Batch 6 (DONE, 2026-11-18) — cash plan:** block `.cycle/blocks/9-batch6-broad-implement.md`.
   F30 (advice.js `detectRaises`: every deposit of the run must be 3% above the old level, so one raised deposit among
   cents-noisy paychecks is no longer a half-size raise dated to an old paycheck; advice-alerts.js keys a raise by payer +
@@ -241,7 +276,7 @@ implement and reflect sessions only set Phase.)
     - **Batch 6 (DONE) — cash plan:** F30 (raise detection half-size + alert key churn), F31 (a ≥ 8% loan with no payment dropped →
       "Invest"), F32 (spending average always ÷ 3; emergency date ignores the debt step), F33 (FIRE income averaged over
       months with rows only), F37, F38 (smaller plan / forecast-label / payday-order / whats-new-count / year-end-cancel items).
-    - **Batch 7 — bank-sync recovery:** F13 (a Teller reconnect strands the old enrollment), F14 (a manual account with
+    - **Batch 7 (DONE) — bank-sync recovery:** F13 (a Teller reconnect strands the old enrollment), F14 (a manual account with
       transactions can't be deleted — FK → 500), F15 (generic CSV with separate Debit / Credit columns), F17 (investments-only
       unlink leaves accounts; guard refuses the re-link), F16, F18, F19, F35 (goal re-link resets progress), F36 (budget alert
       rollover depends on an activity-gated snapshot).

@@ -2036,8 +2036,10 @@
           var res = await apiFetch('/api/import-csv/preview', { method: 'POST', body: csvFormData() });
           var data = await res.json().catch(function() { return {}; });
           if (res.ok) {
-            if (csvSign) csvSign.hidden = data.format_detected !== 'generic';
-            if (csvSign && data.format_detected === 'generic' && !csvSignChosen) {
+            // A file with Debit / Credit columns has a known sign (positive_means null — F15).
+            var signUnknown = data.format_detected === 'generic' && data.positive_means != null;
+            if (csvSign) csvSign.hidden = !signUnknown;
+            if (csvSign && signUnknown && !csvSignChosen) {
               csvSignChosen = true;
               csvSign.value = data.sign_guess || 'charges';
               // The first preview read positives as charges; re-run it with the guess.

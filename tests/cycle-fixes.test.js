@@ -415,7 +415,10 @@ describe("Addition D — recordSyncResult + data-health surfacing", () => {
   it("recordSyncResult flattens per-provider errors and persists them", async () => {
     let written = null;
     dbModule.pool.query = async (sql, params) => {
-      if (/last_sync_result/.test(sql)) written = JSON.parse(params[0]);
+      // The write only: the double used to parse the SELECT's (absent)
+      // parameters too, which threw — a failed read, after which nothing is
+      // written any more (cycle-9 F18).
+      if (/^UPDATE user_settings SET last_sync_result/.test(sql)) written = JSON.parse(params[0]);
       return { rows: [] };
     };
     const out = await enr.recordSyncResult([
