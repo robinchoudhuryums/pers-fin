@@ -18,6 +18,38 @@ Updated: 2026-11-18
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 6 (DONE, 2026-11-18) — cash plan:** block `.cycle/blocks/9-batch6-broad-implement.md`.
+  F30 (advice.js `detectRaises`: every deposit of the run must be 3% above the old level, so one raised deposit among
+  cents-noisy paychecks is no longer a half-size raise dated to an old paycheck; advice-alerts.js keys a raise by payer +
+  `since`, with the old payer + level key kept as `legacy`), F31 (a high-tier carried debt with no payment on file stays
+  in `planned` with a $0 payment and `minimum_unknown`; its payoff figures are null; headline "on top of its regular
+  payment"; the card says "Set its monthly payment", the prompt line says there is no payoff date), F32 (the spending
+  average over the completed months that have data, `cash.spending_months`, a note under 3 months; the starter-buffer
+  step's emergency date = buffer months + high-debt payoff + the rest), F33 (projections.js `fireAverages` — income and
+  spending over the same completed months — behind GET /api/fire-projection and Ask's get_fire_projection), F37
+  (`unplaced`: what a step's debts can't take this month goes to the emergency fund or investing and the headline says
+  so, `headline.amount_*` unchanged; idle-cash lines exact unless the cash cap cuts them; only announced windfalls are
+  marked seen), F38 (cash-flow `avg_daily_spend` = the projected daily average; payday candidates `ORDER BY
+  transactions.id`; whats-new `COUNT(*) OVER()`; tax-investments reads a later row that cancels a row of the year).
+  - **Tests:** `npm test` 3492 / 3492 (38 new — tests/cycle9-b6.test.js; 186 files; Perfin 2723, Per-sistant 769);
+    contract 383 / 383 (5 new — tests/contract/c9-batch6); Playwright 93 / 93; five shifted clocks 249 / 249 each;
+    mutation check 29 of 38 unit and 5 of 5 contract fail against the pre-fix source. Two existing pins updated
+    (roadmap-t4-1-a6's alert key, roadmap-t2-2-cash-l3's ORDER BY).
+  - **Decisions:** F31 limited to the high tier, as the finding says (a 4–8% loan with no payment is a follow-on); the
+    loan's payment counts as $0 and its payoff figures are blank rather than computed without the real payment. F37: the
+    remainder goes to the next step instead of lowering the headline amount, so the plan-change alert doesn't fire for a
+    debt's last payment; with a medium-interest debt present it is still shown as investing (simplification). F32: with
+    no month of data the average stays $0 and a note says so. F30: the `legacy` key avoids a repeat push after deploy
+    only when the level is unchanged. F38: `avg_daily_spend` fixed in the projection's output, the 60-day input left.
+  - **Net score:** 1 − 2 = −1 (the "Daily discretionary" label; a small noisy raise not reported, the remainder shown
+    as investing beside a medium-interest debt).
+  - **Open follow-ons:** a 4–8% loan with no payment still left out; a what-if extra payment on a loan with no payment
+    ignored; the surplus doesn't subtract an unknown loan payment; no month of data → targets are the floor alone;
+    whats-new's subscription / notification counts still capped; the capped headline names only the next debt; the
+    medium headline names only the first debt.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs not yet synced for
+    Batch 6 — run `/sync-docs` (the block lists what). Then `/broad-implement Batch 7` (F13 F14 F15 F17 F16 F18 F19
+    F35 F36 — bank-sync recovery; read the list from the plan below).
 - **Cycle 9 Batch 5 follow-on items (DONE, 2026-11-18):** block `.cycle/blocks/9-batch5-followons-broad-implement.md`.
   The seven follow-ons Batch 5's block listed, in its order. FO-1 (dashboard.ejs: the Debt Payoff mode returns a
   "settings couldn't be loaded" status instead of storing today's debt as the baseline when GET /api/settings fails),
@@ -206,7 +238,7 @@ implement and reflect sessions only set Phase.)
       reaches no one), F47 (GET /api/settings 200-with-defaults on a read error; toggle race; idle-timeout 7.5 → 500;
       "false" → true), F46 (a transient push failure never retried), F48 (auto_closed not cleared on a hand reopen), F49
       (standalone SSO non-string token; spring-forward release an hour late).
-    - **Batch 6 — cash plan:** F30 (raise detection half-size + alert key churn), F31 (a ≥ 8% loan with no payment dropped →
+    - **Batch 6 (DONE) — cash plan:** F30 (raise detection half-size + alert key churn), F31 (a ≥ 8% loan with no payment dropped →
       "Invest"), F32 (spending average always ÷ 3; emergency date ignores the debt step), F33 (FIRE income averaged over
       months with rows only), F37, F38 (smaller plan / forecast-label / payday-order / whats-new-count / year-end-cancel items).
     - **Batch 7 — bank-sync recovery:** F13 (a Teller reconnect strands the old enrollment), F14 (a manual account with

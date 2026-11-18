@@ -323,8 +323,8 @@ describe("T4.1 A6 — the plan-change push names a new raise or bonus once", () 
   const withBonus = () => plan({ deposits: [...RAISED, { date: "2026-10-15", source: "ACME PAYROLL", amount: 5000 }] });
   const run = (pool, getPlan, sendToAll, today = TODAY) => aa.runAdviceAlerts(pool, { now: NOW, today, deps: { getPlan, sendToAll } });
 
-  it("windfallsOf keys a bonus by payer, day and amount and a raise by payer and level", () => {
-    assert.deepEqual(aa.windfallsOf(withBonus()).map((w) => w.key), ["bonus:acme payroll:2026-10-15:5000", "raise:acme payroll:2200"]);
+  it("windfallsOf keys a bonus by payer, day and amount and a raise by payer and the day its new level began (cycle-9 F30)", () => {
+    assert.deepEqual(aa.windfallsOf(withBonus()).map((w) => w.key), ["bonus:acme payroll:2026-10-15:5000", "raise:acme payroll:2026-09-18"]);
   });
 
   it("the baseline records them without a push", async () => {
@@ -332,7 +332,7 @@ describe("T4.1 A6 — the plan-change push names a new raise or bonus once", () 
     let sent = 0;
     await run(pool, async () => withBonus(), async () => { sent++; return { logged: true }; });
     assert.equal(sent, 0);
-    assert.deepEqual(pool.calls.writes[0].windfalls_seen, ["bonus:acme payroll:2026-10-15:5000", "raise:acme payroll:2200"]);
+    assert.deepEqual(pool.calls.writes[0].windfalls_seen, ["bonus:acme payroll:2026-10-15:5000", "raise:acme payroll:2026-09-18"]);
   });
 
   it("a new one with the plan unchanged: one push, the signature kept, not again the next day", async () => {

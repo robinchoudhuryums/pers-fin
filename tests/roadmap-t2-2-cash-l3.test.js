@@ -107,7 +107,7 @@ describe("runPaydayLanded", () => {
     assert.deepEqual(pool.calls.updates, [["500", "2026-03-19 10:00:00.111111+00"]], "the mark's id and time, as text");
     assert.deepEqual(pool.calls.candidateParams, ["400", "2026-03-14 08:00:00.123456+00", "500", "2026-03-14"], "deposits dated within 5 days");
     assert.match(pool.calls.candidateSql, /amount < 0 AND pending = false/);
-    assert.match(pool.calls.candidateSql, /ORDER BY id/);
+    assert.match(pool.calls.candidateSql, /ORDER BY transactions\.id/);
     assert.ok(pool.calls.candidateSql.includes(require("../teller/services/financial-queries").INCOME_PREDICATE));
   });
 

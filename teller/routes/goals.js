@@ -703,7 +703,7 @@ router.get("/api/context-export", async (req, res) => {
 router.get("/api/fire-projection", async (req, res) => {
   try {
     const { getNetWorth, getMonthlyIncome, getMonthlySpending } = require("../services/financial-queries");
-    const { computeFireProjection, computeRunwayMonths } = require("../services/projections");
+    const { computeFireProjection, computeRunwayMonths, fireAverages } = require("../services/projections");
 
     const [nw, incomeRows, spendingRows, settingsRow] = await Promise.all([
       getNetWorth(pool),
@@ -715,15 +715,11 @@ router.get("/api/fire-projection", async (req, res) => {
     const annualReturnPct = s.fire_expected_return_pct != null ? parseFloat(s.fire_expected_return_pct) : 5;
     const withdrawalRatePct = s.fire_withdrawal_rate_pct != null ? parseFloat(s.fire_withdrawal_rate_pct) : 4;
 
-    // Drop the current (partial) month, average the completed remainder.
-    const thisMonth = currentMonth();
-    const completed = (rows) => rows.filter(r => String(r.month).slice(0, 7) !== thisMonth);
-    const avg = (rows, key) => {
-      const vals = completed(rows).map(r => parseFloat(r[key]) || 0);
-      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-    };
-    const avgIncome = avg(incomeRows, "total_income");
-    const avgSpending = avg(spendingRows, "total_spend");
+    // Drop the current (partial) month; income and spending are averaged
+    // over the same completed months (fireAverages — cycle-9 F33).
+    const averages = fireAverages(incomeRows, spendingRows, currentMonth());
+    const avgIncome = averages.avg_income;
+    const avgSpending = averages.avg_spending;
     const monthlySpending = s.fire_monthly_spending_override != null
       ? parseFloat(s.fire_monthly_spending_override)
       : avgSpending;
@@ -750,7 +746,7 @@ router.get("/api/fire-projection", async (req, res) => {
         spending_overridden: s.fire_monthly_spending_override != null,
       },
       data_basis: {
-        completed_months_used: completed(spendingRows).length,
+        completed_months_used: averages.months,
         avg_monthly_income: Math.round(avgIncome * 100) / 100,
         avg_monthly_spending: Math.round(avgSpending * 100) / 100,
         monthly_savings: Math.round(monthlySavings * 100) / 100,

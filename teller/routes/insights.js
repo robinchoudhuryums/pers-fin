@@ -76,7 +76,9 @@ function cashPlanPromptBlock(plan) {
     out += "Debts (pay each per " + unit + "):\n" + a.debts.map((d) => {
       let line = "- " + sanitizeForPrompt(d.name) + ": APR " + d.apr + "%" + (d.apr_assumed ? " (assumed — APR unknown)" : "") +
         ", balance " + usd(d.balance) + ", pay " + usd(d.per_period) + " per " + unit +
-        " (" + usd(d.payment_monthly) + " a month: " + usd(d.minimum_monthly) + " minimum + " + usd(d.extra_monthly) + " extra)";
+        (d.minimum_unknown
+          ? " on top of its regular payment (" + usd(d.payment_monthly) + " a month extra; its monthly payment isn't on file, so there is no payoff date)"
+          : " (" + usd(d.payment_monthly) + " a month: " + usd(d.minimum_monthly) + " minimum + " + usd(d.extra_monthly) + " extra)");
       if (d.minimum_never_pays_off) line += ", the minimum alone never pays it off";
       else if (d.payoff_month) line += ", paid off " + d.payoff_month;
       if (d.extra_monthly > 0 && d.interest_saved != null) line += ", saves " + usd(d.interest_saved) + " in interest vs minimums only";

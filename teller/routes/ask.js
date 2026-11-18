@@ -164,7 +164,7 @@ async function toolBudgetStatus() {
 }
 
 async function toolFireProjection() {
-  const { computeFireProjection, computeRunwayMonths } = require("../services/projections");
+  const { computeFireProjection, computeRunwayMonths, fireAverages } = require("../services/projections");
   const [nw, income, spending, sRow] = await Promise.all([
     getNetWorth(pool),
     getMonthlyIncome(pool, 7),
@@ -172,16 +172,13 @@ async function toolFireProjection() {
     pool.query("SELECT fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override FROM user_settings WHERE id = 1"),
   ]);
   const s = sRow.rows[0] || {};
-  const thisMonth = currentMonth();
-  const avg = (rows, key) => {
-    const v = rows.filter(r => String(r.month).slice(0, 7) !== thisMonth).map(r => parseFloat(r[key]) || 0);
-    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
-  };
+  // The same months for both averages — the Goals page's rule (cycle-9 F33).
+  const averages = fireAverages(income, spending, currentMonth());
   const monthlySpending = s.fire_monthly_spending_override != null
-    ? parseFloat(s.fire_monthly_spending_override) : avg(spending, "total_spend");
+    ? parseFloat(s.fire_monthly_spending_override) : averages.avg_spending;
   const proj = computeFireProjection({
     netWorth: nw.net_worth,
-    monthlySavings: avg(income, "total_income") - avg(spending, "total_spend"),
+    monthlySavings: averages.avg_income - averages.avg_spending,
     monthlySpending,
     annualReturnPct: s.fire_expected_return_pct != null ? parseFloat(s.fire_expected_return_pct) : 5,
     withdrawalRatePct: s.fire_withdrawal_rate_pct != null ? parseFloat(s.fire_withdrawal_rate_pct) : 4,

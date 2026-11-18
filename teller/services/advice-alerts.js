@@ -117,14 +117,22 @@ function changeText(prev, sig, plan, change) {
   return `Your plan changed — it now ${phrase}.`;
 }
 
-// Pure: the plan's raises and bonuses as [{ key, text }] — a bonus by payer,
-// day and amount, a raise by payer and its new level.
+// Pure: the plan's raises and bonuses as [{ key, text, legacy? }] — a bonus by
+// payer, day and amount, a raise by payer and the day its new level began
+// (cycle-9 F30: it was keyed by the new level, a median that moves by cents
+// with each deposit, so one raise was pushed again after every paycheck).
+// `legacy` is the old key — a raise announced under it isn't announced again.
 function windfallsOf(plan) {
   const out = [];
   for (const b of plan.bonuses || []) if (b && b.text) out.push({ key: `bonus:${String(b.source).toLowerCase()}:${b.date}:${b.amount}`, text: b.text });
-  for (const r of plan.raises || []) if (r && r.text) out.push({ key: `raise:${String(r.source).toLowerCase()}:${r.to}`, text: r.text });
+  for (const r of plan.raises || []) {
+    if (!r || !r.text) continue;
+    const payer = String(r.source).toLowerCase();
+    out.push({ key: `raise:${payer}:${r.since}`, legacy: `raise:${payer}:${r.to}`, text: r.text });
+  }
   return out;
 }
+const isSeen = (seen, w) => seen.includes(w.key) || (!!w.legacy && seen.includes(w.legacy));
 function mergeSeen(seen, keys) {
   return [...new Set([...(Array.isArray(seen) ? seen : []), ...keys])].slice(-WINDFALLS_KEPT);
 }
@@ -159,7 +167,7 @@ async function runAdviceAlerts(pool, { now = new Date(), today = todayStr(), dep
     return { status: "baseline", ran: true, signature: sig };
   }
   const change = planChange(prev, sig);
-  const fresh = windfalls.filter((w) => !seen.includes(w.key));
+  const fresh = windfalls.filter((w) => !isSeen(seen, w));
   if (!change && !fresh.length) {
     await save({ ...state, checked_on: today, last_check: { at, outcome: "unchanged" } });
     _doneDay = today;
@@ -168,7 +176,11 @@ async function runAdviceAlerts(pool, { now = new Date(), today = todayStr(), dep
 
   const parts = [];
   if (change) parts.push(changeText(prev, sig, plan, change));
-  for (const w of fresh.slice(0, WINDFALLS_PER_PUSH)) parts.push(w.text);
+  // Only what this push names is marked seen (cycle-9 F37: every fresh
+  // windfall was, so a third raise or bonus was never announced); the rest
+  // go out with the next day's check.
+  const announced = fresh.slice(0, WINDFALLS_PER_PUSH);
+  for (const w of announced) parts.push(w.text);
   const body = parts.join(" ");
   const title = change ? "Your plan changed" : "New money for your plan";
   const r = await sendToAll({ title, body, tag: TAG, data: { url: "/dashboard" } });
@@ -179,13 +191,13 @@ async function runAdviceAlerts(pool, { now = new Date(), today = todayStr(), dep
   }
   await save({
     signature: change ? sig : prev,
-    windfalls_seen: mergeSeen(seen, fresh.map((w) => w.key)),
+    windfalls_seen: mergeSeen(seen, announced.map((w) => w.key)),
     checked_on: today,
     notified_at: at,
     last_check: { at, outcome: "notified", kind: change ? change.kind : "windfall" },
   });
   _doneDay = today;
-  return { status: "notified", ran: true, change, windfalls: fresh.length, body };
+  return { status: "notified", ran: true, change, windfalls: announced.length, body };
 }
 
 module.exports = {

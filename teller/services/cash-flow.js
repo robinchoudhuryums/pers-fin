@@ -352,7 +352,12 @@ function projectCashFlow(inputs, { days }) {
   return {
     forecast_days: days,
     starting_balance: startingBalance,
-    avg_daily_spend: cents(avgDailySpend),
+    // What the projection takes off per day, on average (cycle-9 F38). The
+    // 60-day figure in the inputs averages only the days that had spending,
+    // while the projection uses weekday averages that count the days with
+    // none — the dashboard's "Daily discretionary" showed the first, about
+    // three times what the forecast used.
+    avg_daily_spend: cents(days > 0 ? totalDiscretionary / days : avgDailySpend),
     total_projected_income: cents(totalIncome),
     total_projected_bills: cents(totalBills),
     total_projected_discretionary: cents(totalDiscretionary),

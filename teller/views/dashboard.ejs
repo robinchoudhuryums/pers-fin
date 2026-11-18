@@ -1560,7 +1560,8 @@
         '<th scope="col" class="num">Paid off</th><th scope="col" class="num">Interest saved</th></tr></thead><tbody>';
       return head + rows.map(function (d) {
         var apr = d.apr == null ? '\u2014' : esc(String(d.apr)) + '%' + (d.apr_assumed ? ' (assumed)' : '');
-        var paidOff = d.months_to_payoff == null
+        var paidOff = d.minimum_unknown ? 'Set its monthly payment'
+          : d.months_to_payoff == null
           ? '<span class="amt-bad">' + (d.minimum_never_pays_off ? 'Minimum never pays it off' : 'Not in 50 years') + '</span>'
           : esc(adviceMonth(d.payoff_month));
         var saved = d.interest_saved == null || !(d.extra_monthly > 0) ? '\u2014' : fmt(d.interest_saved);
