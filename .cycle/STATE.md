@@ -45,9 +45,11 @@ implement and reflect sessions only set Phase.)
     lasting error is visible only in Recent errors; Per-sistant's Settings blocks the theme change too after a failed
     load; `vault_branch` unchecked; `hold_until` can be up to a minute past the hour; a held rent push's cover list is
     the unpaid months at send time.
-  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced for
-    these follow-ons (CLAUDE.md still lists them as open under cycle 9 Batch 5, and the counts read 3410 / 183 / 370).
-    Next: `/sync-docs`, then `/broad-implement Batch 6` (F30 F31 F32 F33 F37 F38 — cash plan).
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). `/sync-docs` done for
+    these follow-ons (2026-11-18): CLAUDE.md (notifications.js / housing.js entries, Web Push, the bell wording, the
+    Rent reminder, Per-sistant tasks, Debt Payoff, Database, Scheduled Tasks, Known Open Issues, INV-59 / INV-153, the
+    test list, counts 3454 / 185 / 378), apps/per-sistant/CLAUDE.md, README counts. No new operator state.
+    Next: `/broad-implement Batch 6` (F30 F31 F32 F33 F37 F38 — cash plan).
 - **Cycle 9 Batch 5 (DONE, 2026-11-18) — notifications and settings:** block `.cycle/blocks/9-batch5-broad-implement.md`.
   F44 (notifications.js: the release job decides expiry per row — 12 hours past the END of the quiet window the row was
   created in, by today's settings, else past its creation; the SQL expiry is gone), F46 (new push_state `retry` in

@@ -955,7 +955,10 @@ teller/
                            package share both. Cycle-9 F34: runHousingReminders tests
                            the OLDEST unpaid month's window (MIN(period)); the push's
                            item is that month's (housing:<oldest>) and its tag next
-                           month's only when next month's rent is announced.
+                           month's only when next month's rent is announced. Cycle-9
+                           follow-on: the push also carries cover_items — the other
+                           unpaid months' items — so a showing task for any unpaid
+                           month covers it.
     tax.js               — The year-end tax package routes (roadmap T3.3): K2's
                            documents checklist — GET / POST /api/tax/documents,
                            PATCH / DELETE /api/tax/documents/:id, POST
@@ -1170,7 +1173,21 @@ teller/
                            (F46 — no subscription, or only dead ones, is still 'none');
                            the release job expires a waiting row per row, 12 h past the
                            END of the quiet window it was created in (F44 — it was 12 h
-                           from creation, in SQL)
+                           from creation, in SQL). Cycle-9 Batch 5 follow-ons:
+                           passingPushError — only a failure with no HTTP status, a
+                           408, a 429 or a 5xx is retried; any other 4xx and an
+                           unreadable stored subscription are `lasting` → 'none',
+                           logged, the subscription kept; a retry that gives up is
+                           'failed' (a hold that gives up stays 'expired');
+                           urgentRetry — a retry of a kind quiet hours never hold (a
+                           PIN lockout) opens the gate during quiet hours and the job
+                           then reads and pushes only those rows (true at boot);
+                           hold_until — written at the hold, and holdWindowEnd is the
+                           later of it and the end by today's settings; payload.
+                           cover_items (with item) — other items standing for the same
+                           thing, kept in the row's data.cover_items, never pushed:
+                           itemCovered takes the list and is true when any has a
+                           showing task
     persistent.js        — Per-sistant integration: webhooks, SSO, productivity context
                            (queryPersistentStats = Per-sistant's /api/stats SQL — no missed
                            or auto-closed task done, overdue on the APP_TIMEZONE day;
@@ -1644,9 +1661,21 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3410 tests as of latest); use
+  Perfin and Per-sistant test files (3454 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3410 tests across 183 test files (incl.
+  Current count: 3454 tests across 185 test files (incl.
+  `tests/cycle9-b5-followons.test.js` — the cycle-9 Batch 5 follow-ons: passingPushError and a 403 / 400 / 401 / 413 ending
+  `none` with the subscription kept while a 408 / 429 / 502 / network error is a retry, an unreadable stored subscription,
+  the release job marking refused holds `none` as a clean run; a stale hold `expired` and a stale retry `failed`, each by
+  its own UPDATE, and the bell's words; a failed PIN-lockout push sent during quiet hours while a held push waits, a later
+  hold not closing the gate, a holdable retry left alone, no read while nothing urgent waits and one read after a restart,
+  its 12 hours from creation; `hold_until` written at the hold, a window moved or lengthened since, a row with no stored
+  end; `cover_items` — a later unpaid month's showing task covering the rent push at send and at release, malformed /
+  repeated items dropped, the push never carrying them, runHousingReminders' list; the Debt Payoff mode run from
+  dashboard.ejs writing nothing when its settings read fails — with `apps/per-sistant/tests/cycle9-b5-followons.test.js`
+  (PATCH /api/settings' strict switches, hours, zone, timeout, horizon and layout; the Settings page and the dashboard
+  layout run in a vm refusing to save after a failed load; the rent line across every unpaid month); the database-backed
+  half is `tests/contract/c9-batch5-followons`;
   `tests/cycle9-b5.test.js` — cycle 9 Batch 5: sendToAll and the release job over a fake notification_log with a stubbed
   web-push (a push held 30 minutes into a 13-hour quiet window pushed when it ends, expired only 12 hours past the
   window's end, the edge either side, quiet hours changed since; a push that failed everywhere kept as `retry`, pushed as
@@ -2825,7 +2854,12 @@ shell/
   3rd under last month's item; a linked task due tomorrow neither covering the push nor hiding Per-sistant's line, due
   today both, with no due date neither; a toggle merged into the stored map and two at once both landing; "false" and
   7.5 refused with nothing changed; a hand reopen clearing auto_closed, the completion counted, the migration's repair).
-  370 tests, run
+  Since the Batch 5 follow-ons, c9-batch5-followons (both apps' real databases: a held push's stored `hold_until` still
+  counting once quiet hours are switched off; a stale retry stored `failed` and a stale hold `expired`; a 403 ending
+  `none` with the subscription kept; a failed PIN-lockout push sent during quiet hours while a held push waits; with two
+  months owed, the later month's showing task covering the push and hiding Per-sistant's line, a task for a month that
+  isn't owed doing neither; Per-sistant's settings refusing "false", an hour of 24 and a malformed layout unchanged).
+  378 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3497,7 +3531,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   OLDEST unpaid month's (cycle-9 F34 — only this month's was tested, so last month's unpaid
   rent got no push from the 1st until this month's window opened); the push's item is that
   month's (`housing:<oldest>`, the month the linked task and Per-sistant's line name) and
-  its tag `housing-due-<oldest>`, or next month's while next month's rent is announced.
+  its tag `housing-due-<oldest>`, or next month's while next month's rent is announced. With
+  several months owed, a showing linked task for ANY unpaid month covers the push (the oldest
+  month's task may have been ticked off by hand while a later month's still shows — cycle-9
+  follow-on; only the oldest month's task used to be asked about).
   Recording a payment ticks the unpaid obligations being settled,
   auto-sums the amount, and **auto-derives the memo** by collapsing consecutive
   months into ranges (`deriveMemo` → "Jan–Mar 2026 Rent, Jan 2026 Electricity");
@@ -3877,7 +3914,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   the latest `net_worth_snapshots` row (getNetWorth — loans as debt, investments included,
   WD-5) and says it "appears after the next balance sync" until one exists; Debt Payoff
   counts credit cards AND loans, and the stored `debt_baseline_amount` acts as a high-water
-  mark — when current debt is above it, it is raised to the current debt.
+  mark — when current debt is above it, it is raised to the current debt. A failed settings
+  read writes nothing (the card says the settings couldn't be loaded — cycle-9 follow-on; it
+  used to store today's debt as the baseline).
 - **Transaction search**: Full-text search with filters — category, account, amount range, date range
   (GET /api/transactions/search). The Activity page has an Account filter and
   pre-fills its filters from the query string (`q`, `category`, `account_id`,
@@ -4006,7 +4045,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   AND showing — due today or earlier: a rent task isn't due during the lead window and says
   nothing itself, so the lead-time push and Per-sistant's line go out then, and the task
   takes over from its due date (a task whose due date you move later stops covering; one
-  with no due date never covers). Reopening a task the sync closed clears its "closed by
+  with no due date never covers). With several months of rent owed, a showing task for any
+  unpaid month stands in for the rent push and Per-sistant's rent line; a task for a month
+  that isn't owed never does (cycle-9 follow-on). Reopening a task the sync closed clears its "closed by
   Perfin" mark, so completing it yourself afterwards counts (F48). Checked
   hourly but run once a local day unless something changed (F21), right after a housing,
   housing-config, bill-payment, manual-bill or tax-document write, and on "Run now" (`POST
@@ -4588,7 +4629,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   didn't go out says so after its time (`push_state`, cycle-8 E3c): "Held for quiet hours",
   "Held for quiet hours — not pushed" (expired), "Muted — not pushed", (cycle-8 E3d) "Your
   Per-sistant task covers it — not pushed" (covered — such a row is written read) or
-  (cycle-9 F46) "Push failed — trying again" (retry).
+  (cycle-9 F46) "Push failed — trying again" (retry) or "Push failed — not delivered"
+  (failed — a retry that gave up).
 - **Data freshness API**: `GET /api/data-freshness` returns per-source timestamps
   (transactions, balances, auto-sync, insights) with `age_seconds`, a boolean
   `stale` flag (>24h), and an explicit `level` (`"fresh"` <6h / `"aging"` 6-24h /
@@ -4678,8 +4720,14 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   read), the row is kept as `retry` and the same job pushes it at its next run (15 minutes),
   for up to 12 hours; nobody subscribed, or only dead subscriptions (404 / 410), is `none`
   as before. While one is waiting and still failing the job reports a failed run (Sync
-  Health shows it) — a device whose subscription is refused for good needs push removed and
-  registered again.
+  Health shows it). Cycle-9 follow-ons: only a failure that can pass is retried — no HTTP
+  status (network, timeout), 408, 429 or a 5xx; any other 4xx (a 400, a 401 / 403 — the push
+  service refuses this server's key for that subscription — a 413) ends as `none` with a
+  logged error and the subscription kept: remove and re-register push on that device. A retry
+  that is still failing after its 12 hours is `failed`. A failed push of a kind quiet hours
+  never hold (a PIN lockout) is retried during quiet hours too; everything else waits for
+  their end. A held push records when its quiet hours end (`hold_until`), and its 12 hours
+  count from the later of that and the end by today's settings.
   PIN lockout and the test notification are never held or muted. Settings → Alerts &
   Notifications → **Quiet Hours & Muting** (`#quiet-hours-section`, cycle-8 E3c) sets both: a
   switch and two times (Save times; an empty or equal pair is refused before any request) on the
@@ -4690,7 +4738,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   and still-charging pushes name their item; while Per-sistant has an open linked task for it
   (Per-sistant Tasks on — open as Per-sistant itself reads it, a task reopened by hand included,
   seams audit #4 A2 — and, since cycle-9 F45, due today or earlier), the push isn't sent —
-  the bell row is written read as "covered".
+  the bell row is written read as "covered". The rent push also names the other unpaid months
+  (`cover_items`): a showing task for any of them covers it.
   The other way round (cycle-8 E3e): Per-sistant raises no browser notification for an item
   Perfin pushed in the last 12 hours, or is holding for quiet hours (seams audit #4 A6).
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
@@ -5209,7 +5258,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3410 tests passing across 183 test files (Perfin 2657 + Per-sistant 753), plus the real-Postgres route contract suite (370 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
+- 3454 tests passing across 185 test files (Perfin 2685 + Per-sistant 769), plus the real-Postgres route contract suite (378 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -6595,9 +6644,11 @@ standalone-mode fallback if either app is run on its own Render service.
 - `notification_log`: in-app notification history. Columns: `type`, `title`, `body`,
   `data` (JSONB), `is_read`. `sendToAll()` inserts here on every push notification.
   Indexed on (is_read, created_at DESC) for fast unread queries. Cycle-8 E3a adds
-  `push_state TEXT` (CHECK sent / held / muted / covered / none / expired / retry — `retry`
-  since cycle-9 F46: a push that failed on every device, waiting for the release job — its list in
-  `CHECK_LISTS`) and `item_key TEXT` (the real-world item, e.g. `housing:<period>` — the
+  `push_state TEXT` (CHECK sent / held / muted / covered / none / expired / retry / failed — `retry`
+  since cycle-9 F46: a push that failed on every device, waiting for the release job; `failed` since
+  the Batch 5 follow-ons: a retry that gave up — its list in
+  `CHECK_LISTS`), `hold_until TIMESTAMPTZ` (cycle-9 follow-on: when the quiet hours a push was held
+  in end, written at the hold; NULL otherwise) and `item_key TEXT` (the real-world item, e.g. `housing:<period>` — the
   linked-task key without `perfin:`). `push_state` is written by every sendToAll
   since E3b (NULL on older rows); `item_key` since E3d — on the rent, utility-amount and
   still-charging pushes (NULL otherwise).
@@ -7049,6 +7100,8 @@ second one (which re-sent the same uncategorized rows to Claude).
   nothing is waiting. Runs `releaseHeldNotifications` (above, Web Push); records a clean
   outcome for every run that got past quiet hours and a failed one when the push still
   couldn't go out (cycle-9 F5 — it recorded only "released", so one failed push stuck).
+  While a retry of a kind quiet hours never hold (a PIN lockout) is waiting, the gate is open
+  during quiet hours too and the run handles only those rows (cycle-9 follow-on).
 - **Linked tasks** (roadmap T2.4 X2b): every 1 hour, NOT activity-gated
   (`runLinkedTasksTick` → `services/linked-tasks.runLinkedTasks`). Does nothing in a
   standalone Perfin (no Per-sistant pool) or while the switch is off (one settings read a
@@ -7890,16 +7943,18 @@ run it once by hand and do one restore drill; if production's CALENDAR_FEED_TOKE
   against them; an invented product at a real institution passes the entity check; the tax prompt cites 2024's standard
   deduction (a current-year figure would need a maintained table); Ask's 12,000-character limit is unchanged; after an
   empty run the auto-trigger retries every 24 h, each attempt charged to the AI cap.
-- **Batch 5 — notifications and settings (F44 F34 F45 F47 F46 F48 F49).** Follow-ons: the dashboard's Debt Payoff
-  pyramid mode overwrites the stored debt baseline with today's debt when its settings read fails (the F47 shape, in
-  `dashboard.ejs`); a retry that gives up reads "Held for quiet hours — not pushed" in the bell (the one wording for
-  `expired`); a lasting push error (a 403) isn't told apart from a passing one and is retried for the full 12 h, the
-  notify-release job reporting a failed run each time; a never-held kind (PIN lockout) that fails during quiet hours is
-  retried only after they end; Per-sistant doesn't count a `retry` as pushed, so both apps can interrupt once the retry
-  succeeds; a row's quiet window is worked out from today's quiet-hours settings; snoozing a linked task (a later due
-  date) lets Perfin's push and Per-sistant's line through again; with several months owed only the oldest month's task is
-  consulted, and an unpaid earlier month is pushed every 72 h all month; Per-sistant's own `PATCH /api/settings` was not
-  part of F47.
+- **Batch 5 — notifications and settings (F44 F34 F45 F47 F46 F48 F49).** Its seven listed follow-ons are done
+  (`.cycle/blocks/9-batch5-followons-broad-implement.md`): the Debt Payoff baseline, the `failed` state, a PIN-lockout
+  retry during quiet hours, errors that won't pass not retried, `hold_until`, Per-sistant's settings validation and load
+  guards, the rent cover across unpaid months. Still open from Batch 5: Per-sistant doesn't count a `retry` as pushed, so
+  both apps can interrupt once the retry succeeds; snoozing a linked task (a later due date) lets Perfin's push and
+  Per-sistant's line through again; an unpaid earlier month is pushed every 72 h all month. From the follow-ons: the Debt
+  Payoff mode reads a failed `/api/accounts` as "no debt" and shows 100% (display only); a push dropped for a lasting
+  error shows only in Recent errors (the bell doesn't mark it); a push service that answers 403 for a passing condition
+  loses that push; with several months owed, ticking off the oldest month's task by hand no longer brings the rent push
+  back while a later month's task shows; Per-sistant's Settings page blocks the theme change too after a failed load;
+  `vault_branch` is still unchecked; `hold_until` can be up to a minute past the hour; a held rent push's cover list is
+  the unpaid months at send time.
 Still open, by batch:
 - **Batch 6 — cash plan:** raise detection reports half a raise after one deposit when paychecks differ by cents, and
   its alert key changes with each deposit (F30); a loan with a known APR ≥ 8% but no monthly payment drops out and the
@@ -8789,7 +8844,7 @@ INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — 
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
 INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
-INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean; since T2.2 L2 cash_alert_enabled (strict boolean), cash_alert_threshold and cash_alert_horizon_days; since T2.2 L3 payday_alerts_enabled (strict boolean); since T4.1 A4 advice_alerts_enabled (strict boolean); since T4.1 A10 contribution_limits (known keys → 0-1,000,000); since T2.4 X2a linked_tasks_enabled (strict boolean), linked_tasks_sources (known sources → booleans) and linked_tasks_bill_lead_days (0-14); since cycle-8 E3a notify_quiet_hours (enabled strict boolean, HH:MM, start ≠ end) and notify_muted_types (known mutable kinds)) reject invalid input with 400 — never silent-drop + 200; since cycle-9 F47 the ten plain on / off switches (BOOLEAN_SWITCHES) are strict booleans checked before any query, the idle timeout must be an integer, and insight_modules / dashboard_widgets are merged over the stored map — and GET /api/settings answers 500 on a failed read, never 200 with defaults | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86) + tests/cycle9-b5.test.js + tests/contract/c9-batch5
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean; since T2.2 L2 cash_alert_enabled (strict boolean), cash_alert_threshold and cash_alert_horizon_days; since T2.2 L3 payday_alerts_enabled (strict boolean); since T4.1 A4 advice_alerts_enabled (strict boolean); since T4.1 A10 contribution_limits (known keys → 0-1,000,000); since T2.4 X2a linked_tasks_enabled (strict boolean), linked_tasks_sources (known sources → booleans) and linked_tasks_bill_lead_days (0-14); since cycle-8 E3a notify_quiet_hours (enabled strict boolean, HH:MM, start ≠ end) and notify_muted_types (known mutable kinds)) reject invalid input with 400 — never silent-drop + 200; since cycle-9 F47 the ten plain on / off switches (BOOLEAN_SWITCHES) are strict booleans checked before any query, the idle timeout must be an integer, and insight_modules / dashboard_widgets are merged over the stored map — and GET /api/settings answers 500 on a failed read, never 200 with defaults; Per-sistant's PATCH /api/settings follows the same rules since the cycle-9 Batch 5 follow-ons (its three switches strict booleans checked before any query, keep-alive hours 0-23, a real IANA zone, session timeout 1-1440, default_horizon, dashboard_layout's shape), and neither app's page saves a form filled from settings it couldn't load (Perfin's Debt Payoff baseline; Per-sistant's Settings forms and dashboard layout) | Subsystem: Settings, Notifications & Cross-app / Per-sistant Backend | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86) + tests/cycle9-b5.test.js + tests/contract/c9-batch5 + tests/cycle9-b5-followons.test.js + apps/per-sistant/tests/cycle9-b5-followons.test.js + tests/contract/c9-batch5-followons
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
@@ -8877,7 +8932,7 @@ INV-136 | WebAuthn credential ids are stored exactly as the authenticator report
 INV-150 | The cash plan's figures come from code, never the model: services/advice.js buildAdvicePlan computes every amount (the emergency-fund tracker and goal catch-up amounts — T4.1 A5 — the raise / bonus / spending-creep figures — A6 — and idle cash and rebalancing — A7, the drift read through services/allocation.js like the Investments card — and the statement-date tip and loan extra payments — A8, through computeLoanPayoff — and the sinking funds and subscription review — A9, the dates from cadence.js — and the contribution room — A10, from contributions recorded in investment_flows against limits the user entered — included), and GET /api/advice, the dashboard card, Ask's get_cash_plan and the cash_plan insight module only show or word that one plan; the insight prompt carries it verbatim (cashPlanPromptBlock), the audit checks the model's per-paycheck / named-debt monthly figures against the same plan object (planClaimFinding — a hypothetical isn't a plan claim), and the plan's step reaches long-term memory only as ONE "Plan (<step>)" pending action written after the summary was sanitized (seedPlanActions — bounds kept, a preserved summary untouched); every view carries the disclaimer and no security or fund is named; the plan-change push (services/advice-alerts.js) words a change between two plans (or a new raise / bonus, once each) from those same figures, at most once a local day, push only, and advances its state only when the push was logged ; a what-if in Ask (A10) is whatIfPlan — buildAdvicePlan on inputs changed by applyWhatIf, never the model's arithmetic; the audit reads a period phrase only after its figure, counts the contribution-room amounts as plan figures and warns on a per-paycheck amount the plan has none of (cycle-9 F40); Ask shortens a long plan result by key, never mid-JSON (toolResultContent, F41); the "Plan (…)" action's first_recommended is read from the stored summary (F43) | Subsystem: Financial Analytics / AI Insights & Audit | Verify: tests/roadmap-t4-1-a1 / a2 / a3 / a4 / a5 / a6 / a7 / a8 / a9 / a10 + tests/contract/advice-a1 + tests/cycle9-b4.test.js
 INV-151 | The cash-flow forecast's bill schedule has one decision per recurring item, transferTreatment / classifyBills (services/cash-flow.js): the user's forecast_treatment / forecast_ignore beats the card-autopay and internal-move heuristics, every left-out item carries its reason in forecast_items, and nothing but the two PATCH …/forecast routes sets those columns (never the detectors; a rename re-key only copies the user's own setting from the row it retires onto the surviving row still on the default — E1 follow-on) — so every forecast reader (GET /api/cash-flow, the dashboard summary, the cash alerts, the advice plan) follows the same correction | Subsystem: Financial Analytics | Verify: tests/cycle8-e1a.test.js + tests/cycle8-e1b.test.js + tests/cycle8-e1-followons.test.js + tests/contract/forecast-e1a + e1-followons
 INV-152 | A "what's new since the last check" read over transactions never skips a row that commits late and never announces one twice: it reads the mark (MAX(id) + now(), services/txn-watermark.readMark) BEFORE its candidates and stops at that id, rescans rows at or below the stored id created within 24 h of the previous check (an id is taken at INSERT, so an open transaction commits a lower id later), drops an overlap row already in notification_log (the anomaly charge by data.transaction_id, the paycheck by its payday-<hash> tag) and moves its watermark forward only (GREATEST) — held back when an announcement wasn't logged; no pg_stat_activity read ; the dashboard's "Since you last looked" follows the mark-before-read and forward-only rules without the overlap — /seen stores the mark its GET read (seen_token, cycle-8 E2d), never now() | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/cycle8-e2c.test.js + tests/cycle8-e2d.test.js + tests/contract/txn-watermark-e2c + whats-new-e2d + c8-batch4
-INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push — 'sent' only once a device received it, 'none' when nothing was delivered (seams audit #4 A1); a held push is released once quiet hours end — marked sent only after the push reached a device, one summary for several, expired (left in the bell) once it has waited 12 hours past the END of the quiet window it was created in (cycle-9 F44) — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task that is SHOWING (Per-sistant's own openLinkedItems with surfacingOn — not completed, not trashed, due that APP_TIMEZONE day or earlier, cycle-9 F45; a task reopened by hand counts, seams audit #4 A2) is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d); Per-sistant's check marks notify:false an item Perfin pushed or is holding (push_state sent or held — seams audit #4 A6) in the last 12 hours, still listed, and housing_due steps aside only for its own month's open task (cycle-8 E3e); a push that reached no device with at least one passing failure is kept as 'retry' — `logged` unchanged — and pushed by the same release job for up to 12 hours; no subscription or only dead ones stays 'none' (cycle-9 F46) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js + apps/per-sistant/tests/cycle8-e3e.test.js + tests/contract/notify-e3e.contract.test.js + tests/seams-audit-4-s4.test.js + tests/contract/seams4-s4-4 + tests/cycle9-b5.test.js + apps/per-sistant/tests/cycle9-b5.test.js + tests/contract/c9-batch5
+INV-153 | Quiet hours and mutes act on the interruption, never the record: every sendToAll writes its notification_log row as before and returns the same `logged` (so every caller's dedup / watermark is unchanged), with push_state saying what happened to the push — 'sent' only once a device received it, 'none' when nothing was delivered (seams audit #4 A1); a held push is released once quiet hours end — marked sent only after the push reached a device, one summary for several, expired (left in the bell) once it has waited 12 hours past the END of the quiet window it was created in (cycle-9 F44) — and a muted kind is never pushed or emailed; security and the test notification are never held or muted; a failed settings read holds and mutes nothing; Per-sistant's notification check reads the same settings read-only through perfinPool and keeps every entry, marking it notify:false rather than dropping it (cycle-8 E3c); a push about an item with an OPEN Per-sistant linked task that is SHOWING (Per-sistant's own openLinkedItems with surfacingOn — not completed, not trashed, due that APP_TIMEZONE day or earlier, cycle-9 F45; a task reopened by hand counts, seams audit #4 A2) is covered — the row still written (read, with item_key), `logged` unchanged, not pushed — and the lookup is fail-soft to a push (cycle-8 E3d); Per-sistant's check marks notify:false an item Perfin pushed or is holding (push_state sent or held — seams audit #4 A6) in the last 12 hours, still listed, and housing_due steps aside only for its own month's open task (cycle-8 E3e); a push that reached no device with at least one passing failure is kept as 'retry' — `logged` unchanged — and pushed by the same release job for up to 12 hours; no subscription or only dead ones stays 'none' (cycle-9 F46); since the Batch 5 follow-ons a failure that won't pass (a 4xx other than 404 / 408 / 410 / 429, an unreadable stored subscription) is 'none' too, a retry that gives up is 'failed', a retry of a kind quiet hours never hold is pushed during them, a hold's 12 hours count from the later of its recorded end (hold_until) and the end by today's settings, and the rent push is covered by a showing task for any unpaid month (cover_items; Per-sistant's rent line the same) | Subsystem: Settings, Notifications & Cross-app / Notification Correctness | Verify: tests/cycle8-e3b.test.js + tests/cycle8-e3c.test.js + tests/cycle8-e3d.test.js + apps/per-sistant/tests/cycle8-e3c.test.js + tests/contract/notify-e3b.contract.test.js + tests/contract/notify-e3d.contract.test.js + apps/per-sistant/tests/cycle8-e3e.test.js + tests/contract/notify-e3e.contract.test.js + tests/seams-audit-4-s4.test.js + tests/contract/seams4-s4-4 + tests/cycle9-b5.test.js + apps/per-sistant/tests/cycle9-b5.test.js + tests/contract/c9-batch5 + tests/cycle9-b5-followons.test.js + apps/per-sistant/tests/cycle9-b5-followons.test.js + tests/contract/c9-batch5-followons
 INV-155 | A scheduled job runs when it is due and once across processes: services/job-runner.js claims it with a conditional UPSERT of job_runs.last_ran_at (≥ 90% of the cadence old — a failed claim runs it anyway), checks a when() gate in memory before any query, runs due jobs one at a time; every run has a deadline (register timeoutMs, else 15 min; the runner's own queries 1 min) — past it the run is reported through onTimeout as a failed outcome, abandoned and never started again until it has settled (seams audit #4 B1); the runner's first successful job_runs read is handed to onLoad before any claim (job-health's boot snapshot — the only place a 36-hour outage can be seen, cycle-9 F2), and stop() ends the pause between two jobs at once (F11) | Subsystem: Platform, Shell & Auth | Verify: tests/cycle8-e2a.test.js + tests/cycle8-e2b.test.js + tests/seams-audit-4.test.js + tests/contract/job-runner-e2a + scheduler-e2b + tests/cycle9-b2.test.js
 INV-156 | Under the shell the two apps never share a database unless ALLOW_SHARED_DATABASE=true: start() refuses PERSISTENT_DATABASE_URL unset or naming the same host + port + database (sharedDatabaseProblem) and, before either app migrates, two pools whose database identity (name, oid, server start time) is the same (sharedDatabaseIdentityProblem — an unreadable identity is unknown, never shared); Operator Checks' local:databases applies both | Subsystem: Platform, Shell & Auth | Verify: tests/broad-scan-c8-batch1.test.js + tests/seams-audit-4.test.js + tests/contract/seams4-s4-2
 INV-154 | Freshness has one definition — services/freshness.js (readConnections / overallFreshness / connectionFreshness) behind Sync Health's connection list (gatherDataHealth), GET /api/data-freshness and the nav badge; the badge never shows a fresher age than the oldest active bank connection's own last_synced_at, a connection needing re-authentication or disconnected makes it stale ("Reconnect <bank>"), and the global user_settings stamps are read only when no connection exists — Sync Health's "haven't synced" warnings included (seams audit #4 S4); colour comes from a level class, never an inline style (cycle-8 E4b) | Subsystem: Settings, Notifications & Cross-app / Web UI | Verify: tests/cycle8-e4b.test.js + tests/seams-audit-4-s3.test.js + tests/contract/operator-freshness-e4b + e2e/pages.spec.js
