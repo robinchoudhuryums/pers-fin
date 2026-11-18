@@ -111,10 +111,23 @@ function isQuiet(now, quiet, tz = APP_TIMEZONE) {
   return s < e ? (m >= s && m < e) : (m >= s || m < e);
 }
 
+// REAL minutes from now until quiet hours end (0 when not quiet). The end is a
+// wall-clock time, so on a night the clocks change the wall-clock difference
+// is an hour off the time that actually passes: the first guess is checked
+// against the clock it lands on and corrected (cycle-9 F49 — on the
+// spring-forward night held pushes were released an hour late).
 function minutesUntilQuietEnd(now, quiet, tz = APP_TIMEZONE) {
   if (!isQuiet(now, quiet, tz)) return 0;
-  const m = localMinutes(now instanceof Date ? now : new Date(now), tz);
-  return (toMinutes(quiet.end) - m + 1440) % 1440 || 1440;
+  const at = now instanceof Date ? now : new Date(now);
+  const end = toMinutes(quiet.end);
+  const wall = (end - localMinutes(at, tz) + 1440) % 1440 || 1440;
+  // Where does the wall-clock guess land? Off by the clock change, if any.
+  const landed = localMinutes(new Date(at.getTime() + wall * 60 * 1000), tz);
+  let drift = landed - end;
+  if (drift > 720) drift -= 1440;
+  if (drift < -720) drift += 1440;
+  const mins = wall - drift;
+  return mins > 0 ? mins : wall;
 }
 
 function decide({ kind, prefs, now = new Date(), tz = APP_TIMEZONE, covered = false }) {

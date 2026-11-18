@@ -116,10 +116,14 @@ function housingItem(h, today = todayStr()) {
   return "housing:" + (h.due_date ? h.due_date.slice(0, 7) : today.slice(0, 7));
 }
 
-async function housingTaskOpen(pool, item) {
+// Cycle-9 F45: "open" here means open AND showing — due today or earlier
+// (openLinkedItems' surfacingOn). During the rent lead window the task isn't
+// due yet and says nothing, so the line stays; from the due date the task is
+// the reminder.
+async function housingTaskOpen(pool, item, today = todayStr()) {
   if (!pool || !item) return false;
   const { openLinkedItems } = require("../services/linked-tasks");
-  return (await openLinkedItems(pool, [item])).has(item);
+  return (await openLinkedItems(pool, [item], { surfacingOn: today })).has(item);
 }
 
 // housingDue with its `item`, or null while that item's linked task is open.
@@ -127,7 +131,7 @@ async function housingDueUnlessTask(perfinPool, pool, today = todayStr()) {
   const h = await housingDue(perfinPool, today);
   if (!h) return h;
   const item = housingItem(h, today);
-  return (await housingTaskOpen(pool, item)) ? null : { ...h, item };
+  return (await housingTaskOpen(pool, item, today)) ? null : { ...h, item };
 }
 
 module.exports = { housingDue, housingDueUnlessTask, housingTaskOpen, housingItem, computeHousingDue, housingDueSuffix };

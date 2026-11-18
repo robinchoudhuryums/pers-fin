@@ -218,14 +218,26 @@ async function ensureLinkedTask(pool, { app, task } = {}) {
 // "housing:2026-11") have an OPEN, untrashed task — the surface for that item
 // (cycle-8 E3e, ST2). Read-only; a failed read is an empty set (fail-soft: the
 // other surface stays).
-async function openLinkedItems(pool, items, { app = "perfin" } = {}) {
+//
+// surfacingOn ('YYYY-MM-DD', cycle-9 F45): only tasks that are SHOWING on that
+// day — due that day or earlier, the rows the notification check lists as due
+// today / overdue. A task due later is open but silent: letting it stand in
+// for a reminder meant the rent lead-time reminder reached no one (Perfin's
+// push was "covered" by the task and Per-sistant's line hidden by it, while
+// the task itself said nothing until its due date). Every caller that asks
+// "does the task cover this reminder?" passes it; a task with no due date
+// never covers.
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+async function openLinkedItems(pool, items, { app = "perfin", surfacingOn = null } = {}) {
   const want = [...new Set((items || []).filter((i) => typeof i === "string" && i))];
   if (!pool || !want.length) return new Set();
+  const day = typeof surfacingOn === "string" && YMD_RE.test(surfacingOn) ? surfacingOn : null;
   try {
     const r = await pool.query(
       `SELECT source_key FROM todos
-        WHERE source_key = ANY($1::text[]) AND NOT completed AND deleted_at IS NULL`,
-      [want.map((i) => app + ":" + i)]);
+        WHERE source_key = ANY($1::text[]) AND NOT completed AND deleted_at IS NULL` +
+        (day ? " AND due_date IS NOT NULL AND due_date <= $2::date" : ""),
+      day ? [want.map((i) => app + ":" + i), day] : [want.map((i) => app + ":" + i)]);
     return new Set(r.rows.map((row) => String(row.source_key).slice(app.length + 1)));
   } catch (e) {
     console.error("linked task lookup failed:", e.message);

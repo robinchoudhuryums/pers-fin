@@ -18,6 +18,39 @@ Updated: 2026-11-18
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 5 (DONE, 2026-11-18) — notifications and settings:** block `.cycle/blocks/9-batch5-broad-implement.md`.
+  F44 (notifications.js: the release job decides expiry per row — 12 hours past the END of the quiet window the row was
+  created in, by today's settings, else past its creation; the SQL expiry is gone), F46 (new push_state `retry` in
+  CHECK_LISTS: a push that reached no device with at least one passing failure is kept, the release gate opened, and
+  the release job pushes `held` and `retry` rows alike; dead subscriptions counted as `gone` → still `none`; the bell
+  says "Push failed — trying again"), F34 (housing.js: MIN(period) of the unpaid rows decides the window; item
+  `housing:<oldest>`; tag next month's when next month's rent is announced, else the oldest month's), F45
+  (openLinkedItems `surfacingOn` — due that day or earlier; passed by Perfin's itemCovered and Per-sistant's
+  housingTaskOpen / housingDueUnlessTask), F47 (settings.js: GET 500 on a failed read; insight_modules /
+  dashboard_widgets merged with `||`; ten switches strict booleans checked before any query; the idle timeout
+  Number.isInteger; settings.ejs toggles send one key, no read first; a toast on a failed load), F48 (db/030: the
+  detach function also clears auto_closed + one repair UPDATE), F49 (SSO validate: a non-string token a 400;
+  minutesUntilQuietEnd returns real minutes across a clock change). New tests/cycle9-b5.test.js (46),
+  apps/per-sistant/tests/cycle9-b5.test.js (10), tests/contract/c9-batch5 (14). npm test 3410 (183 files, Perfin 2657,
+  Per-sistant 753), contract 370, Playwright 93, five shifted clocks (two of them clock-change nights), pre-fix the new
+  files fail 36 of 46, 5 of 10 and 14 of 14. Net −1 (F45 likely − 2: a lasting push failure is now a repeating failed
+  job for up to 12 h; snoozing a linked task un-covers its reminder).
+  - **Where I left off:** Batch 5 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
+    for Batches 2, 3, 4 and 5 — run `/sync-docs` (each block's DOCUMENTATION UPDATES NEEDED has the list). Next:
+    `/broad-implement Batch 6` (F30 F31 F32 F33 F37 F38 — cash plan).
+  - **Decisions:** F46 — a distinct state (`retry`) rather than reusing `held`, so the bell and the summary push don't
+    blame quiet hours; Per-sistant's perfinPushedItems still counts only sent / held (a retry reached no one). Dead
+    subscriptions (404 / 410) are not a reason to retry. F44 — the base uses today's quiet-hours settings; a failed
+    settings read falls back to the creation time. F45 — one predicate with a day (`surfacingOn`), passed by every
+    caller that asks "does the task cover this?"; openLinkedItems without it is unchanged. F34 — the tag keeps next
+    month's period when next month's rent is announced (its own 72 h dedup), the item is always the month owed. F47 —
+    the maps keep their PATCH field names and are merged (no new endpoint); a key can no longer be removed by omission.
+    F48 — db/030 edited in place (it is re-run every boot with CREATE OR REPLACE) rather than a second definition in a
+    new file.
+  - **Follow-ons:** the dashboard's Debt Payoff mode overwrites the stored baseline when its settings read fails; an
+    expired retry reads "Held for quiet hours — not pushed" in the bell; a never-held kind that fails during quiet hours
+    retries only after they end; a lasting push error (403) is retried for the full 12 h; with several months owed only
+    the oldest month's task is consulted; Per-sistant's own PATCH /api/settings untouched.
 - **Cycle 9 Batch 4 (DONE, 2026-11-18) — AI audit trust:** block `.cycle/blocks/9-batch4-broad-implement.md`.
   F39 (ai-audit.js: subscriptions and utilities read apart, a total claim compared with the nearest real total;
   savingsRateClaim — a percentage is the rate only when the phrase reaches it unbroken, never a recommendation /
@@ -126,7 +159,7 @@ implement and reflect sessions only set Phase.)
       figures missing, an invented amount passes when the plan recommends nothing), F41 (Ask's 12,000-char slice drops
       what_if), F42 (entity check doesn't know account names; monthly totals fetched, never checked), F43 (an empty insight run
       stamps insights_last_run).
-    - **Batch 5 — notifications and settings:** F44 (quiet windows ≥ 12 h: early holds expire unpushed), F34 (rent push
+    - **Batch 5 (DONE) — notifications and settings:** F44 (quiet windows ≥ 12 h: early holds expire unpushed), F34 (rent push
       tests only this month's window; item key names the wrong month), F45 (with linked tasks on, the rent lead-time reminder
       reaches no one), F47 (GET /api/settings 200-with-defaults on a read error; toggle race; idle-timeout 7.5 → 500;
       "false" → true), F46 (a transient push failure never retried), F48 (auto_closed not cleared on a hand reopen), F49

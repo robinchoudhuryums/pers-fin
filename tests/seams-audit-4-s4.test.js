@@ -29,12 +29,13 @@ describe("A2 — one 'open linked task' predicate for both apps", () => {
         return { rows: params[0].map((source_key) => ({ source_key })) };
       },
     });
-    assert.equal(await notifications.itemCovered("housing:2026-11"), true);
-    assert.deepEqual(seen[0][1], [["perfin:housing:2026-11"]]);
+    assert.equal(await notifications.itemCovered("housing:2026-11", "2026-11-03"), true);
+    // Cycle-9 F45: the day rides along — both apps ask "open AND showing that day".
+    assert.deepEqual(seen[0][1], [["perfin:housing:2026-11"], "2026-11-03"]);
     assert.doesNotMatch(seen[0][0], /source_detached/);
     const { openLinkedItems } = require("../apps/per-sistant/services/linked-tasks");
     const ps = [];
-    await openLinkedItems({ query: async (sql) => { ps.push(sql); return { rows: [] }; } }, ["housing:2026-11"]);
+    await openLinkedItems({ query: async (sql) => { ps.push(sql); return { rows: [] }; } }, ["housing:2026-11"], { surfacingOn: "2026-11-03" });
     assert.equal(seen[0][0], ps[0], "the same SQL in both apps");
   });
 

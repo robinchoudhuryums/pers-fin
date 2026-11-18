@@ -93,7 +93,7 @@ const CHECK_LISTS = {
   // (quiet hours), muted, covered (an open linked task is the surface — ST2),
   // none (push not configured), expired (held past 12 h). NULL on older rows.
   notification_log: {
-    push_state: ["sent", "held", "muted", "covered", "none", "expired"],
+    push_state: ["sent", "held", "muted", "covered", "none", "expired", "retry"],
   },
 };
 const sqlLiteral = (v) => "'" + String(v).replace(/'/g, "''") + "'";

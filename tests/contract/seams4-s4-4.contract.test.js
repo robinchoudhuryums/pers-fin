@@ -32,8 +32,9 @@ describe("Seams audit #4 S4-4 across both apps on real Postgres", { skip: SKIP }
   });
 
   it("A2: a hand-reopened linked task covers Perfin's push and hides Per-sistant's line alike", async () => {
-    await ps(`INSERT INTO todos (title, source_app, source_key, source_url)
-              VALUES ('Pay rent', 'perfin', 'perfin:housing:2026-11', '/housing')`);
+    // Due today, so it is showing (cycle-9 F45: only a task due today or earlier covers).
+    await ps(`INSERT INTO todos (title, source_app, source_key, source_url, due_date)
+              VALUES ('Pay rent', 'perfin', 'perfin:housing:2026-11', '/housing', $1)`, [today]);
     // Complete by hand, then reopen by hand — the trigger detaches it.
     await ps("UPDATE todos SET completed = true, completed_at = now() WHERE source_key = 'perfin:housing:2026-11'");
     await ps("UPDATE todos SET completed = false, completed_at = NULL WHERE source_key = 'perfin:housing:2026-11'");
@@ -43,7 +44,9 @@ describe("Seams audit #4 S4-4 across both apps on real Postgres", { skip: SKIP }
     const { openLinkedItems } = require("../../apps/per-sistant/services/linked-tasks");
     const notifications = require("../../teller/routes/notifications");
     assert.ok((await openLinkedItems(psPool, ["housing:2026-11"])).has("housing:2026-11"), "Per-sistant: open");
-    assert.equal(await notifications.itemCovered("housing:2026-11"), true, "Perfin: covered too");
+    assert.equal(await notifications.itemCovered("housing:2026-11", today), true, "Perfin: covered too");
+    // The same question in both apps: open AND showing that day.
+    assert.ok((await openLinkedItems(psPool, ["housing:2026-11"], { surfacingOn: today })).has("housing:2026-11"));
 
     // Trashed → neither.
     await ps("UPDATE todos SET deleted_at = now() WHERE source_key = 'perfin:housing:2026-11'");

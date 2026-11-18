@@ -159,7 +159,9 @@ describe("F23 — the open task is the rent reminder", () => {
   // Since cycle-8 E3e only the line's own item (housing:<month of its due date>) hides it.
   const ps = (open) => ({ query: async (sql, params) => {
     assert.match(sql, /source_key = ANY\(\$1::text\[\]\) AND NOT completed AND deleted_at IS NULL/);
-    assert.deepEqual(params, [["perfin:housing:2026-10"]]);
+    // Cycle-9 F45: only a task SHOWING today (due today or earlier) hides the line.
+    assert.match(sql, /AND due_date IS NOT NULL AND due_date <= \$2::date/);
+    assert.deepEqual(params, [["perfin:housing:2026-10"], "2026-10-01"]);
     return { rows: open ? [{ source_key: "perfin:housing:2026-10" }] : [] };
   } });
 

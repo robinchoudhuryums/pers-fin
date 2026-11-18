@@ -880,7 +880,12 @@
     }
     async function loadSettings() {
       try {
-        const res = await apiFetch('/api/settings'); if (!res.ok) return;
+        const res = await apiFetch('/api/settings');
+        if (!res.ok) {
+          // F47: say so — the controls below still show the page's defaults.
+          showMsg("Your settings couldn't be loaded — reload the page before changing anything.", false);
+          return;
+        }
         const s = await res.json();
         document.getElementById('theme-select').value = s.theme || 'dark';
         document.getElementById('months-select').value = s.dashboard_months || 6;
@@ -1116,14 +1121,13 @@
         loadSettings(); // refresh the "$X of $Y cap" line with the new cap
       });
     })();
+    // F47: send only the switch that changed — the server merges it into the
+    // stored map. (Reading the whole map first and sending it back let two
+    // quick toggles overwrite each other.)
     async function toggleModule(key, enabled) {
       try {
-        const res = await apiFetch('/api/settings');
-        if (!res.ok) { showMsg("Couldn't read your settings — try again.", false); return false; }
-        const s = await res.json();
-        var mods = s.insight_modules || {};
-        mods[key] = enabled;
-        return await updateSetting('insight_modules', mods);
+        var one = {}; one[key] = enabled;
+        return await updateSetting('insight_modules', one);
       } catch (e) { showMsg(e.message, false); return false; }
     }
     async function logout() {
@@ -1993,14 +1997,9 @@
       (async function() {
         var ok = false;
         try {
-          var res = await apiFetch('/api/settings');
-          if (!res.ok) showMsg("Couldn't read your settings — try again.", false);
-          else {
-            var s = await res.json();
-            var widgets = s.dashboard_widgets || {};
-            widgets[key] = enabled;
-            ok = await updateSetting('dashboard_widgets', widgets);
-          }
+          // F47: one key — merged server-side (see toggleModule).
+          var one = {}; one[key] = enabled;
+          ok = await updateSetting('dashboard_widgets', one);
         } catch (e) { showMsg(e.message, false); }
         if (!ok) box.checked = !enabled;
       })();

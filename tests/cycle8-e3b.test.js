@@ -33,6 +33,7 @@ const NOTIF = require.resolve("../teller/routes/notifications");
 
 // A fake notification_log + settings + subscriptions, answering the SQL the
 // module sends. `clock` is the database's now() for created_at.
+const WAITING = ["held", "retry"];
 function fakeDb() {
   const db = {
     clock: new Date("2026-10-29T23:00:00Z"),
@@ -55,18 +56,16 @@ function fakeDb() {
       db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
       return { rows: [{ id }] };
     }
-    if (/SET push_state = 'expired'/.test(sql)) {
-      const cut = new Date(params[0]).getTime() - params[1] * 3600 * 1000;
-      const hit = db.log.filter((r) => r.push_state === "held" && r.created_at.getTime() < cut);
-      hit.forEach((r) => { r.push_state = "expired"; });
-      return { rows: hit.map((r) => ({ id: r.id })) };
+    // The release job reads what is WAITING — held for quiet hours, or being
+    // retried after a push that failed everywhere (cycle-9 F46) — and decides
+    // expiry per row itself (F44), so there is no expiry SQL to answer.
+    if (/SELECT id, type, title, body, data, item_key, push_state, created_at FROM notification_log\s+WHERE push_state IN \('held', 'retry'\)/.test(sql)) {
+      return { rows: db.log.filter((r) => WAITING.includes(r.push_state)).sort((a, b) => a.created_at - b.created_at || a.id - b.id).slice(0, params[0]) };
     }
-    if (/SELECT id, type, title, body, data, item_key FROM notification_log/.test(sql)) {
-      return { rows: db.log.filter((r) => r.push_state === "held").sort((a, b) => a.created_at - b.created_at || a.id - b.id).slice(0, params[0]) };
-    }
-    const m = /UPDATE notification_log SET push_state = '(\w+)'(?:, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state = '(\w+)'/.exec(sql);
+    const m = /UPDATE notification_log SET push_state = '(\w+)'(?:, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state (?:= '(\w+)'|IN \('held', 'retry'\))/.exec(sql);
     if (m) {
-      db.log.filter((r) => params[0].includes(r.id) && r.push_state === m[2]).forEach((r) => { r.push_state = m[1]; if (/is_read = true/.test(sql)) r.is_read = true; });
+      const from = m[2] ? [m[2]] : WAITING;
+      db.log.filter((r) => params[0].includes(r.id) && from.includes(r.push_state)).forEach((r) => { r.push_state = m[1]; if (/is_read = true/.test(sql)) r.is_read = true; });
       return { rows: [] };
     }
     if (/SELECT endpoint, keys FROM push_subscriptions/.test(sql)) return { rows: db.subs };
@@ -131,11 +130,14 @@ describe("sendToAll", () => {
     assert.equal(db.log[0].push_state, "none");
   });
 
-  it("seams audit #4 A1: every send failing → none too; a delivered push → sent", async () => {
+  it("seams audit #4 A1: every send failing → never 'sent' (cycle-9 F46: kept for a retry); a delivered push → sent", async () => {
     pushFails = true;
-    const r = await notifications.sendToAll({ title: "Rent due", body: "b", tag: "housing-due-2026-11" }, { now: DAY });
-    assert.equal(r.push_state, "none");
-    assert.equal(db.log[0].push_state, "none");
+    const quiet = console.error; console.error = () => {};
+    let r;
+    try { r = await notifications.sendToAll({ title: "Rent due", body: "b", tag: "housing-due-2026-11" }, { now: DAY }); }
+    finally { console.error = quiet; }
+    assert.equal(r.push_state, "retry");
+    assert.equal(db.log[0].push_state, "retry");
     pushFails = false;
     const r2 = await notifications.sendToAll({ title: "Rent due", body: "b", tag: "housing-due-2026-12" }, { now: DAY });
     assert.equal(r2.push_state, "sent");

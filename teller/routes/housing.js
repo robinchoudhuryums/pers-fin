@@ -360,11 +360,18 @@ async function runHousingReminders(pool_, today = todayStr()) {
   // the rent due day (or past it). One reminder per ~3 days while it stands.
   try {
     const bal = await db.query(
-      "SELECT COALESCE(SUM(amount), 0) AS balance, COUNT(*) AS n FROM payee_obligations WHERE status = 'unpaid' AND payee = $1",
+      "SELECT COALESCE(SUM(amount), 0) AS balance, COUNT(*) AS n, MIN(period) AS oldest FROM payee_obligations WHERE status = 'unpaid' AND payee = $1",
       [cfg.payee_name]
     );
     const balance = parseFloat(bal.rows[0].balance);
     const count = parseInt(bal.rows[0].n);
+    // Cycle-9 F34: the window that decides is the OLDEST unpaid month's. Only
+    // this month's was tested, so last month's unpaid rent got no push from the
+    // 1st until this month's lead window opened — and the push then named this
+    // month's item while the linked task and Per-sistant's line named the month
+    // that is actually owed, so both apps interrupted.
+    const thisMonth = today.slice(0, 7);
+    const oldest = /^\d{4}-\d{2}$/.test(String(bal.rows[0].oldest || "")) ? String(bal.rows[0].oldest) : thisMonth;
     // Next month's rent, when its lead window has already opened and its row
     // doesn't exist yet (not generated, not removed by the user — F43).
     let upcoming = 0;
@@ -377,10 +384,13 @@ async function runHousingReminders(pool_, today = todayStr()) {
       );
       if (!(ex.rows[0] && ex.rows[0].has)) upcoming = cfg.rent_amount;
     }
-    const dueNow = balance > 0 && rentReminderOpen(today.slice(0, 7), cfg, today);
+    const dueNow = balance > 0 && rentReminderOpen(oldest, cfg, today);
     if (dueNow || upcoming > 0) {
-      const period = upcoming > 0 ? next.period : today.slice(0, 7);
-      const tag = "housing-due-" + period;
+      // The tag (the 72-hour dedup) follows what is new in the message — next
+      // month's rent when that is announced; the item names the month whose
+      // task and Per-sistant line stand for the same debt.
+      const tag = "housing-due-" + (upcoming > 0 ? next.period : oldest);
+      const period = dueNow ? oldest : next.period;
       if (!(await sentRecently(tag, 72))) {
         const total = (dueNow ? balance : 0) + upcoming;
         const items = (dueNow ? count : 0) + (upcoming > 0 ? 1 : 0);
@@ -390,7 +400,7 @@ async function runHousingReminders(pool_, today = todayStr()) {
             (upcoming > 0 ? " — " + periodLabel(next.period) + " rent is due " + next.due_date : "") +
             ". Send the transfer.",
           tag,
-          // The period's linked task (perfin:housing:<period>) covers it while open (cycle-8 E3d).
+          // The period's linked task (perfin:housing:<period>) covers it once it is due (cycle-8 E3d, cycle-9 F45).
           item: "housing:" + period,
           data: { url: "/housing" },
         });
