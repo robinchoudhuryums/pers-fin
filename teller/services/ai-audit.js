@@ -121,7 +121,7 @@ function extractPercentClaims(text) {
     const value = parseFloat(m[1]);
     if (!isNaN(value) && value > 0 && value < 1000) {
       const ctx = text.substring(Math.max(0, m.index - 80), m.index + m[0].length + 40).trim();
-      matches.push({ value, context: ctx, index: m.index });
+      matches.push({ value, context: ctx, index: m.index, raw: m[0] });
     }
   }
   return matches;
@@ -224,6 +224,19 @@ function entityKnown(claimedLower, knownSet) {
   return false;
 }
 
+// Cycle-9 F42: every name an account, card, loan or investment account goes
+// by, and the institutions they sit at.
+const ACCOUNT_NAMES_SQL = `
+  SELECT DISTINCT LOWER(n) AS n FROM (
+    SELECT name AS n FROM linked_accounts
+    UNION ALL SELECT official_name FROM linked_accounts
+    UNION ALL SELECT institution_name_manual FROM linked_accounts
+    UNION ALL SELECT name FROM investment_accounts
+    UNION ALL SELECT institution FROM investment_accounts
+    UNION ALL SELECT institution_name FROM plaid_items
+    UNION ALL SELECT institution_name FROM teller_enrollments
+  ) x WHERE n IS NOT NULL AND n <> ''`;
+
 // AIN-2: words that are never merchants — months/weekdays and the finance
 // nouns the modules use as section labels ("Emergency fund", "Spending
 // trend", "Debt"). A claimed name made ONLY of these (or starting with a
@@ -262,6 +275,10 @@ function claimSegments(text, claims, i) {
   const prevEnd = i > 0 ? claims[i - 1].index + claims[i - 1].raw.length : 0;
   let lead = text.slice(Math.max(prevEnd, c.index - 80), c.index);
   const breaks = [...lead.matchAll(/[.!?;]\s|\n/g)];
+  // afterFigure (cycle-9 F40): the lead begins right after the previous dollar
+  // figure, in the same sentence — whatever sits there ("… $450 per paycheck
+  // ($975 …") trails THAT figure, not this one.
+  const afterFigure = i > 0 && prevEnd >= c.index - 80 && breaks.length === 0;
   if (breaks.length) {
     const last = breaks[breaks.length - 1];
     lead = lead.slice(last.index + last[0].length);
@@ -271,7 +288,7 @@ function claimSegments(text, claims, i) {
   let trail = text.slice(end, Math.min(nextStart, end + 40));
   const cut = trail.search(CLAUSE_END_RE);
   if (cut >= 0) trail = trail.slice(0, cut);
-  return { lead: lead.toLowerCase(), trail: trail.toLowerCase() };
+  return { lead: lead.toLowerCase(), trail: trail.toLowerCase(), afterFigure };
 }
 
 // The category this claim is the nearest amount of, or null.
@@ -336,25 +353,48 @@ function planFigures(plan) {
     ...(plan.goals || []).map((g) => g && g.add_per_period),
     // Roadmap T4.1 A6: a raise's share and what trimming a creeping category frees.
     ...(plan.raises || []).flatMap((r) => (r ? [r.suggest_per_period, r.raise_per_deposit] : [])),
-    ...(plan.spending_creep || []).map((c) => c && c.increase_per_period)].filter((v) => v > 0);
+    ...(plan.spending_creep || []).map((c) => c && c.increase_per_period),
+    // Roadmap T4.1 A10's contribution room (cycle-9 F40 — "$X per paycheck
+    // would fill it by Dec 31" was in the prompt but not in this set, so the
+    // model repeating it was judged against some other plan amount).
+    ...((plan.contribution_room && plan.contribution_room.accounts) || []).map((r) => r && r.per_period)].filter((v) => v > 0);
   return { unit: plan.period && plan.period.unit, perPeriod, debts };
 }
+// A per-paycheck figure that describes pay, not the plan ("you bring home
+// $2,100 per paycheck") — only consulted when the plan has no amount to compare.
+const PLAN_INCOME_RE = /\b(?:earn\w*|income|take[- ]home|salary|wages?|paid|deposit\w*|bring(?:s|ing)? home|paycheck (?:is|was|of))\b/;
 // The finding for one plan claim, or null when it matches (or isn't a plan claim).
-function planClaimFinding(claim, lead, trail, figures) {
+// afterFigure (cycle-9 F40): the lead follows another figure in the same
+// sentence, so a period phrase there belongs to that figure — the prompt
+// block's own "pay $450.00 per paycheck ($975.00 a month: …)" made $975 a
+// per-paycheck claim. The period phrase then counts only AFTER this figure.
+function planClaimFinding(claim, lead, trail, figures, { afterFigure = false } = {}) {
   if (!figures) return { matched: false, finding: null };
   const clause = lead + " " + trail;
   if (PLAN_HYPOTHETICAL_RE.test(clause)) return { matched: false, finding: null };
+  const periodText = afterFigure ? trail : clause;
   const debt = attributeCategory(lead, trail, Object.keys(figures.debts));
   let set = null, label = null;
-  if (figures.unit === "paycheck" && PER_PAYCHECK_RE.test(clause)) {
+  if (figures.unit === "paycheck" && PER_PAYCHECK_RE.test(periodText)) {
     set = debt ? figures.debts[debt].per_period : figures.perPeriod;
     label = "per paycheck" + (debt ? " for " + debt : "");
-  } else if (debt && PER_MONTH_RE.test(clause)) {
+  } else if (debt && PER_MONTH_RE.test(periodText)) {
     set = figures.debts[debt].monthly;
     label = "a month for " + debt;
   }
   if (!set) return { matched: false, finding: null };
-  if (!set.length) return { matched: true, finding: null };
+  if (!set.length) {
+    // The plan recommends no such amount (cycle-9 F40): an invented "$500 per
+    // paycheck" used to pass because there was nothing to compare it with. A
+    // warning, not a critical — there is no figure to measure the miss against.
+    if (PLAN_INCOME_RE.test(clause)) return { matched: false, finding: null };
+    return {
+      matched: true,
+      finding: { severity: "warning", tier: 1, check: "cash_plan",
+        claim: `$${claim.value.toFixed(2)} ${label}`, expected: "no such amount in the plan",
+        context: claim.context },
+    };
+  }
   let nearest = set[0];
   for (const v of set) if (Math.abs(claim.value - v) < Math.abs(claim.value - nearest)) nearest = v;
   const pctOff = Math.abs(claim.value - nearest) / nearest;
@@ -366,6 +406,57 @@ function planClaimFinding(claim, lead, trail, figures) {
       pct_off: Math.round(pctOff * 100), context: claim.context },
   };
 }
+
+// Cycle-9 F39: which percentages state the user's savings rate. The old test
+// was "savings rate" anywhere within 80 characters, so the prompt's own
+// "recommended 20%", a neighbouring "Dining is up 25%" and a "5% improvement"
+// were each compared with the actual rate — a false CRITICAL on correct text.
+// A percentage is the rate only when the phrase reaches it unbroken ("your
+// savings rate is 18%", "an 18% savings rate"), and not when its clause is
+// about a recommendation / benchmark or the figure is a change.
+const SAVINGS_RATE_RE = /\bsav(?:ings?|e|ing)\s+(?:rate|ratio)\b/g;
+const SAVINGS_RATE_AFTER_RE = /^\s*(?:\w+\s+){0,2}?sav(?:ings?|e|ing)\s+(?:rate|ratio)\b/;
+const RATE_NOT_ACTUAL_RE = /\b(?:recommend\w*|target\w*|goal|aim\w*|should|ideal\w*|benchmark\w*|rule|guideline\w*|at least|minimum|typical\w*|national|households?|americans?|experts?|suggest\w*|healthy|standard)\b|50\/30\/20/;
+// (A colon doesn't break the reach — "**Savings rate**: 18%" is the commonest way to state it.)
+const RATE_GAP_BREAK_RE = /[,;—]|\s-\s|\b(?:while|but|whereas|and|versus|vs|than|compared|above|below)\b/;
+const RATE_DELTA_BEFORE_RE = /\b(?:by|up|down|rose|fell|grew|dropped|improved|increased|decreased|gained|lost)\s*$/;
+const RATE_DELTA_AFTER_RE = /^\s*(?:percentage\s+)?(?:points?|pp\b|higher|lower|more|less|increase|decrease|improvement|drop|jump|gain)\b/;
+const RATE_MAX_GAP = 40;
+// → null, or { window } — the claim's sentence, for the this-month test.
+function savingsRateClaim(text, claims, i) {
+  const c = claims[i];
+  const raw = c.raw || `${c.value}%`;
+  const prevEnd = i > 0 ? claims[i - 1].index + (claims[i - 1].raw || "").length : 0;
+  const before = text.slice(Math.max(0, c.index - 200), c.index);
+  const breaks = [...before.matchAll(/[.!?]\s|\n/g)];
+  const sentenceLead = breaks.length ? before.slice(breaks[breaks.length - 1].index + breaks[breaks.length - 1][0].length) : before;
+  const sentenceStart = c.index - sentenceLead.length;
+  // The figure's own stretch: since the sentence began or the previous percentage.
+  const own = text.slice(Math.max(sentenceStart, prevEnd), c.index).toLowerCase();
+  const end = c.index + raw.length;
+  let rest = text.slice(end, end + 120);
+  const stop = rest.search(/[.!?]\s|[.!?]$|\n/);
+  if (stop >= 0) rest = rest.slice(0, stop);
+  const nextPct = rest.search(/\d+(?:\.\d+)?%/);
+  const trail = (nextPct >= 0 ? rest.slice(0, nextPct) : rest).toLowerCase();
+  let phraseEnd = -1;
+  for (const m of own.matchAll(SAVINGS_RATE_RE)) phraseEnd = m.index + m[0].length;
+  const gap = phraseEnd >= 0 ? own.slice(phraseEnd) : null;
+  const before_ = gap !== null && gap.length <= RATE_MAX_GAP && !RATE_GAP_BREAK_RE.test(gap);
+  const after_ = SAVINGS_RATE_AFTER_RE.test(trail);
+  if (!before_ && !after_) return null;
+  const trailClause = trail.split(/[,;—]/)[0];
+  if (RATE_NOT_ACTUAL_RE.test(own) || RATE_NOT_ACTUAL_RE.test(trailClause)) return null;
+  if (RATE_DELTA_BEFORE_RE.test(own) || RATE_DELTA_AFTER_RE.test(trail)) return null;
+  return { window: (sentenceLead + raw + rest).toLowerCase() };
+}
+
+// Cycle-9 F39: a figure stated as a monthly RATE — "$600/mo on Groceries",
+// "Dining averages $450" — is the typical month, not the month to date. It was
+// compared with this month's partial category spend (a $600/mo habit is $100
+// on the 5th) and flagged CRITICAL. Checked only when the claim says "this month".
+const MONTHLY_RATE_AFTER_RE = /^\s*(?:\/\s*mo(?:nth)?\b|(?:a|per|each|every)\s+month\b|monthly\b)/;
+const MONTHLY_RATE_BEFORE_RE = /\baverag\w*\s+(?:about\s+|around\s+|roughly\s+|of\s+)?$/;
 
 // AIN-3: savings rate over a set of {income, spending} months (sum-based).
 function savingsRateOf(rows) {
@@ -411,11 +502,23 @@ async function auditInsight(insightText, insightId, { plan = null } = {}) {
     const currentRate = currentIS.length ? savingsRateOf(currentIS) : null;
 
     // Check subscription totals
+    // Cycle-9 F39: the prompt gives the model "Active Subscriptions ($X/mo)"
+    // WITHOUT utilities and "Utility Bills ($Y/mo)" beside it, but this total
+    // was subscriptions + utilities — so the model repeating $X was a CRITICAL.
+    // A subscription-total claim may be $X or $X + $Y (the Subscriptions page's
+    // own total); the nearer one is the expected figure. A clause that names
+    // utilities may also be $Y.
     const subsResult = await pool.query(
-      "SELECT COUNT(*) AS cnt, SUM(amount * 30.0 / cadence_days) AS monthly FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL"
+      `SELECT COUNT(*) AS cnt,
+              SUM(amount * 30.0 / cadence_days) AS monthly,
+              SUM(amount * 30.0 / cadence_days) FILTER (WHERE category IS DISTINCT FROM 'utility') AS subs_monthly,
+              SUM(amount * 30.0 / cadence_days) FILTER (WHERE category = 'utility') AS util_monthly
+         FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL`
     ).catch(() => ({ rows: [{ cnt: 0, monthly: 0 }] }));
-    const actualSubCount = parseInt(subsResult.rows[0].cnt);
-    const actualSubMonthly = parseFloat(subsResult.rows[0].monthly || 0);
+    const subRow = subsResult.rows[0] || {};
+    const allRecurringMonthly = parseFloat(subRow.monthly || 0);
+    const subsOnlyMonthly = subRow.subs_monthly == null ? allRecurringMonthly : parseFloat(subRow.subs_monthly || 0);
+    const utilMonthly = subRow.util_monthly == null ? 0 : parseFloat(subRow.util_monthly || 0);
 
     // Check dollar claims against actuals
     const dollarClaims = extractDollarClaims(insightText);
@@ -427,7 +530,7 @@ async function auditInsight(insightText, insightId, { plan = null } = {}) {
       // this-month spending checks (which would skip or mis-read it).
       if (figures) {
         const seg = claimSegments(insightText, dollarClaims, i);
-        const pc = planClaimFinding(claim, seg.lead, seg.trail, figures);
+        const pc = planClaimFinding(claim, seg.lead, seg.trail, figures, { afterFigure: seg.afterFigure });
         if (pc.finding) findings.push(pc.finding);
         if (pc.matched) continue;
       }
@@ -449,7 +552,9 @@ async function auditInsight(insightText, insightId, { plan = null } = {}) {
       // of (word-boundary names, AI-2; one finding per claim, AI-3).
       const bestCat = attributeCategory(lead, trail, categoryNames);
       const bestActual = bestCat !== null ? actualCategories[bestCat] : null;
-      if (bestCat !== null && Math.abs(claim.value - bestActual) > 0.01) {
+      // F39: a monthly rate isn't this month's total — unless the claim says so.
+      const monthlyRate = (MONTHLY_RATE_AFTER_RE.test(trail) || MONTHLY_RATE_BEFORE_RE.test(lead)) && !THIS_MONTH_RE.test(ctx);
+      if (bestCat !== null && !monthlyRate && Math.abs(claim.value - bestActual) > 0.01) {
         const pctOff = bestActual > 0 ? Math.abs(claim.value - bestActual) / bestActual : 1;
         if (pctOff > 0.20) {
           findings.push({ severity: "critical", tier: 1, check: "arithmetic",
@@ -466,6 +571,11 @@ async function auditInsight(insightText, insightId, { plan = null } = {}) {
       // "your 7 subscriptions"); a single subscription's price is not the
       // total (AIN-1). Same this-month cross-period skip as above.
       const clause = lead + " " + trail;
+      // The nearest of the totals the claim could mean (F39).
+      const subTotals = [subsOnlyMonthly, allRecurringMonthly];
+      if (/utilit/.test(clause)) subTotals.push(utilMonthly);
+      let actualSubMonthly = subTotals[0];
+      for (const v of subTotals) if (Math.abs(claim.value - v) < Math.abs(claim.value - actualSubMonthly)) actualSubMonthly = v;
       if (bestCat === null && /subscription/.test(clause) && SUB_TOTAL_RE.test(clause)
           && Math.abs(claim.value - actualSubMonthly) > 1) {
         const pctOff = actualSubMonthly > 0 ? Math.abs(claim.value - actualSubMonthly) / actualSubMonthly : 1;
@@ -490,11 +600,13 @@ async function auditInsight(insightText, insightId, { plan = null } = {}) {
     // used, trend %) are deliberately NOT checked here — they have no single
     // reliable actual in scope and fuzzy per-entity matching would regress
     // audit precision (the AI-2/AI-4 false-positive class); deferred.
-    const SAVINGS_RATE_RE = /\bsav(?:ings?|e|ing)\s+(?:rate|ratio)\b/;
     const pctClaims = extractPercentClaims(insightText);
-    for (const claim of pctClaims) {
-      const pctx = claim.context.toLowerCase();
-      if (!SAVINGS_RATE_RE.test(pctx)) continue;
+    for (let i = 0; i < pctClaims.length; i++) {
+      const claim = pctClaims[i];
+      // F39: only a percentage the phrase reaches, in its own clause.
+      const rateClaim = savingsRateClaim(insightText, pctClaims, i);
+      if (!rateClaim) continue;
+      const pctx = rateClaim.window;
       // AIN-3: an explicit "this month" claim is checked against the partial
       // month; anything else against the last complete month OR the complete-
       // month average (a "6-month average" claim, CROSS_PERIOD_RE, is the
@@ -540,6 +652,11 @@ async function auditInsight(insightText, insightId, { plan = null } = {}) {
         "SELECT DISTINCT LOWER(COALESCE(user_category, category[1])) AS c FROM transactions WHERE COALESCE(user_category, category[1]) IS NOT NULL LIMIT 1000"
       );
       for (const c of cats.rows) if (c.c) known.add(c.c);
+      // Cycle-9 F42: account, card and loan names — and the institutions
+      // behind them — are in the prompt too ("Chase Sapphire", "Auto Loan"),
+      // so naming one is not a hallucinated merchant.
+      const accounts = await pool.query(ACCOUNT_NAMES_SQL);
+      for (const a of accounts.rows || []) if (a.n) known.add(String(a.n).toLowerCase());
 
       for (const name of merchantNames) {
         // AIN-2: months, weekdays and generic finance nouns are not entities.
@@ -772,4 +889,4 @@ async function getAuditAccuracy(days = 90) {
   }
 }
 
-module.exports = { planFigures, planClaimFinding, auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, isGenericName, claimSegments, attributeCategory, CROSS_PERIOD_RE, namesOtherMonth, claimPeriodWindow, claimNamesOtherMonth };
+module.exports = { planFigures, planClaimFinding, savingsRateClaim, ACCOUNT_NAMES_SQL, auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, isGenericName, claimSegments, attributeCategory, CROSS_PERIOD_RE, namesOtherMonth, claimPeriodWindow, claimNamesOtherMonth };

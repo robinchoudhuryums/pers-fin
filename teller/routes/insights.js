@@ -131,12 +131,17 @@ function cashPlanPromptBlock(plan) {
 
 // The plan's current step is kept as ONE pending action, "Plan (<step>): <headline>",
 // replacing any earlier plan entry (and any copy the model wrote); its
-// first_recommended carries over while the step is the same.
-function seedPlanActions(summary, plan, today) {
+// first_recommended carries over while the step is the same. The earlier entry
+// is read from the STORED summary (priorSummary — cycle-9 F43): the summary the
+// model just wrote only has it when the model chose to copy it forward, so the
+// date reset to today on most runs.
+function seedPlanActions(summary, plan, today, priorSummary = null) {
   if (!summary || !Array.isArray(summary.pending_actions) || !plan || !plan.ok || !plan.headline || !plan.headline.text) return summary;
   const step = plan.headline.step;
   const label = PLAN_STEP_LABELS[step] || "plan";
-  const prior = summary.pending_actions.find((x) => PLAN_ACTION_RE.test(x.description || ""));
+  const isPlan = (x) => x && PLAN_ACTION_RE.test(x.description || "");
+  const stored = priorSummary && Array.isArray(priorSummary.pending_actions) ? priorSummary.pending_actions.find(isPlan) : null;
+  const prior = stored || summary.pending_actions.find(isPlan);
   const priorLabel = prior ? PLAN_ACTION_RE.exec(prior.description)[1] : null;
   const action = {
     description: ("Plan (" + label + "): " + plan.headline.text).slice(0, 240),
@@ -820,7 +825,8 @@ async function generateInsights() {
       systemText += "\n\n=== TAX DEDUCTION INSTRUCTIONS ===\n" +
         "When tax-deductible transactions are provided: Review for potential deductions. " +
         "Categorize as: medical (Schedule A), charitable (Schedule A), education (1098-T/LLC), " +
-        "business (Schedule C), or not deductible. Note standard deduction thresholds ($14,600 single / $29,200 married 2024). " +
+        "business (Schedule C), or not deductible. Note that itemizing only helps once deductions pass the standard deduction for the tax year in question " +
+        "(it was $14,600 single / $29,200 married filing jointly for 2024 and rises each year — don't state a later year's amount unless you are sure of it). " +
         "Only flag deductions likely to exceed the standard deduction threshold. Remind user to consult a tax professional.";
     }
     if (modules.goal_tracking !== false) {
@@ -1344,7 +1350,7 @@ async function generateInsights() {
     }
     // T4.1 A3: the plan's current step is kept as one pending action.
     if (summaryStatus === "updated" && newSummaryJson && cashPlan) {
-      newSummaryJson = seedPlanActions(newSummaryJson, cashPlan, todayStr());
+      newSummaryJson = seedPlanActions(newSummaryJson, cashPlan, todayStr(), runningSummaryJson);
     }
     // Backward-compat: render the structured summary to text for the legacy
     // `insights_running_summary` column so any consumer not yet updated to
@@ -1360,8 +1366,10 @@ async function generateInsights() {
         "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7, 'insight_empty')",
         ["[Empty insight] stop_reason=" + (message.stop_reason || "unknown"), actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
       ).catch(err => console.error("empty-insight usage row failed — monthly AI cap may under-count:", err.message));
-      await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1")
-        .catch(err => console.error("insights_last_run update failed:", err.message));
+      // insights_last_run is NOT stamped (cycle-9 F43): nothing was produced.
+      // Stamping it made the auto-trigger wait a whole cadence (30–90 days) for
+      // the next insight; left alone, it retries after INSIGHTS_RETRY_MS (24 h,
+      // from insights_last_attempt_at — startup.js).
       return {
         ok: false,
         status: 502,

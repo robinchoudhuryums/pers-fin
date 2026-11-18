@@ -209,10 +209,64 @@ async function toolCashPlan(input = {}) {
   for (const k of WHAT_IF_KEYS) if (input[k] != null) overrides[k] = input[k];
   const w = advice.whatIfPlan(await advice.getAdviceInputs(pool), overrides);
   if (!w.ok) return { ok: false, error: w.error, disclaimer: w.disclaimer || advice.DISCLAIMER };
+  // what_if FIRST (cycle-9 F41): it is the answer to the question asked, and a
+  // result that has to be shortened loses its last keys first.
+  const { ok, disclaimer, ...rest } = trimCashPlan(w.plan);
   return {
-    ...trimCashPlan(w.plan),
+    ok, disclaimer,
     what_if: { changes: w.changes, before: w.before, after: w.after, debts: w.debts, text: w.text },
+    ...rest,
   };
+}
+
+// A tool result as the text sent back to the model, within TOOL_RESULT_LIMIT
+// characters (cycle-9 F41). It used to be JSON.stringify(result).slice(0, 12000):
+// a data-rich cash plan runs past that, so the JSON was cut mid-value — invalid,
+// and missing whatever came last (the what-if comparison). Now a result that is
+// too long is shortened by KEY, and stays valid JSON:
+//   1. the plan's supporting sections are left out, least needed first
+//      (TOOL_RESULT_TRIM_ORDER), and named in `omitted_for_length`;
+//   2. then the longest top-level list is halved until it fits
+//      (`shortened_for_length`: { key: { kept, of } });
+//   3. if nothing fits, a short error object.
+const TOOL_RESULT_LIMIT = 12000;
+const TOOL_RESULT_TRIM_ORDER = [
+  "notes", "subscription_review", "sinking_funds", "rebalance", "idle_cash", "spending_creep", "bonuses", "raises",
+  "loan_extra", "contribution_room", "goals", "emergency", "cash", "surplus", "steps", "allocation", "debts",
+];
+function toolResultContent(result, limit = TOOL_RESULT_LIMIT) {
+  let json = JSON.stringify(result);
+  if (json === undefined) json = "null";
+  if (json.length <= limit) return json;
+  const tooLarge = () => JSON.stringify({ error: "This result was too large to return — ask a narrower question.", truncated: true });
+  if (!result || typeof result !== "object" || Array.isArray(result)) return tooLarge();
+  const out = { ...result };
+  const omitted = [];
+  for (const key of TOOL_RESULT_TRIM_ORDER) {
+    if (!(key in out)) continue;
+    delete out[key];
+    omitted.push(key);
+    out.omitted_for_length = omitted;
+    json = JSON.stringify(out);
+    if (json.length <= limit) return json;
+  }
+  const shortened = {};
+  for (let guard = 0; guard < 64; guard++) {
+    let longest = null, size = 0;
+    for (const [k, v] of Object.entries(out)) {
+      if (!Array.isArray(v) || v.length < 2 || k === "omitted_for_length") continue;
+      const len = JSON.stringify(v).length;
+      if (len > size) { longest = k; size = len; }
+    }
+    if (!longest) break;
+    const of = (shortened[longest] && shortened[longest].of) || out[longest].length;
+    out[longest] = out[longest].slice(0, Math.ceil(out[longest].length / 2));
+    shortened[longest] = { kept: out[longest].length, of };
+    out.shortened_for_length = shortened;
+    json = JSON.stringify(out);
+    if (json.length <= limit) return json;
+  }
+  return tooLarge();
 }
 
 function trimCashPlan(p) {
@@ -387,7 +441,7 @@ router.post("/api/ask", async (req, res) => {
         results.push({
           type: "tool_result",
           tool_use_id: tu.id,
-          content: JSON.stringify(result).slice(0, 12000),
+          content: toolResultContent(result),
         });
       }
       messages.push({ role: "user", content: results });
@@ -423,3 +477,5 @@ router.post("/api/ask", async (req, res) => {
 module.exports = router;
 module.exports.TOOL_EXECUTORS = TOOL_EXECUTORS;
 module.exports.TOOLS = TOOLS;
+module.exports.toolResultContent = toolResultContent;
+module.exports.TOOL_RESULT_LIMIT = TOOL_RESULT_LIMIT;

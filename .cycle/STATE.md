@@ -12,12 +12,33 @@ to the "none in progress" state.
 Cycle: 9
 Phase: implement
 Scope: broad (Nov 2026 broad scan — all non-frozen subsystems, weighted to the work since the cycle-8 scan: roadmap T4.1 A1–A10, cycle-8 expansion E1–E5, seams audit #4 S4-1..S4-5, the opening screen)
-Updated: 2026-11-17
+Updated: 2026-11-18
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 4 (DONE, 2026-11-18) — AI audit trust:** block `.cycle/blocks/9-batch4-broad-implement.md`.
+  F39 (ai-audit.js: subscriptions and utilities read apart, a total claim compared with the nearest real total;
+  savingsRateClaim — a percentage is the rate only when the phrase reaches it unbroken, never a recommendation /
+  benchmark / change; a monthly-rate category figure isn't compared with the month to date), F40 (claimSegments'
+  afterFigure → the period phrase counts only after the figure; contribution-room per_period in planFigures; an empty
+  comparison set is a warning unless the sentence is about pay), F41 (ask.js toolResultContent — trims by key in a
+  fixed order, then halves the longest list, always valid JSON; get_cash_plan puts what_if third), F42
+  (ACCOUNT_NAMES_SQL in tier 2's known set), F43 (the empty-run path no longer stamps insights_last_run;
+  seedPlanActions reads the earlier entry from the stored summary; the tax prompt gives 2024's amounts as 2024's). New
+  tests/cycle9-b4.test.js (56) and tests/contract/c9-batch4 (7). npm test 3354 (181 files, Perfin 2611), contract 356,
+  four shifted clocks, pre-fix the new files fail 37 of 56 and 6 of 7. Playwright not run. Net 0 (F39, F42 likely − 2 Low).
+  - **Where I left off:** Batch 4 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
+    for Batches 2, 3 and 4 — run `/sync-docs` (each block's DOCUMENTATION UPDATES NEEDED has the list). Next:
+    `/broad-implement Batch 5` (F44 F34 F45 F47 F46 F48 F49 — notifications and settings).
+  - **Decisions:** F39 — CROSS_PERIOD_RE and its pins are untouched; the monthly-rate skip is a separate rule on the
+    category comparison only (the subscription total is itself monthly). A subscription total may be either total (the
+    prompt gives one, the Subscriptions page the other). A colon doesn't break the savings-rate reach. F40 — the
+    empty-set finding is a warning, not a critical (nothing to measure the miss against). F43 — all three parts of the
+    finding were done; the tax prompt was reworded rather than given newer figures I couldn't verify.
+  - **Follow-ons:** the audit fetches monthly totals and the subscription count and checks neither; a pay sentence is
+    still judged against a non-empty plan set; the tax prompt has no per-year table; Ask's limit is still 12,000.
 - **Cycle 9 Batch 3 (DONE, 2026-11-17) — forecast and detection accuracy:** block `.cycle/blocks/9-batch3-broad-implement.md`.
   F20 (scripts/transfer-keywords.js is the one keyword source; detect-subscriptions skips a row the transfer classifier
   takes — unless the user dismissed that transfer — and retires active non-manual subscription rows keyed on a transfer
@@ -32,8 +53,7 @@ implement and reflect sessions only set Phase.)
   shifted clocks, the contract file fails 7 of 9 pre-fix. Net +1 (F20, F28 − 1 Low).
   - **Where I left off:** Batch 3 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
     for Batches 2 and 3 — run `/sync-docs` (each block's DOCUMENTATION UPDATES NEEDED has the list; the new file
-    scripts/transfer-keywords.js needs a Subsystems entry). Next: `/broad-implement Batch 4` (F39 F40 F41 F42 F43 — AI
-    audit trust).
+    scripts/transfer-keywords.js needs a Subsystems entry). Batch 4 followed (above).
   - **Decisions:** F20 — the transfer detector is unchanged and wins; a dismissed transfer is the user's way to keep a
     series as a subscription (so a duplicate the user already resolved by dismissing the transfer isn't lost). F21 —
     "another plan" = the new amount was already charged within two cadences up to the old price's last charge (same
@@ -101,7 +121,7 @@ implement and reflect sessions only set Phase.)
       prior_amount is the merchant's previous charge of any amount → false / monthly alerts), F22 (Utility → Subscription
       reverted by the next detection), F23 (a manual subscription's next_expected never advances), F24 (exact rules store the
       trimmed pattern, compare the untrimmed merchant).
-    - **Batch 4 — AI audit trust:** F39 (false criticals: subscription total includes utilities, any % near "savings rate",
+    - **Batch 4 (DONE) — AI audit trust:** F39 (false criticals: subscription total includes utilities, any % near "savings rate",
       monthly-equivalent vs month-to-date), F40 (plan check: "per paycheck" bleeds to the next figure, contribution-room
       figures missing, an invented amount passes when the plan recommends nothing), F41 (Ask's 12,000-char slice drops
       what_if), F42 (entity check doesn't know account names; monthly totals fetched, never checked), F43 (an empty insight run
