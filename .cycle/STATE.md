@@ -35,9 +35,19 @@ implement and reflect sessions only set Phase.)
   Per-sistant 753), contract 370, Playwright 93, five shifted clocks (two of them clock-change nights), pre-fix the new
   files fail 36 of 46, 5 of 10 and 14 of 14. Net −1 (F45 likely − 2: a lasting push failure is now a repeating failed
   job for up to 12 h; snoozing a linked task un-covers its reminder).
-  - **Where I left off:** Batch 5 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
-    for Batches 2, 3, 4 and 5 — run `/sync-docs` (each block's DOCUMENTATION UPDATES NEEDED has the list). Next:
-    `/broad-implement Batch 6` (F30 F31 F32 F33 F37 F38 — cash plan).
+  - **Where I left off:** Batch 5 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). `/sync-docs` done
+    for Batches 2, 3, 4 and 5 together (2026-11-18): CLAUDE.md — the tree entries (keep-alive, job-health, job-runner,
+    cash-flow, notify-prefs, ai-audit, enrollments, subscriptions, housing, settings, insights, categorize,
+    merchant-rename, notifications, ask, shell auth), `scripts/transfer-keywords.js` under Other key files and the
+    Detection & Categorization subsystem list (the one path the tree had that the list didn't), the feature sections
+    (subscription / transfer detection, rename + categorization rules, cash flow, Rent & Utilities, Per-sistant tasks,
+    auto-trigger, the audit, Web Push, the bell, Workflow hygiene, Scheduled Tasks, Security, the settings PATCH notes),
+    Database (two detected_subscriptions columns, push_state `retry`), the API list, Operator state item 5 (Keep Alive's
+    secrets), Known Open Issues (Batches 2–5 done with their follow-ons; two stale lines corrected), INV-59 / 71 / 104 /
+    105 / 112 / 113 / 123 / 124 / 140 / 142 / 149 / 150 / 153 / 155, the test list and counts (3410 / 183 / Perfin 2657 /
+    Per-sistant 753 / contract 370); apps/per-sistant/CLAUDE.md — linked tasks, housing-due, db/030, openLinkedItems,
+    the new test entry, 753; README — counts and one clause. Next: `/broad-implement Batch 6` (F30 F31 F32 F33 F37 F38
+    — cash plan).
   - **Decisions:** F46 — a distinct state (`retry`) rather than reusing `held`, so the bell and the summary push don't
     blame quiet hours; Per-sistant's perfinPushedItems still counts only sent / held (a retry reached no one). Dead
     subscriptions (404 / 410) are not a reason to retry. F44 — the base uses today's quiet-hours settings; a failed
@@ -62,7 +72,7 @@ implement and reflect sessions only set Phase.)
   seedPlanActions reads the earlier entry from the stored summary; the tax prompt gives 2024's amounts as 2024's). New
   tests/cycle9-b4.test.js (56) and tests/contract/c9-batch4 (7). npm test 3354 (181 files, Perfin 2611), contract 356,
   four shifted clocks, pre-fix the new files fail 37 of 56 and 6 of 7. Playwright not run. Net 0 (F39, F42 likely − 2 Low).
-  - **Where I left off:** Batch 4 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
+  - **Where I left off:** Batch 4 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs synced with Batch 5's (above); when this was written they were NOT yet synced
     for Batches 2, 3 and 4 — run `/sync-docs` (each block's DOCUMENTATION UPDATES NEEDED has the list). Next:
     `/broad-implement Batch 5` (F44 F34 F45 F47 F46 F48 F49 — notifications and settings).
   - **Decisions:** F39 — CROSS_PERIOD_RE and its pins are untouched; the monthly-rate skip is a separate rule on the
