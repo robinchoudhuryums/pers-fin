@@ -91,9 +91,11 @@ const CHECK_LISTS = {
   },
   // Cycle-8 E3a (G2): what happened to a notification's push — sent, held
   // (quiet hours), muted, covered (an open linked task is the surface — ST2),
-  // none (push not configured), expired (held past 12 h). NULL on older rows.
+  // none (push not configured), expired (held past 12 h), retry (failed on
+  // every device, waiting for another try — cycle-9 F46), failed (a retry that
+  // gave up — cycle-9 follow-on). NULL on older rows.
   notification_log: {
-    push_state: ["sent", "held", "muted", "covered", "none", "expired", "retry"],
+    push_state: ["sent", "held", "muted", "covered", "none", "expired", "retry", "failed"],
   },
 };
 const sqlLiteral = (v) => "'" + String(v).replace(/'/g, "''") + "'";
@@ -794,6 +796,10 @@ async function runMigrationsOnce() {
     // the linked-task key without its "perfin:" prefix).
     await client.query(`ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS push_state TEXT CHECK (push_state IN (${inList(CHECK_LISTS.notification_log.push_state)}))`);
     await client.query("ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS item_key TEXT");
+    // Cycle-9 follow-on: when the quiet hours a push was held in ended, by the
+    // settings in force at the hold — the release job's 12-hour limit counts
+    // from the later of this and the end worked out from today's settings.
+    await client.query("ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ");
 
     // ---- Data freshness tracking ----
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_balance_sync_at TIMESTAMPTZ DEFAULT NULL");

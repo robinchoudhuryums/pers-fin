@@ -255,6 +255,6 @@ describe("the migration", () => {
     assert.match(src, /ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS push_state TEXT CHECK \(push_state IN \(\$\{inList\(CHECK_LISTS\.notification_log\.push_state\)\}\)\)/);
     assert.match(src, /ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS item_key TEXT/);
     // "retry" since cycle-9 F46 (a push that failed on every device, kept for the release job).
-    assert.deepEqual(dbModule.CHECK_LISTS.notification_log.push_state, ["sent", "held", "muted", "covered", "none", "expired", "retry"]);
+    assert.deepEqual(dbModule.CHECK_LISTS.notification_log.push_state, ["sent", "held", "muted", "covered", "none", "expired", "retry", "failed"]);
   });
 });

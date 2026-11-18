@@ -368,10 +368,17 @@ function renderReminders(list) {
 var widgetNames = {search:'Search',cards:'Stats Cards',reminders:'Reminders',briefing:'AI Briefing',suggestions:'Smart Suggestions',tasks:'Task Overview',upcoming_emails:'Upcoming & Emails',mini_cal:'Mini Calendar',perfin:'Perfin',shortcuts:'Shortcuts'};
 var dashLayout = {widgets:['search','cards','reminders','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
 var wdragSrcWidget = null;
+// Cycle-9 follow-on: the layout is saved whole. When the stored one couldn't be
+// read, a change would save the default layout over it — so only Reset (which
+// replaces it on purpose) saves until a load has succeeded.
+var layoutLoaded = false;
 
 async function loadLayout() {
   try {
-    var settings = await fetch('/api/settings').then(r=>r.json());
+    var layoutRes = await fetch('/api/settings');
+    if (!layoutRes.ok) throw new Error('settings ' + layoutRes.status);
+    var settings = await layoutRes.json();
+    layoutLoaded = true;
     if (settings.dashboard_layout) {
       dashLayout = settings.dashboard_layout;
       // Drop any retired widgets (tree, ai_query) from saved layout
@@ -425,11 +432,15 @@ function toggleCustomize() {
 function resetLayout() {
   dashLayout = {widgets:['search','cards','reminders','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
   applyLayout();
-  saveLayout();
+  saveLayout(true);
 }
 
-async function saveLayout() {
-  await writeOk(await tryFetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({dashboard_layout:dashLayout})}), 'Could not save the layout');
+async function saveLayout(replace) {
+  if (!layoutLoaded && !replace) {
+    showUndo("Your layout couldn't be loaded, so this change isn't saved — reload the page.", '', '', 'info');
+    return;
+  }
+  if (await writeOk(await tryFetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({dashboard_layout:dashLayout})}), 'Could not save the layout')) layoutLoaded = true;
 }
 
 function wdragStart(e,w) { wdragSrcWidget = (w||e.target.closest('.dash-widget')).dataset.widget; (w||e.target.closest('.dash-widget')).style.opacity = '0.4'; }

@@ -360,7 +360,7 @@ async function runHousingReminders(pool_, today = todayStr()) {
   // the rent due day (or past it). One reminder per ~3 days while it stands.
   try {
     const bal = await db.query(
-      "SELECT COALESCE(SUM(amount), 0) AS balance, COUNT(*) AS n, MIN(period) AS oldest FROM payee_obligations WHERE status = 'unpaid' AND payee = $1",
+      "SELECT COALESCE(SUM(amount), 0) AS balance, COUNT(*) AS n, MIN(period) AS oldest, ARRAY_AGG(DISTINCT period) AS periods FROM payee_obligations WHERE status = 'unpaid' AND payee = $1",
       [cfg.payee_name]
     );
     const balance = parseFloat(bal.rows[0].balance);
@@ -402,6 +402,13 @@ async function runHousingReminders(pool_, today = todayStr()) {
           tag,
           // The period's linked task (perfin:housing:<period>) covers it once it is due (cycle-8 E3d, cycle-9 F45).
           item: "housing:" + period,
+          // The balance is every unpaid month's: a showing task for any of
+          // them is a reminder of the same debt (the oldest month's task may
+          // have been ticked off by hand while a later month's still shows).
+          cover_items: dueNow
+            ? (Array.isArray(bal.rows[0].periods) ? bal.rows[0].periods : [])
+                .filter((p) => /^\d{4}-\d{2}$/.test(String(p)) && p !== period).map((p) => "housing:" + p)
+            : [],
           data: { url: "/housing" },
         });
         if (r && r.logged) sent++;

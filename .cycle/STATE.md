@@ -18,6 +18,36 @@ Updated: 2026-11-18
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 5 follow-on items (DONE, 2026-11-18):** block `.cycle/blocks/9-batch5-followons-broad-implement.md`.
+  The seven follow-ons Batch 5's block listed, in its order. FO-1 (dashboard.ejs: the Debt Payoff mode returns a
+  "settings couldn't be loaded" status instead of storing today's debt as the baseline when GET /api/settings fails),
+  FO-2 (new push_state `failed` in CHECK_LISTS: a stale `retry` row → `failed`, a stale `held` row → `expired`; bell
+  "Push failed — not delivered"), FO-3 (notifications.js `urgentRetry`: a retry of a `bypassQuiet` kind — a PIN lockout
+  — opens the release gate during quiet hours and the job then reads and pushes only those rows; true at boot), FO-4
+  (`passingPushError`: no status / 408 / 429 / 5xx are retried, any other 4xx and an unreadable stored subscription are
+  `lasting` → `none`, logged, the subscription kept), FO-5 (new column `notification_log.hold_until`, written at the
+  hold; the 12-hour base is the later of it and the end by today's settings), FO-6 (Per-sistant settings.js: the three
+  switches strict booleans checked before any query, keep-alive hours 0-23, a real IANA zone, session timeout 1-1440,
+  default_horizon in VALID_HORIZONS, dashboard_layout `{ widgets, hidden }` or null; settings-script.js `settingsReady`
+  blocks the four saves after a failed load; dashboard-script.js `layoutLoaded` blocks a layout save — Reset excepted),
+  FO-7 (the rent push carries `cover_items` = the other unpaid months, kept in the row's `data.cover_items` for the
+  release job; `itemCovered` takes a list; Per-sistant's `housingDueUnlessTask` asks about every unpaid month).
+  Decisions: `hold_until` is combined with today's settings by taking the LATER end (a stored end alone would cut a
+  lengthened window short); lasting failures keep the subscription (only 404 / 410 prune); the Settings page blocks
+  every form after a failed load rather than field by field; the cover list is stored in `data`, not a new column, and
+  `item_key` stays the oldest month's (Per-sistant's `perfinPushedItems` reads it). New tests/cycle9-b5-followons.test.js
+  (28), apps/per-sistant/tests/cycle9-b5-followons.test.js (16), tests/contract/c9-batch5-followons (8). npm test 3454
+  (185 files, Perfin 2685, Per-sistant 769), contract 378, Playwright 93, migrations re-run, five shifted clocks,
+  pre-fix the new files fail 27 of 28, 10 of 16 and 8 of 8. Net −2 (0 production fixes; a 4xx-refused push is dropped
+  rather than retried; with several months owed a hand-completed oldest task no longer resumes the rent push while a
+  later month's task shows).
+  - **Open follow-ons:** Debt Payoff shows 100% on a failed `/api/accounts` read (display only); a push dropped for a
+    lasting error is visible only in Recent errors; Per-sistant's Settings blocks the theme change too after a failed
+    load; `vault_branch` unchecked; `hold_until` can be up to a minute past the hour; a held rent push's cover list is
+    the unpaid months at send time.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced for
+    these follow-ons (CLAUDE.md still lists them as open under cycle 9 Batch 5, and the counts read 3410 / 183 / 370).
+    Next: `/sync-docs`, then `/broad-implement Batch 6` (F30 F31 F32 F33 F37 F38 — cash plan).
 - **Cycle 9 Batch 5 (DONE, 2026-11-18) — notifications and settings:** block `.cycle/blocks/9-batch5-broad-implement.md`.
   F44 (notifications.js: the release job decides expiry per row — 12 hours past the END of the quiet window the row was
   created in, by today's settings, else past its creation; the SQL expiry is gone), F46 (new push_state `retry` in

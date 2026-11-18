@@ -17,8 +17,24 @@ function applyTheme(t) {
   else document.documentElement.removeAttribute('data-theme');
   localStorage.setItem('theme', t);
 }
+// Cycle-9 follow-on (Perfin's F47, here): the forms below are filled from the
+// stored settings. When that read fails they would show defaults, and a Save
+// would write those defaults over what is stored — so nothing saves until a
+// load has succeeded.
+var settingsLoaded = false;
+function settingsReady() {
+  if (settingsLoaded) return true;
+  var el = document.getElementById('status');
+  el.className = 'status-msg error';
+  el.textContent = "Your settings couldn't be loaded — reload the page before changing anything.";
+  return false;
+}
 async function load() {
-  var s = await fetch('/api/settings').then(r=>r.json());
+  var res = null;
+  try { res = await fetch('/api/settings'); } catch (e) { res = null; }
+  if (!res || !res.ok) { settingsReady(); loadAiUsage(); return; }
+  var s = await res.json();
+  settingsLoaded = true;
   document.getElementById('s-theme').value = s.theme || 'dark';
   document.getElementById('s-timeout').value = s.session_timeout_minutes || 15;
   document.getElementById('s-horizon').value = s.default_horizon || 'short';
@@ -66,6 +82,7 @@ async function load() {
 }
 
 async function saveSettings() {
+  if (!settingsReady()) return;
   var data = {
     theme: document.getElementById('s-theme').value,
     session_timeout_minutes: parseInt(document.getElementById('s-timeout').value) || 15,
@@ -361,6 +378,7 @@ async function testWebhook(id) {
 
 // Slack
 async function saveSlack() {
+  if (!settingsReady()) return;
   var url=document.getElementById('s-slack').value||null;
   var r=await fetch('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({slack_webhook_url:url})});
   var el=document.getElementById('status');
@@ -397,6 +415,7 @@ async function loadVaultStatus(){
   } catch (e) {}
 }
 async function saveVault(){
+  if (!settingsReady()) return;
   var data = {
     vault_enabled: document.getElementById('vault-enabled').checked,
     vault_repo: document.getElementById('vault-repo').value || null,
@@ -433,6 +452,7 @@ function updateKAEstimate(){
 document.getElementById('ka-start').addEventListener('change',updateKAEstimate);
 document.getElementById('ka-end').addEventListener('change',updateKAEstimate);
 async function saveKeepAlive(){
+  if (!settingsReady()) return;
   var data={
     keep_alive_enabled:document.getElementById('ka-enabled').checked,
     keep_alive_start:parseInt(document.getElementById('ka-start').value),

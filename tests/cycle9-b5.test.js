@@ -60,13 +60,16 @@ function fakeDb() {
     db.queries.push(sql);
     if (/SELECT notify_quiet_hours, notify_muted_types FROM user_settings/.test(sql)) return { rows: [db.prefs] };
     if (/^INSERT INTO notification_log/.test(sql)) {
-      const [type, title, body, data, push_state, item_key = null, is_read = false] = params;
+      const [type, title, body, data, push_state, item_key = null, is_read = false, hold_until = null] = params;
       const id = db.nextId++;
-      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
+      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, hold_until, created_at: new Date(db.clock) });
       return { rows: [{ id }] };
     }
-    if (/SELECT id, type, title, body, data, item_key, push_state, created_at FROM notification_log\s+WHERE push_state IN \('held', 'retry'\)/.test(sql)) {
-      return { rows: db.log.filter((r) => WAITING.includes(r.push_state)).sort((a, b) => a.created_at - b.created_at || a.id - b.id).slice(0, params[0]) };
+    // (During quiet hours it reads only the retries — cycle-9 follow-on.)
+    const sel = /SELECT id, type, title, body, data, item_key, push_state, created_at, hold_until FROM notification_log\s+WHERE push_state IN \(('held', 'retry'|'retry')\)/.exec(sql);
+    if (sel) {
+      const states = sel[1].replace(/'/g, "").split(", ");
+      return { rows: db.log.filter((r) => states.includes(r.push_state)).sort((a, b) => a.created_at - b.created_at || a.id - b.id).slice(0, params[0]) };
     }
     const m = /UPDATE notification_log SET push_state = '(\w+)'(?:, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state (?:= '(\w+)'|IN \('held', 'retry'\))/.exec(sql);
     if (m) {
@@ -179,13 +182,16 @@ describe("F44 — a hold expires 12 hours past the end of its quiet window", () 
     assert.deepEqual([rel.released, rel.expired], [0, 1]);
   });
 
-  it("quiet hours changed since the hold: its own creation time is the base", async () => {
+  it("quiet hours changed since the hold: the end recorded at the hold still counts", async () => {
     await sendAt("2026-10-29T19:30:00Z", { title: "Held", tag: "cash-low" });
+    assert.equal(db.log[0].hold_until.toISOString(), "2026-10-30T08:00:00.000Z");
     db.prefs.notify_quiet_hours = { enabled: false, start: "19:00", end: "08:00" };
     notifications.invalidateNotifyPrefs();
-    // Switched off 13 hours later: nothing says the window ran until 08:00.
+    // Switched off 13 hours after the push was made — but it was held until
+    // 08:00 by the hours in force then (hold_until), so it is 31 minutes late,
+    // not 13 hours (cycle-9 follow-on; it used to expire here).
     const rel = await notifications.releaseHeldNotifications({ now: at("2026-10-30T08:31:00Z") });
-    assert.deepEqual([rel.released, rel.expired], [0, 1]);
+    assert.deepEqual([rel.released, rel.expired], [1, 0]);
     // …and one switched off sooner goes out at once.
     await sendAt("2026-10-30T08:40:00Z", { title: "x", tag: "test" }); // never held; keeps the fake honest
     db.prefs.notify_quiet_hours = { enabled: true, start: "19:00", end: "08:00" };
@@ -199,7 +205,7 @@ describe("F44 — a hold expires 12 hours past the end of its quiet window", () 
   it("no expiry SQL is left: the decision is per row, in code", () => {
     const src = read("teller", "routes", "notifications.js");
     assert.doesNotMatch(src, /created_at < \$1::timestamptz - make_interval/);
-    assert.match(src, /const stale = waiting\.filter\(\(h\) => holdExpired\(h\.created_at, prefs, now\)\);/);
+    assert.match(src, /const stale = waiting\.filter\(\(h\) => holdExpired\(h, prefs, now\)\);/);
     assert.equal(notifications.HOLD_MAX_HOURS, 12);
   });
 });
@@ -240,7 +246,8 @@ describe("F46 — a push that failed everywhere is retried", () => {
     assert.equal((await notifications.releaseHeldNotifications({ now: at("2026-10-30T00:01:00Z") })).outcome, "quiet");
     const late = await notifications.releaseHeldNotifications({ now: at("2026-10-30T08:01:00Z") });
     assert.deepEqual([late.outcome, late.expired], ["expired", 1]);
-    assert.equal(db.log[0].push_state, "expired");
+    // 'failed', not 'expired': quiet hours never held it (cycle-9 follow-on).
+    assert.equal(db.log[0].push_state, "failed");
   });
 
   it("the subscription read itself failing is a retry too", async () => {
@@ -357,7 +364,7 @@ describe("F34 — the rent reminder follows the oldest unpaid month", () => {
     const { sent, sqls } = await remind("2026-11-03", { oldest: "2026-10" });
     assert.deepEqual(sent.map((p) => [p.tag, p.item]), [["housing-due-2026-10", "housing:2026-10"]]);
     assert.match(sent[0].body, /^\$1800\.00 owed across 1 item\(s\)\. Send the transfer\.$/);
-    assert.ok(sqls.some((s) => /MIN\(period\) AS oldest FROM payee_obligations WHERE status = 'unpaid' AND payee = \$1/.test(s)));
+    assert.ok(sqls.some((s) => /MIN\(period\) AS oldest, ARRAY_AGG\(DISTINCT period\) AS periods FROM payee_obligations WHERE status = 'unpaid' AND payee = \$1/.test(s)));
   });
 
   it("only this month unpaid: quiet before its window, pushed inside it — this month's item", async () => {

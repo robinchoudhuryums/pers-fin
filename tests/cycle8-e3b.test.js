@@ -51,16 +51,19 @@ function fakeDb() {
     }
     if (/^INSERT INTO notification_log/.test(sql)) {
       if (db.insertThrows) throw new Error("insert failed");
-      const [type, title, body, data, push_state, item_key = null, is_read = false] = params;
+      const [type, title, body, data, push_state, item_key = null, is_read = false, hold_until = null] = params;
       const id = db.nextId++;
-      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
+      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, hold_until, created_at: new Date(db.clock) });
       return { rows: [{ id }] };
     }
     // The release job reads what is WAITING — held for quiet hours, or being
     // retried after a push that failed everywhere (cycle-9 F46) — and decides
     // expiry per row itself (F44), so there is no expiry SQL to answer.
-    if (/SELECT id, type, title, body, data, item_key, push_state, created_at FROM notification_log\s+WHERE push_state IN \('held', 'retry'\)/.test(sql)) {
-      return { rows: db.log.filter((r) => WAITING.includes(r.push_state)).sort((a, b) => a.created_at - b.created_at || a.id - b.id).slice(0, params[0]) };
+    // (During quiet hours it reads only the retries — cycle-9 follow-on.)
+    const sel = /SELECT id, type, title, body, data, item_key, push_state, created_at, hold_until FROM notification_log\s+WHERE push_state IN \(('held', 'retry'|'retry')\)/.exec(sql);
+    if (sel) {
+      const states = sel[1].replace(/'/g, "").split(", ");
+      return { rows: db.log.filter((r) => states.includes(r.push_state)).sort((a, b) => a.created_at - b.created_at || a.id - b.id).slice(0, params[0]) };
     }
     const m = /UPDATE notification_log SET push_state = '(\w+)'(?:, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state (?:= '(\w+)'|IN \('held', 'retry'\))/.exec(sql);
     if (m) {
@@ -218,8 +221,9 @@ describe("sendToAll", () => {
 // ---------------------------------------------------------------------------
 describe("releaseHeldNotifications", () => {
   async function hold(title, tag, data, minutesAgo = 0) {
+    // Held at the moment it was made, so the row's hold_until is that night's end.
     db.clock = new Date(QUIET.getTime() - minutesAgo * 60000);
-    await notifications.sendToAll({ title, body: title + " body", tag, data }, { now: QUIET });
+    await notifications.sendToAll({ title, body: title + " body", tag, data }, { now: new Date(db.clock) });
   }
 
   it("still in quiet hours: nothing pushed, the wait moved to the end", async () => {
@@ -268,7 +272,7 @@ describe("releaseHeldNotifications", () => {
   });
 
   it("a hold older than 12 hours is left in the bell (expired), not pushed late", async () => {
-    await hold("Old", "cash-low", {}, 13 * 60);
+    await hold("Old", "cash-low", {}, 25 * 60); // the night before: its quiet hours ended 24 hours ago
     await hold("New", "cash-low", {});
     const r = await notifications.releaseHeldNotifications({ now: new Date("2026-10-30T07:05:00Z") });
     assert.deepEqual([r.released, r.expired], [1, 1]);

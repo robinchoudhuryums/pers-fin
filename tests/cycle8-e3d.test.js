@@ -38,12 +38,12 @@ function fakeDb() {
     db.queries.push(sql);
     if (/SELECT notify_quiet_hours, notify_muted_types FROM user_settings/.test(sql)) return { rows: [db.prefs] };
     if (/^INSERT INTO notification_log/.test(sql)) {
-      const [type, title, body, data, push_state, item_key, is_read] = params;
+      const [type, title, body, data, push_state, item_key, is_read, hold_until = null] = params;
       const id = db.nextId++;
-      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
+      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, hold_until, created_at: new Date(db.clock) });
       return { rows: [{ id }] };
     }
-    if (/SELECT id, type, title, body, data, item_key, push_state, created_at FROM notification_log/.test(sql)) {
+    if (/SELECT id, type, title, body, data, item_key, push_state, created_at, hold_until FROM notification_log/.test(sql)) {
       return { rows: db.log.filter((r) => ["held", "retry"].includes(r.push_state)) };
     }
     const m = /UPDATE notification_log SET push_state = '(\w+)'(, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state (?:= '(\w+)'|IN \('held', 'retry'\))/.exec(sql);

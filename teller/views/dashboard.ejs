@@ -2764,9 +2764,13 @@
               totalDebt += Math.abs(parseFloat(a.current_balance || a.available_balance || 0));
             });
 
-            // Get baseline from settings (or auto-set from current debt)
+            // Get baseline from settings (or auto-set from current debt). A
+            // failed read is not "no baseline yet": carrying on would store
+            // today's debt as the baseline, over the real one (cycle-9
+            // follow-on — the F47 shape).
             var setRes = await apiFetch('/api/settings');
-            var settings = setRes.ok ? await setRes.json() : {};
+            if (!setRes.ok) return { score: 0, tierScores: [0,0,0,0], status: "Your settings couldn't be loaded — reload to see your progress" };
+            var settings = await setRes.json();
             var baseline = parseFloat(settings.debt_baseline_amount);
             // The baseline is the debt high-water mark: when current debt is
             // above it (new borrowing, or a loan now counted — WD-5), progress
