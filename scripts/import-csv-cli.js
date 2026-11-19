@@ -27,6 +27,7 @@ const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
 const { parse } = require("csv-parse/sync");
+const { pgSsl } = require("./pg-ssl");
 
 // CSV_FORMATS is the single source of truth in teller/data/csv-formats.js;
 // this CLI used to redefine it inline (and drift). We now import it so any
@@ -36,7 +37,7 @@ const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, isTw
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL,
-  ssl: { rejectUnauthorized: true },
+  ssl: pgSsl(),
   max: 2,
   connectionTimeoutMillis: 10000,
 });

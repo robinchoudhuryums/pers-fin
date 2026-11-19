@@ -20,6 +20,7 @@
 // ============================================================================
 
 const { Pool } = require("pg");
+const { pgSsl } = require("./pg-ssl");
 const { nextOccurrence, parseYmd } = require("../teller/services/cadence");
 // The transfer detector's own classifier (cycle-9 F20): a row it takes is not
 // a subscription charge. (detect-transfers.js requires THIS module, so the
@@ -88,7 +89,7 @@ async function detectSubscriptions(externalPool) {
   const ownPool = !externalPool;
   const pool = externalPool || new Pool({
     connectionString: process.env.NEON_DATABASE_URL,
-    ssl: { rejectUnauthorized: true },
+    ssl: pgSsl(),
     max: 2,
     connectionTimeoutMillis: 10000,
   });

@@ -18,6 +18,7 @@
 // ============================================================================
 
 const { Pool } = require("pg");
+const { pgSsl } = require("./pg-ssl");
 const { findModeAmount, isStale } = require("./detect-subscriptions");
 const { nextOccurrence } = require("../teller/services/cadence");
 
@@ -39,7 +40,7 @@ async function detectRecurringTransfers(externalPool) {
   const ownPool = !externalPool;
   const pool = externalPool || new Pool({
     connectionString: process.env.NEON_DATABASE_URL,
-    ssl: { rejectUnauthorized: true },
+    ssl: pgSsl(),
     max: 2,
     connectionTimeoutMillis: 10000,
   });

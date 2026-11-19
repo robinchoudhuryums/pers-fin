@@ -35,6 +35,7 @@
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
 const { Pool } = require("pg");
+const { pgSsl } = require("./pg-ssl");
 
 const CONFIRMED = process.argv.includes("--yes") || process.env.CONFIRM_RESET === "YES";
 
@@ -79,7 +80,7 @@ let pool = null;
 function makePool() {
   return new Pool({
     connectionString: process.env.NEON_DATABASE_URL,
-    ssl: { rejectUnauthorized: true },
+    ssl: pgSsl(),
     max: 2,
     connectionTimeoutMillis: 10000,
   });

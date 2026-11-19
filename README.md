@@ -65,7 +65,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `teller/routes/goals.js` | Financial goals, net worth, context export, investment accounts |
 | `teller/routes/budgets.js` | Budget CRUD, AI suggestions, accept |
 | `teller/routes/settings.js` | User settings, sheets sync, CSV export |
-| `teller/routes/insights.js` | AI insights (12 modules), tax deductions |
+| `teller/routes/insights.js` | AI insights (13 modules), tax deductions |
 | `teller/routes/categorize.js` | ML transaction categorization via Claude |
 | `teller/routes/categorize-helpers.js` | Categories, descriptions, Teller→ours map |
 | `teller/routes/investments.js` | Plaid investment accounts (holdings, sync) |
@@ -248,7 +248,7 @@ When mounted under the unified shell, all of these are accessed via the `/perfin
 | `GET` | `/api/tax-deductions` | Accumulated tax-deductible transactions (by year) |
 | `GET` | `/api/tax/package` | Year-end tax package (`year`; `format` json, pdf or zip) |
 | `GET/PATCH` | `/api/settings` | Retrieve/update user settings |
-| `POST` | `/api/insights` | Generate new AI insights via Claude (12 modules) |
+| `POST` | `/api/insights` | Generate new AI insights via Claude (13 modules) |
 | `GET` | `/api/insights/status` | AI API config + budget stats |
 | `POST` | `/api/insights/reset` | Clear long-term AI context memory |
 | `POST` | `/api/insights/rebuild` | Rebuild AI context from all history |

@@ -18,6 +18,33 @@ Updated: 2026-11-19
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 10 (DONE, 2026-11-19) — test honesty, docs, hygiene:** block
+  `.cycle/blocks/9-batch10-broad-implement.md`. F61 (`tests/api.test.js` rewritten against the real standalone app over a
+  recording pool — 39 tests; `tests/contract/c9-batch10` — the Sheets Transactions / Tax / Income tabs on real rows, a
+  full run with every tab's SQL on the real schema and one failing tab isolated, and the subscription / cleanup /
+  investment-account routes; `runSyncAll(deps)` test seam), F60 (README "12 modules" → 13; CLAUDE.md's liabilities
+  sentence — the other listed items were already correct), F6 (`scripts/pg-ssl.js` `pgSsl()` in the five scripts that
+  build their own pool), F8 (`npm audit fix`; express ^4.22.3, csv-parse ^7.0.3, nodemailer ^10.6.0, engines >=20 — 18
+  advisories → 6, none high), F63 (sheets-sync loads dotenv first; the context export's `section()` — logged,
+  `sections_unavailable`, a "Not included" line).
+  - **Tests:** `npm test` 3699 / 3699 (193 files; Perfin 2861, Per-sistant 838); contract 410 / 410 (8 new); Playwright
+    94 / 94 on the upgraded dependencies; five shifted clocks 84 / 84 (unit) and 8 / 8 (contract) each; 22 of 22
+    single-rule mutations of production code caught, tree restored.
+  - **Decisions:** F8 — took the two majors that run on Node 20 and could be verified here (csv-parse 7: its changelog
+    says no breaking change; nodemailer 10: a real SMTP round trip in the test process), left googleapis 190 and
+    @simplewebauthn/server 14 (Node 22) and node-cron 4 (ESM rewrite). F6 — the two detectors' CLI pools included (same
+    hard-coded setting as the three named scripts). F63 — the export also SAYS what is missing (JSON key + markdown
+    line), not only logs it. F61 — rewrite, not delete: the routes behind the replicas had little or no real coverage.
+  - **Net score:** 0 − 1 = −1 (no finding would have fired in production this month; new: the nodemailer major is
+    unverified against the real SMTP provider and needs Node 20).
+  - **Operator:** confirm Render runs Node 20+; send one email after deploying; decide on Node 22 for the Dockerfile /
+    csv-import.yml to clear the last 6 advisories.
+  - **Open follow-ons:** 6 advisories remain and nothing in CI runs `npm audit` (ST5); most other Sheets tabs are
+    value-tested only where earlier batches added cases; the tax notes read still fails silently; `plaid/server.js`
+    (frozen) still forces TLS.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Every cycle-9 fix batch
+    (1–10) is done. Docs are NOT synced for Batches 9 and 10 — run `/sync-docs` (both blocks list what). Then
+    `/reflect` to close the cycle, or the expansion / deferred items below.
 - **Cycle 9 Batch 9 (DONE, 2026-11-19) — Perfin UI (+ the Per-sistant items of F79):** block
   `.cycle/blocks/9-batch9-broad-implement.md`. F73 (Settle Up: `settleLeg` / `settleLoadState` — a failed leg means
   "Net not available", no Mark settled, a Try again; the Accounts net is "—" when investments couldn't be loaded), F74
@@ -363,7 +390,7 @@ implement and reflect sessions only set Phase.)
     - **Batch 9 (DONE) — Perfin UI:** F73 (Settle Up treats a failed leg as $0), F74 (card limit / APR typing wiped by the
       re-render), F76 (Perfin entry overlay has no pageshow handler), F75 (`hidden` overridden by the element's own display
       rule ×2), F77, F78, F79.
-    - **Batch 10 — test honesty, docs, hygiene:** F61 (tests/api.test.js 29 of 33 replica tests; Sheets pins weak), F60 (doc
+    - **Batch 10 (DONE) — test honesty, docs, hygiene:** F61 (tests/api.test.js 29 of 33 replica tests; Sheets pins weak), F60 (doc
       drift), F6 (three script pools ignore PGSSLMODE=disable — before any VPS cutover), F8 (18 dependency advisories), F63.
     - **Deferred:** F7 (no timeout on push sends / queries — ST4), F25 (= G2), F29 (= G1), F51 (Per-sistant's service worker
       is never registered — product decision, ST3), F57 (= G4), F62 (POST /api/cleanup — keep with a confirm or remove), F64

@@ -546,6 +546,18 @@ router.delete("/api/investment-accounts/:id", async (req, res) => {
 router.get("/api/context-export", async (req, res) => {
   const format = req.query.format || "markdown";
   try {
+    // An optional section that can't be read is left out AND named (cycle-9
+    // F63): each used to fall back to an empty list with nothing said, so an
+    // export whose goals read failed looked like "no goals". The failure is
+    // logged; the export lists the section under sections_unavailable (JSON) /
+    // a "Not included" line (markdown). Accounts, spending and subscriptions
+    // are required — a failure there is still a 500.
+    const unavailable = [];
+    const section = (name, promise, fallback) => promise.catch((err) => {
+      console.error("context-export: " + name + " could not be read:", err.message);
+      unavailable.push(name);
+      return fallback;
+    });
     const [accounts, monthlySpend, subs, goals, creditCards, netWorth, recentInsight, settings, investmentAccts] = await Promise.all([
       // SXE-9: drop the Plaid brokerage phantom (the same account also lives in
       // investment_accounts with the real holdings value — getNetWorth's
@@ -564,7 +576,7 @@ router.get("/api/context-export", async (req, res) => {
       pool.query("SELECT display_name, amount, cadence_days, category, next_expected FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"),
       // JOIN the funding account/investment so deriveGoalProgress can compute
       // the same funding-derived current_amount the dashboard shows (F2).
-      pool.query(
+      section("Financial Goals", pool.query(
         `SELECT g.*,
                 COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
                 la.name AS funding_account_name,
@@ -575,16 +587,16 @@ router.get("/api/context-export", async (req, res) => {
          LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
          WHERE g.is_active = true
          ORDER BY g.target_date ASC NULLS LAST`
-      ).catch(() => ({ rows: [] })),
-      pool.query("SELECT name, mask, current_balance, available_balance, credit_limit, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL").catch(() => ({ rows: [] })),
-      pool.query("SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC LIMIT 6").catch(() => ({ rows: [] })),
+      ), { rows: [] }),
+      section("Credit Card Details", pool.query("SELECT name, mask, current_balance, available_balance, credit_limit, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL"), { rows: [] }),
+      section("Net Worth History", pool.query("SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC LIMIT 6"), { rows: [] }),
       // SXE-9: only real insights — categorize / rebuild / ask / scan usage rows
       // share this table, and auto-sync's categorize run made "[ML
       // Categorization] AI returned 12 categorization(s)" the "latest analysis".
-      pool.query("SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] })),
-      pool.query("SELECT zip_code FROM user_settings WHERE id = 1").catch(() => ({ rows: [{}] })),
+      section("Most Recent AI Analysis", pool.query("SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1"), { rows: [] }),
+      section("Location", pool.query("SELECT zip_code FROM user_settings WHERE id = 1"), { rows: [{}] }),
       // SXE-9: Plaid + manual brokerages were missing from the Accounts section.
-      pool.query("SELECT name, account_type, institution, balance FROM investment_accounts WHERE is_active = true ORDER BY balance DESC NULLS LAST").catch(() => ({ rows: [] })),
+      section("Investment Accounts", pool.query("SELECT name, account_type, institution, balance FROM investment_accounts WHERE is_active = true ORDER BY balance DESC NULLS LAST"), { rows: [] }),
     ]);
 
     const zipCode = settings.rows[0]?.zip_code;
@@ -620,11 +632,17 @@ router.get("/api/context-export", async (req, res) => {
         net_worth_history: netWorth.rows,
         latest_insight: recentInsight.rows[0] || null,
         location: state ? { zip: zipCode, state } : null,
+        // F63: the sections above that could not be read (empty there for that
+        // reason, not because there is nothing).
+        sections_unavailable: unavailable,
       });
     }
 
     // Markdown format
     let md = "# My Personal Finance Data (exported " + new Date().toLocaleDateString() + ")\n\n";
+    if (unavailable.length) {
+      md += "> **Not included:** " + unavailable.join(", ") + " could not be read for this export. Their absence below does not mean there is nothing to show — export again to retry.\n\n";
+    }
 
     md += "## Accounts\n";
     for (const a of accounts.rows) {

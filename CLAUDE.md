@@ -5337,10 +5337,12 @@ message ("this connection predates Plaid Liabilities; unlink it and link the ban
 again …") ONLY when the item lacks the Liabilities product entirely
 (PRODUCTS_NOT_SUPPORTED) AND carries a credit account — it stays silent when
 Liabilities is present but the issuer simply returns no APR/limit data, which is
-the un-fixable Discover case. `liabilitiesGet` is called only for an Item with a
-credit card or loan; `NO_LIABILITY_ACCOUNTS` is a quiet skip and
-`ADDITIONAL_CONSENT_REQUIRED` joins the not-supported skip; APR / minimum / last
-payment use `??`, so a 0% APR is stored as 0, not NULL (cycle-7 F28).
+the un-fixable Discover case. The BALANCE sync (`syncAllPlaidBalances`) calls
+`liabilitiesGet` only for an Item with a credit card or loan; the transaction sync
+(`syncOnePlaidItem`) and the two link exchanges call it for every Item, where
+`NO_LIABILITY_ACCOUNTS` is a quiet skip and `ADDITIONAL_CONSENT_REQUIRED` joins the
+not-supported skip (a checking-only Item costs one call that returns nothing); APR /
+minimum / last payment use `??`, so a 0% APR is stored as 0, not NULL (cycle-7 F28).
 
 **Gotcha — a Plaid "needs re-authentication" item is fixed with RE-AUTHENTICATE,
 not by linking again.** Running the link flow for an already-linked bank creates
