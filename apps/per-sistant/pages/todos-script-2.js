@@ -121,16 +121,38 @@ function openQuickTodo() {
 }
 function closeQuickTodo() { document.getElementById('quick-todo-modal').classList.remove('active'); }
 
+// "jan 5", "March 3rd", "Dec 25, 2027" -> a Date at UTC midnight of that day
+// (the caller formats with toISOString), or null. No year given: this year,
+// or next year when that day has already passed. The clock is passed in (now)
+// so tests can pin it.
+function quickMonthDay(input, now) {
+  var m = String(input).match(/\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b(?:,?\\s*(\\d{4})\\b)?/i);
+  if (!m) return null;
+  var month = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[1].slice(0, 3).toLowerCase());
+  var day = parseInt(m[2], 10);
+  var year = m[3] ? parseInt(m[3], 10) : now.getFullYear();
+  if (!m[3] && (month < now.getMonth() || (month === now.getMonth() && day < now.getDate()))) year += 1;
+  var d = new Date(Date.UTC(year, month, day));
+  // A day the month doesn't have ("feb 30") rolls over — not a date.
+  if (d.getUTCMonth() !== month || d.getUTCDate() !== day) return null;
+  return d;
+}
+
 var parsedTodo = null;
 function parseQuickTodo() {
   var input = document.getElementById('qt-input').value.trim();
   if (!input) return;
   var days = {sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6};
-  var dateMatch = input.match(/\\b(\\d{4}-\\d{2}-\\d{2})\\b/) || input.match(/\\b((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\w*\\s+\\d{1,2}(?:,?\\s*\\d{4})?)\\b/i);
+  var dateMatch = input.match(/\\b(\\d{4}-\\d{2}-\\d{2})\\b/);
+  // Cycle-9 F72: "jan 5" went through new Date('jan 5'), which is the year
+  // 2001. A month name (a real one — "market 5" isn't March) and a day, with
+  // an optional year; without one it is the next such date from today.
+  var monthDay = dateMatch ? null : quickMonthDay(input, new Date());
   var tomorrowMatch = input.match(/\\btomorrow\\b/i);
   var dayMatch = input.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b/i);
   var dueDate = null;
   if (dateMatch) { dueDate = new Date(dateMatch[1]); }
+  else if (monthDay) { dueDate = monthDay; }
   else if (tomorrowMatch) { dueDate = new Date(); dueDate.setDate(dueDate.getDate()+1); }
   else if (dayMatch) {
     dueDate = new Date();
@@ -256,6 +278,7 @@ async function saveAsTemplate() {
 // Keyboard shortcuts
 document.addEventListener('keydown', function(e) {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // F69: Cmd/Ctrl+N stays the browser's
   if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openAdd(); }
   else if (e.key === 'q' || e.key === 'Q') { e.preventDefault(); openQuickTodo(); }
 });

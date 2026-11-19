@@ -69,7 +69,7 @@ describe("A5 — Perfin's embedded productivity stats use /api/stats' filters", 
     const pool = { query: async (sql, params) => { calls.push([sql, params]); return { rows: [{}] }; } };
     await queryPersistentStats(pool, "2026-11-02");
     const [sql, params] = calls.find(([s]) => /FROM todos/.test(s));
-    assert.match(sql, /FILTER \(WHERE completed AND NOT COALESCE\(missed, false\) AND NOT auto_closed\) as done/);
+    assert.match(sql, /FILTER \(WHERE completed AND NOT COALESCE\(missed, false\) AND NOT COALESCE\(skipped, false\) AND NOT auto_closed\) as done/);
     assert.match(sql, /due_date <= \$1::date\) as overdue/);
     assert.doesNotMatch(sql, /CURRENT_DATE/);
     assert.deepEqual(params, ["2026-11-02"]);

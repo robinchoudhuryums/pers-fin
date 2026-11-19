@@ -262,6 +262,9 @@ bindEvents([
 ]);
 document.getElementById('n-tag-input').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();addTag();}});
 document.addEventListener('click',function(e){
+  // Cycle-9 F68: the bulk-select checkbox sits inside the card, which is the
+  // open-note click target — every tick opened the editor.
+  if(e.target.closest('.note-bulk-check'))return;
   var btn=e.target.closest('[data-action]');
   if(!btn)return;
   var act=btn.dataset.action,id=parseInt(btn.dataset.id);

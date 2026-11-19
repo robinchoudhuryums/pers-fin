@@ -33,7 +33,8 @@ const ROOT = path.join(__dirname, "..");
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), "utf8");
 const dbModule = require("../teller/services/database");
 const originalQuery = dbModule.pool.query;
-afterEach(() => { dbModule.pool.query = originalQuery; });
+const originalConnect = dbModule.pool.connect;
+afterEach(() => { dbModule.pool.query = originalQuery; dbModule.pool.connect = originalConnect; });
 
 const fq = require("../teller/services/financial-queries");
 const helpers = require("../teller/routes/categorize-helpers");
@@ -237,6 +238,8 @@ describe("DC-13 — implicit 'remember' rules default to exact match", () => {
   it("POST /api/categorize/review with create_rule and no match_type → exact", async () => {
     const captured = [];
     dbModule.pool.query = rulePool(captured);
+    // The review write is one transaction on a client since cycle-9 F27.
+    dbModule.pool.connect = async () => ({ query: dbModule.pool.query, release() {} });
     await supertest(mountApp("../teller/routes/categorize")).post("/api/categorize/review")
       .send({ transaction_id: "tx1", category: "Gas & Fuel", create_rule: true }).expect(200);
     assert.equal(captured[0][2], "exact");
@@ -251,6 +254,7 @@ describe("DC-13 — implicit 'remember' rules default to exact match", () => {
   it("an explicit match_type is still honored; the explicit rules API keeps its contains default", async () => {
     const captured = [];
     dbModule.pool.query = rulePool(captured);
+    dbModule.pool.connect = async () => ({ query: dbModule.pool.query, release() {} });
     await supertest(mountApp("../teller/routes/categorize")).post("/api/categorize/review")
       .send({ transaction_id: "tx1", category: "Gas & Fuel", create_rule: true, match_type: "starts_with" }).expect(200);
     assert.equal(captured[0][2], "starts_with");

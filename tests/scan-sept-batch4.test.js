@@ -475,6 +475,7 @@ describe("DC-15 — manual bills, manual cash, categorize", () => {
   });
   it("the AI categorize batch sends the user's merchant rename to Claude", () => {
     const src = read("teller", "routes", "categorize.js");
-    assert.match(src, /SELECT transaction_id, COALESCE\(user_merchant_name, merchant_name, name\) AS merchant, amount, date, category/);
+    // (cycle-9 F26 added txn_day — the plain date sent in the prompt.)
+    assert.match(src, /SELECT transaction_id, COALESCE\(user_merchant_name, merchant_name, name\) AS merchant, amount, date,\s+to_char\(date, 'YYYY-MM-DD'\) AS txn_day, category/);
   });
 });

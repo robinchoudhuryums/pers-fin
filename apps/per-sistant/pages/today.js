@@ -208,6 +208,7 @@ document.addEventListener('click', function(e) {
 // Keyboard shortcut: R refreshes
 document.addEventListener('keydown', function(e) {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // F69: Cmd/Ctrl+R reloads the page as usual
   if (e.key === 'r' || e.key === 'R') { e.preventDefault(); load(); }
 });
 

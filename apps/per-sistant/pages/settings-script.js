@@ -10,12 +10,29 @@
 // post-logout location redirect needs explicit BP concatenation.
 module.exports = `
 var BP = window.BASE_PATH || '';
+// Cycle-9 F70: the page's light / dark mode is body[data-mode], kept in
+// localStorage 'ps-ui' (views.js themeScript — what the sidebar toggle sets).
+// This used to set html[data-theme], which no rule styles, so the Theme select
+// said "Settings saved" and changed nothing, and Auto did nothing at all.
 function applyTheme(t) {
-  var effective = t;
-  if (t === 'auto') effective = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-  if (effective === 'light') document.documentElement.setAttribute('data-theme','light');
-  else document.documentElement.removeAttribute('data-theme');
-  localStorage.setItem('theme', t);
+  var mode = (t === 'dark' || t === 'light' || t === 'auto') ? t : 'light';
+  var ui = {};
+  try { ui = JSON.parse(localStorage.getItem('ps-ui') || '{}') || {}; } catch (e) { ui = {}; }
+  ui.mode = mode;
+  try { localStorage.setItem('ps-ui', JSON.stringify(ui)); } catch (e) {}
+  var effective = mode;
+  if (mode === 'auto') effective = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  if (document.body) document.body.setAttribute('data-mode', effective);
+  var mt = document.getElementById('mode-toggle');
+  if (mt) mt.textContent = effective === 'dark' ? 'Dark' : 'Light';
+}
+// What the Theme select shows: this browser's own choice when it has one (it
+// is what the page is painted with), else the stored setting.
+function currentTheme(serverTheme) {
+  var ui = {};
+  try { ui = JSON.parse(localStorage.getItem('ps-ui') || '{}') || {}; } catch (e) { ui = {}; }
+  if (ui.mode === 'dark' || ui.mode === 'light' || ui.mode === 'auto') return ui.mode;
+  return (serverTheme === 'dark' || serverTheme === 'light' || serverTheme === 'auto') ? serverTheme : 'light';
 }
 // Cycle-9 follow-on (Perfin's F47, here): the forms below are filled from the
 // stored settings. When that read fails they would show defaults, and a Save
@@ -35,7 +52,7 @@ async function load() {
   if (!res || !res.ok) { settingsReady(); loadAiUsage(); return; }
   var s = await res.json();
   settingsLoaded = true;
-  document.getElementById('s-theme').value = s.theme || 'dark';
+  document.getElementById('s-theme').value = currentTheme(s.theme);
   document.getElementById('s-timeout').value = s.session_timeout_minutes || 15;
   document.getElementById('s-horizon').value = s.default_horizon || 'short';
   document.getElementById('s-perfin').value = s.perfin_url || '';
@@ -77,8 +94,8 @@ async function load() {
 
   loadAiUsage();
 
-  // Apply theme
-  applyTheme(s.theme || 'dark');
+  // The page is already painted (views.js themeScript, from this browser's
+  // choice); loading the settings doesn't repaint it (F70).
 }
 
 async function saveSettings() {
@@ -423,7 +440,9 @@ async function saveVault(){
   };
   var r = await fetch('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json());
   var el=document.getElementById('status');
-  if(r && r.error){ el.className='status-msg'; el.textContent=r.error; setTimeout(function(){el.className='status-msg';},4000); return; }
+  // Cycle-9 F71: 'status-msg' alone is hidden — a refused setting (a full
+  // GitHub URL for the repository) showed nothing and saved nothing.
+  if(r && r.error){ el.className='status-msg error'; el.textContent=r.error; setTimeout(function(){el.className='status-msg';},8000); return; }
   el.className='status-msg success'; el.textContent='Vault settings saved.';
   setTimeout(function(){el.className='status-msg';},3000);
   loadVaultStatus();
@@ -505,13 +524,15 @@ onDelegate('trash-list','click','[data-action]',function(){
 });
 onDelegate('automations-list','click','[data-action]',function(){
   var id=parseInt(this.dataset.id);
-  if(this.dataset.action==='toggle-auto')toggleAutomation(id,this.dataset.enabled==='true');
+  // Cycle-9 F66: data-enabled is the CURRENT state; the button asks for the
+  // other one. It sent the current state, so a rule couldn't be switched off.
+  if(this.dataset.action==='toggle-auto')toggleAutomation(id,this.dataset.enabled!=='true');
   else if(this.dataset.action==='edit-auto')editAutomation(id);
 });
 onDelegate('webhooks-list','click','[data-action]',function(){
   var id=parseInt(this.dataset.id);
   if(this.dataset.action==='test-wh')testWebhook(id);
-  else if(this.dataset.action==='toggle-wh')toggleWebhook(id,this.dataset.enabled==='true');
+  else if(this.dataset.action==='toggle-wh')toggleWebhook(id,this.dataset.enabled!=='true');
   else if(this.dataset.action==='edit-wh')editWebhook(id);
 });
 `;

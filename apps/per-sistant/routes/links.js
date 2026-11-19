@@ -67,9 +67,15 @@ module.exports = function ({ pool }) {
       if (!note.rows.length) return res.status(404).json({ error: "Note not found." });
       const n = note.rows[0];
       const { priority, horizon } = req.body;
+      // Cycle-9 F56: a todo has no privacy tier — its title and description go
+      // to webhooks / Slack, Ask and the AI briefing. A private or secret
+      // note's TEXT is never copied into one (F134): the todo gets the note's
+      // title (or a plain label) and no description; the link back to the note
+      // is the reference.
+      const fields = todoFieldsFromNote(n);
       const todo = await pool.query(
         "INSERT INTO todos (title, description, priority, horizon) VALUES ($1, $2, $3, $4) RETURNING *",
-        [n.title || n.content.substring(0, 100), n.content, priority || "medium", horizon || "short"]
+        [fields.title, fields.description, priority || "medium", horizon || "short"]
       );
       // Create cross-entity link
       await pool.query("INSERT INTO entity_links (source_type, source_id, target_type, target_id) VALUES ('note', $1, 'todo', $2) ON CONFLICT DO NOTHING",
@@ -99,3 +105,14 @@ module.exports = function ({ pool }) {
 
   return router;
 };
+
+// What a todo made from a note may carry (cycle-9 F56). A normal note: its
+// title (else the first 100 characters) and its text. A private or secret
+// note — or one whose tier isn't a known value — never its text.
+function todoFieldsFromNote(n) {
+  const content = String((n && n.content) || "");
+  const tier = (n && n.sensitivity) || "normal";
+  if (tier === "normal") return { title: n.title || content.substring(0, 100), description: content };
+  return { title: n.title || (tier === "secret" ? "Secret note" : "Private note"), description: null };
+}
+module.exports.todoFieldsFromNote = todoFieldsFromNote;

@@ -18,6 +18,46 @@ Updated: 2026-11-19
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 8 (DONE, 2026-11-19) — Per-sistant behaviour and UI (+ two Perfin items):** block
+  `.cycle/blocks/9-batch8-broad-implement.md`. F52 (PATCH /api/todos/:id clears the anchor only when the due date
+  changed), F53 (`profileTextChanged`: fit scores cleared only when the resume / preferences text changed), F50
+  (parseFrontmatter: an indented line after an empty privacy key is its value, a blank line doesn't end a block list;
+  VAULT_PARSE_VERSION 4), F65 (`calEventDay` reads event_date), F66 (toggles send the other state), F67 (openCompose
+  first), F68 (the click handler ignores `.note-bulk-check`), F69 (shortcuts return on Ctrl / Cmd / Alt), F70
+  (applyTheme sets body[data-mode] + ps-ui.mode; themeScript's effectiveMode for Auto), F71 (`status-msg error`), F72
+  (`quickRecipient`, whole-word weekdays, `quickMonthDay`), F54 (`waitingEmails` → an email_failed entry while SMTP_HOST
+  is unset), F55 (db/032 `todos.skipped` + `snoozed_from`; skip = completed with no completion time; `scheduleBase`;
+  the roll ignores a rule-less task and complete-recurring completes it plainly), F56 (`todoFieldsFromNote`), F58
+  (narrower `looksFinancial`, Slack failures logged, briefing on main_new), F26 (a no-tool batch stamped via
+  `markAiSkipped`; txn_day), F27 (stale sweeps `AND is_active = true`; rename-rule delete and categorize review in one
+  transaction; manual-bill name 400).
+  - **Tests:** `npm test` 3606 / 3606 (62 new — apps/per-sistant/tests/cycle9-b8.test.js 51, tests/cycle9-b8.test.js 11;
+    189 files; Perfin 2786, Per-sistant 820); contract 402 / 402 (9 new — tests/contract/c9-batch8); Playwright 93 / 93;
+    five shifted clocks 147 / 147 each; mutation check 43 of 47 Per-sistant unit, 10 of 11 Perfin unit and 8 of 9
+    contract fail against the pre-fix source (the old manual-bill PATCH never answers, so that test hangs there).
+    Pins / doubles updated: api.test.js (Quick Add harness), broad-scan-c8-batch5 / batch6, scan-sept-batch6,
+    scan-oct-batch3 (helpers.js bare catches 3 → 2), scan-sept-batch3 (connect stub), scan-sept-batch4, seams-audit-4-s4.
+  - **Decisions:** F50 — parse the continuation (an indented line under an empty privacy key) instead of the plan's
+    "empty value → private": a truly empty `sensitivity:` (Obsidian leaves blank properties) stays absent, so existing
+    notes don't silently leave the index. F53 — the plan's fix only (reset on a text change); salary / locations / remote
+    still unused. F54 — the notice only; no age limit on the burst once SMTP is set. F55 — a `skipped` flag with
+    completed_at NULL (the missed-row shape) rather than reusing `missed`; snooze keeps the schedule by storing
+    `snoozed_from`; a rule-less recurring task completes as a plain one rather than a 400. F56 — the todo is still
+    created (title or a plain label, no description) rather than refused. F58 — `renew` and bare `$` removed from the
+    gate; `bill` / `account` / `credit` only in finance phrases. F70 — the select drives the real mechanism
+    (body[data-mode] + ps-ui) and shows this browser's choice. F27 — `inTransaction` exported from merchant-rename.js and
+    reused by categorize.js.
+  - **Net score:** 2 − 4 = −2 (F65 and F27's sweep fired; new: snooze no longer moves a series, the narrower finance
+    gate's false negatives, F50's restrictive continuation, F26's 30-day deferral after a one-off failure).
+  - **Open follow-ons:** profile salary / locations / remote unused; past-due emails still burst once SMTP is set;
+    recurring-without-rule still accepted on create; a hand-reopened MISSED instance keeps `missed`; the snooze route
+    500s on a malformed date; Quick Add's UTC date and title cleanup; a secret note's title copied to its todo; the Theme
+    select doesn't follow the sidebar toggle until reload.
+  - **Operator:** one full Knowledge reindex after deploy (parse version 4); delete unwanted past-due scheduled emails
+    before setting SMTP_HOST.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs not yet synced for
+    Batch 8 — run `/sync-docs` (the block lists what). Then `/broad-implement Batch 9` (Perfin UI: F73 F74 F76 F75 F77
+    F78 F79 — read the list from the plan below).
 - **Cycle 9 Batch 7 (DONE, 2026-11-18) — bank-sync recovery:** block `.cycle/blocks/9-batch7-broad-implement.md`.
   F13 (enrollments.js `retireEmptyEnrollments`: a Teller enrollment with no accounts, while another at the same
   institution has some, is deleted — inside POST /api/enroll's transaction, never the one just created, and fail-soft at
@@ -285,7 +325,7 @@ implement and reflect sessions only set Phase.)
       transactions can't be deleted — FK → 500), F15 (generic CSV with separate Debit / Credit columns), F17 (investments-only
       unlink leaves accounts; guard refuses the re-link), F16, F18, F19, F35 (goal re-link resets progress), F36 (budget alert
       rollover depends on an activity-gated snapshot).
-    - **Batch 8 — Per-sistant:** F52 (task edit wipes the month-end anchor), F53 (Job Radar profile save clears all fit
+    - **Batch 8 (DONE) — Per-sistant:** F52 (task edit wipes the month-end anchor), F53 (Job Radar profile save clears all fit
       scores), F50 (frontmatter privacy value on the next line fails open — needs one reindex), F65–F72 (mini-calendar reads
       `ev.date`; automation / webhook toggles send the current state; "Use template" opens an empty form; bulk checkbox opens
       the editor; single-key shortcuts ignore Ctrl / Cmd; Theme select does nothing; vault error hidden; quick parsers), F54,

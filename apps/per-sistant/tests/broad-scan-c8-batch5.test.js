@@ -93,9 +93,10 @@ describe("F18 — an auto-close isn't your completion", () => {
     assert.match(analytics, /FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND created_at >= \$1 GROUP BY category/);
     assert.match(read("routes/review.js"), /FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND completed_at >= \$1/);
     const ai = read("routes/ai.js");
-    assert.match(ai, /NOT COALESCE\(missed, false\) AND NOT auto_closed\) AS todos_done/);
+    // cycle-9 F55: a skipped instance isn't done either.
+    assert.match(ai, /NOT COALESCE\(missed, false\) AND NOT COALESCE\(skipped, false\) AND NOT auto_closed\) AS todos_done/);
     assert.match(ai, /t\.auto_closed\?'closed by Perfin'/);
-    assert.match(read("routes/settings.js"), /NOT COALESCE\(missed, false\) AND NOT auto_closed\) as done/);
+    assert.match(read("routes/settings.js"), /NOT COALESCE\(missed, false\) AND NOT COALESCE\(skipped, false\) AND NOT auto_closed\) as done/);
   });
 });
 

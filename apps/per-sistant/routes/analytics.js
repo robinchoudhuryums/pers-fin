@@ -42,9 +42,9 @@ module.exports = function ({ pool }) {
         // A rolled-over MISSED recurring instance is not "done" (PB-10), and a
         // linked task the sync closed (auto_closed) was resolved in Perfin, not
         // done or left undone here — it counts on neither side (cycle-8 F18).
-        pool.query(`SELECT COUNT(*) FILTER (WHERE completed AND NOT COALESCE(missed, false)) as done, COUNT(*) as total FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND created_at >= $1`, [sd]),
+        pool.query(`SELECT COUNT(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT COALESCE(skipped, false)) as done, COUNT(*) as total FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND created_at >= $1`, [sd]),
         pool.query(`SELECT priority, COUNT(*) as count FROM todos WHERE deleted_at IS NULL AND completed = false GROUP BY priority ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`),
-        pool.query(`SELECT COALESCE(category, 'uncategorized') as category, COUNT(*) as count, COUNT(*) FILTER (WHERE completed AND NOT COALESCE(missed, false)) as completed FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND created_at >= $1 GROUP BY category ORDER BY count DESC`, [sd]),
+        pool.query(`SELECT COALESCE(category, 'uncategorized') as category, COUNT(*) as count, COUNT(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT COALESCE(skipped, false)) as completed FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND created_at >= $1 GROUP BY category ORDER BY count DESC`, [sd]),
         pool.query(`SELECT AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) / 3600) as avg_hours FROM todos WHERE deleted_at IS NULL AND completed = true AND NOT auto_closed AND completed_at >= $1`, [sd]),
         pool.query(`SELECT title, streak_count, best_streak, recurrence_rule FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND streak_count > 0 ORDER BY streak_count DESC LIMIT 5`),
         pool.query(`SELECT EXTRACT(DOW FROM completed_at) as dow, COUNT(*) as count FROM todos WHERE deleted_at IS NULL AND completed = true AND NOT auto_closed AND completed_at >= $1 GROUP BY dow ORDER BY dow`, [sd]),

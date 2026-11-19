@@ -739,14 +739,15 @@ module.exports = function ({ pool }) {
   router.patch("/api/job-profile", async (req, res) => {
     const b = req.body || {};
     const sets = [], vals = [];
+    const sentText = {}; // the resume / preferences text this request sets (F53)
     const errors = [];
     if (b.resume_text !== undefined) {
       if (b.resume_text !== null && typeof b.resume_text !== "string") errors.push("resume_text must be a string.");
-      else { vals.push(b.resume_text == null ? null : String(b.resume_text).slice(0, MAX_TEXT)); sets.push(`resume_text = $${vals.length}`); }
+      else { vals.push(b.resume_text == null ? null : String(b.resume_text).slice(0, MAX_TEXT)); sets.push(`resume_text = $${vals.length}`); sentText.resume_text = vals[vals.length - 1]; }
     }
     if (b.preferences_text !== undefined) {
       if (b.preferences_text !== null && typeof b.preferences_text !== "string") errors.push("preferences_text must be a string.");
-      else { vals.push(b.preferences_text == null ? null : String(b.preferences_text).slice(0, MAX_TEXT)); sets.push(`preferences_text = $${vals.length}`); }
+      else { vals.push(b.preferences_text == null ? null : String(b.preferences_text).slice(0, MAX_TEXT)); sets.push(`preferences_text = $${vals.length}`); sentText.preferences_text = vals[vals.length - 1]; }
     }
     if (b.min_salary !== undefined) {
       if (b.min_salary === null) { vals.push(null); sets.push(`min_salary = $${vals.length}`); }
@@ -765,21 +766,31 @@ module.exports = function ({ pool }) {
     if (!sets.length) return res.status(400).json({ error: "No fields to update." });
     try {
       await pool.query("INSERT INTO job_profile (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+      // The FROM subquery reads the row as it was before this UPDATE, so the
+      // text can be compared with what it replaces (cycle-9 F53).
       const r = await pool.query(
-        `UPDATE job_profile SET ${sets.join(", ")}, updated_at = now() WHERE id = 1
-         RETURNING id, resume_text, preferences_text, min_salary, locations, remote_pref, updated_at`, vals);
+        `UPDATE job_profile SET ${sets.join(", ")}, updated_at = now()
+           FROM (SELECT resume_text AS prev_resume_text, preferences_text AS prev_preferences_text FROM job_profile WHERE id = 1) p
+          WHERE job_profile.id = 1
+         RETURNING job_profile.id, job_profile.resume_text, job_profile.preferences_text, job_profile.min_salary,
+                   job_profile.locations, job_profile.remote_pref, job_profile.updated_at,
+                   p.prev_resume_text, p.prev_preferences_text`, vals);
+      const { prev_resume_text, prev_preferences_text, ...profile } = r.rows[0] || {};
       // PB-4: the cached profile embedding (and the fit scores ranked against it)
       // describe the OLD profile — clear them so the next refresh re-embeds and
       // re-scores. Separate, fail-soft statements: profile_embedding only exists
       // with pgvector (db/021's defensive block).
+      // F53: only when the resume / preferences TEXT actually changed. The page
+      // always sends both fields, so any save — a new minimum salary — used to
+      // clear every fit score (each re-score is a charged model call).
       let rescore = false;
-      if (b.resume_text !== undefined || b.preferences_text !== undefined) {
+      if (profileTextChanged(sentText, { resume_text: prev_resume_text, preferences_text: prev_preferences_text })) {
         await pool.query("UPDATE job_profile SET profile_embedding = NULL WHERE id = 1").catch(() => {});
         await pool.query("UPDATE job_listings SET fit_score = NULL, fit_rationale = NULL WHERE status IN ('new','saved') AND fit_score IS NOT NULL")
           .catch((e) => console.error("job-profile fit reset:", e.message));
         rescore = true;
       }
-      res.json({ ...r.rows[0], rescore_needed: rescore });
+      res.json({ ...profile, rescore_needed: rescore });
     } catch (err) { serverError(res, err); }
   });
 
@@ -847,6 +858,16 @@ module.exports = function ({ pool }) {
 // module.exports above would otherwise drop these).
 module.exports.computeContentHash = computeContentHash;
 module.exports.hostnameOf = hostnameOf;
+// Did a profile save change the text the fit scores were ranked against
+// (cycle-9 F53)? `sent` holds only the text fields the request set; a field it
+// didn't send can't have changed. NULL and "" are the same empty text, and line
+// endings are compared as LF (a textarea returns LF for stored CRLF).
+function profileTextChanged(sent, prev) {
+  const norm = (v) => (v == null ? "" : String(v)).split("\r\n").join("\n");
+  return ["resume_text", "preferences_text"].some((k) =>
+    Object.prototype.hasOwnProperty.call(sent || {}, k) && norm(sent[k]) !== norm(prev && prev[k]));
+}
+
 module.exports.isHttpUrl = isHttpUrl;
 module.exports.scamHeuristics = scamHeuristics;
 module.exports.applyDomainScore = applyDomainScore;
@@ -871,4 +892,5 @@ module.exports.parseFitJson = parseFitJson;
 module.exports.parseLegitimacyJson = parseLegitimacyJson;
 module.exports.applyFeedbackToSource = applyFeedbackToSource;
 module.exports.liveListingIds = liveListingIds;
+module.exports.profileTextChanged = profileTextChanged;
 module.exports.STALE_DAYS = STALE_DAYS;

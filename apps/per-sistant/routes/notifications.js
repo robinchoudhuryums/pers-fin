@@ -56,6 +56,23 @@ async function failedEmails(pool) {
   } catch { return []; }
 }
 
+// Cycle-9 F54: scheduled emails whose time has passed while email sending isn't
+// set up. The sender (server.js processScheduledEmails) returns at once without
+// SMTP_HOST, so they sat as 'scheduled' with nothing said — Perfin's digests
+// queued in-process included — and all went out together once SMTP was set.
+// Reports how many are waiting and since when; with SMTP set the sender takes
+// them within 10 minutes, so there's nothing to report. Fail-soft → null.
+async function waitingEmails(pool, env = process.env) {
+  if (env.SMTP_HOST) return null;
+  try {
+    const r = await pool.query(
+      `SELECT count(*)::int AS n, min(scheduled_at) AS oldest FROM emails
+        WHERE deleted_at IS NULL AND status = 'scheduled' AND scheduled_at <= now()`);
+    const row = r.rows[0];
+    return row && row.n > 0 ? { count: row.n, oldest: row.oldest } : null;
+  } catch { return null; }
+}
+
 // Quiet hours + muted kinds (cycle-8 E3c, G2): Perfin owns the setting for both
 // apps (teller/services/notify-prefs.js, required lazily — only under the
 // shell). Read-only through the wired perfinPool; standalone or on any failure
@@ -133,7 +150,7 @@ module.exports = function ({ pool }) {
       // the evening tomorrow's tasks read "due today").
       const today = todayStr();
       const perfinPool = req.app.get("perfinPool");
-      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar, vaultErr, failedMail, prefs] = await Promise.all([
+      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar, vaultErr, failedMail, waitingMail, prefs] = await Promise.all([
         pool.query("SELECT id, title, due_date, source_key FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
         pool.query("SELECT id, title, due_date, source_key FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
         pool.query("SELECT id, title, streak_count, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND recurring = true AND streak_count >= 3 AND due_date = $1", [today]),
@@ -151,6 +168,7 @@ module.exports = function ({ pool }) {
         jobRadarLeads(pool),
         vaultSyncError(pool),
         failedEmails(pool),
+        waitingEmails(pool),
         perfinNotifyPrefs(perfinPool),
       ]);
       const notifications = [];
@@ -215,6 +233,17 @@ module.exports = function ({ pool }) {
         id: e.id,
         entity: "email",
       }));
+      if (waitingMail) {
+        // The same type as a failed send (its kind, prefix and link); the id
+        // is fixed, so the reminder repeats only when the count changes.
+        const since = waitingMail.oldest ? ` since ${new Date(waitingMail.oldest).toISOString().slice(0, 10)}` : "";
+        notifications.push({
+          type: "email_failed",
+          title: `${waitingMail.count} scheduled email${waitingMail.count === 1 ? " is" : "s are"} waiting${since} — email sending isn't set up (SMTP_HOST)`,
+          id: "smtp-not-configured",
+          entity: "email",
+        });
+      }
       if (vaultErr) {
         const since = vaultErr.last_ok ? ` (last good sync ${new Date(vaultErr.last_ok).toISOString().slice(0, 10)})` : "";
         notifications.push({
@@ -241,6 +270,7 @@ module.exports = function ({ pool }) {
           job_radar: jobRadar ? jobRadar.count : 0,
           vault_sync_error: vaultErr ? 1 : 0,
           email_failed: failedMail.length,
+          email_waiting: waitingMail ? waitingMail.count : 0,
         },
       });
     } catch (err) { serverError(res, err); }
@@ -249,6 +279,7 @@ module.exports = function ({ pool }) {
   return router;
 };
 module.exports.annotateNotify = annotateNotify;
+module.exports.waitingEmails = waitingEmails;
 module.exports.perfinNotifyPrefs = perfinNotifyPrefs;
 module.exports.perfinPushedItems = perfinPushedItems;
 module.exports.PUSHED_WINDOW_HOURS = PUSHED_WINDOW_HOURS;

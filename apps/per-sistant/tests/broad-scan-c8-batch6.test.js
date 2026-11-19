@@ -47,7 +47,7 @@ describe("F49 — quoted keys and unreadable privacy lines fail closed", () => {
   });
 
   it("the parse version moved, so a full reindex is asked for", () => {
-    assert.equal(vault.VAULT_PARSE_VERSION, 3);
+    assert.equal(vault.VAULT_PARSE_VERSION, 4); // 4 since cycle-9 F50
   });
 });
 

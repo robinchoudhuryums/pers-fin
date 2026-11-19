@@ -286,6 +286,7 @@ async function detectSubscriptions(externalPool) {
       SET is_active = false, updated_at = now()
       WHERE last_charged < CURRENT_DATE - GREATEST(INTERVAL '120 days', (cadence_days * 1.5) * INTERVAL '1 day')
         AND source != 'manual'
+        AND is_active = true -- cycle-9 F27: only rows this changes (every stale row's updated_at was rewritten each run)
     `);
 
     // F20: rows detected before the detectors shared one classifier — a

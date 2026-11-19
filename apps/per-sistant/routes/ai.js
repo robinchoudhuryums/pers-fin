@@ -296,9 +296,13 @@ module.exports = function ({ pool }) {
         if (s.rows.length && s.rows[0].job_radar_enabled) {
           const { gatherJobRadarSummary } = require("./jobs");
           const jr = await gatherJobRadarSummary(pool);
-          if (jr.counts.main > 0) {
-            const t = jr.top_pick;
-            jobLine = `\nJob Radar: ${jr.counts.main} new high-fit role(s)${t ? `; top: ${t.title || "a role"}${t.company ? " @ " + t.company : ""}` : ""}`;
+          // Cycle-9 F58: NEW roles only (counts.main_new / top_new — what the
+          // notification check uses, F114). counts.main includes saved roles,
+          // so the briefing called a role saved weeks ago "new" every day.
+          const fresh = jr.counts.main_new || 0;
+          if (fresh > 0) {
+            const t = jr.top_new || null;
+            jobLine = `\nJob Radar: ${fresh} new high-fit role(s)${t ? `; top: ${t.title || "a role"}${t.company ? " @ " + t.company : ""}` : ""}`;
           }
         }
       } catch { /* best-effort — drop the line on any error */ }
@@ -400,7 +404,7 @@ module.exports = function ({ pool }) {
       // Gather context
       const today = todayStr();
       const [todos, emails, notes, totals] = await Promise.all([
-        pool.query("SELECT id, title, priority, horizon, category, due_date, completed, completed_at, auto_closed, recurring, recurrence_rule, streak_count, created_at FROM todos WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 50"),
+        pool.query("SELECT id, title, priority, horizon, category, due_date, completed, completed_at, auto_closed, skipped, recurring, recurrence_rule, streak_count, created_at FROM todos WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 50"),
         pool.query("SELECT id, subject, recipient_name, recipient_email, status, scheduled_at, sent_at, created_at FROM emails WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 20"),
         // Only 'normal' notes reach the model (cycle-7 F134 / ST5).
         pool.query("SELECT id, title, content, tags, pinned, created_at, updated_at FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal' ORDER BY updated_at DESC LIMIT 20"),
@@ -412,7 +416,7 @@ module.exports = function ({ pool }) {
             (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND NOT completed) AS todos_open,
             (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND NOT completed AND due_date < $1::date) AS todos_overdue,
             (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND NOT completed AND due_date = $1::date) AS todos_due_today,
-            (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND completed AND NOT COALESCE(missed, false) AND NOT auto_closed) AS todos_done,
+            (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND completed AND NOT COALESCE(missed, false) AND NOT COALESCE(skipped, false) AND NOT auto_closed) AS todos_done,
             (SELECT count(*) FROM emails WHERE deleted_at IS NULL) AS emails_total,
             (SELECT count(*) FROM emails WHERE deleted_at IS NULL AND status = 'sent') AS emails_sent,
             (SELECT count(*) FROM emails WHERE deleted_at IS NULL AND status = 'scheduled') AS emails_scheduled,
@@ -423,7 +427,7 @@ module.exports = function ({ pool }) {
       const totalsLine = t
         ? `Totals over ALL data (use these for counts): tasks ${t.todos_total} (open ${t.todos_open}, overdue ${t.todos_overdue}, due today ${t.todos_due_today}, done ${t.todos_done}); emails ${t.emails_total} (sent ${t.emails_sent}, scheduled ${t.emails_scheduled}); notes ${t.notes_total}.\n`
         : "";
-      const context = `Today: ${today}\n${totalsLine}\nMost recent tasks (up to 50 shown of ${t ? t.todos_total : "?"} — a sample, not everything) (${todos.rows.length}):\n${todos.rows.map(t => `- [${t.auto_closed?'closed by Perfin':t.completed?'done':'pending'}] "${t.title}" priority:${t.priority} horizon:${t.horizon}${t.category?' cat:'+t.category:''}${t.due_date?' due:'+ymdOf(t.due_date):''}${t.completed_at?' completed:'+t.completed_at.toISOString().split("T")[0]:''}${t.recurring?' recurring:'+t.recurrence_rule:''}`).join("\n")}\n\nEmails (${emails.rows.length}):\n${emails.rows.map(e => `- [${e.status}] "${e.subject}" to:${e.recipient_name||e.recipient_email}${e.sent_at?' sent:'+e.sent_at.toISOString().split("T")[0]:''}`).join("\n")}\n\nNotes (${notes.rows.length}):\n${notes.rows.map(n => `- "${n.title||n.content.substring(0,40)}"${n.tags?' tags:'+n.tags.join(','):''}${n.pinned?' pinned':''}`).join("\n")}`;
+      const context = `Today: ${today}\n${totalsLine}\nMost recent tasks (up to 50 shown of ${t ? t.todos_total : "?"} — a sample, not everything) (${todos.rows.length}):\n${todos.rows.map(t => `- [${t.auto_closed?'closed by Perfin':t.skipped?'skipped':t.completed?'done':'pending'}] "${t.title}" priority:${t.priority} horizon:${t.horizon}${t.category?' cat:'+t.category:''}${t.due_date?' due:'+ymdOf(t.due_date):''}${t.completed_at?' completed:'+t.completed_at.toISOString().split("T")[0]:''}${t.recurring?' recurring:'+t.recurrence_rule:''}`).join("\n")}\n\nEmails (${emails.rows.length}):\n${emails.rows.map(e => `- [${e.status}] "${e.subject}" to:${e.recipient_name||e.recipient_email}${e.sent_at?' sent:'+e.sent_at.toISOString().split("T")[0]:''}`).join("\n")}\n\nNotes (${notes.rows.length}):\n${notes.rows.map(n => `- "${n.title||n.content.substring(0,40)}"${n.tags?' tags:'+n.tags.join(','):''}${n.pinned?' pinned':''}`).join("\n")}`;
       const answer = await capped("natural_language_query", model,
         `Data:\n${context}\n\nUser question: "${query}"`,
         1024,

@@ -170,6 +170,7 @@ async function detectRecurringTransfers(externalPool) {
       UPDATE recurring_transfers
       SET is_active = false, updated_at = now()
       WHERE last_transferred < CURRENT_DATE - GREATEST(INTERVAL '120 days', (cadence_days * 1.5) * INTERVAL '1 day')
+        AND is_active = true -- cycle-9 F27: only rows this changes
     `);
 
     // Upsert detected transfers

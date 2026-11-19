@@ -283,7 +283,7 @@ router.post("/api/persistent/webhook/send", async (req, res) => {
 async function queryPersistentStats(persistentPool, today = todayStr()) {
   const [todos, emails, notes] = await Promise.all([
     persistentPool.query(
-      "SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT auto_closed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL",
+      "SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT COALESCE(skipped, false) AND NOT auto_closed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL",
       [today]
     ),
     persistentPool.query(

@@ -299,11 +299,13 @@ async function useTemplate(id) {
   var templates = await fetch('/api/email-templates').then(r=>r.json());
   var t = templates.find(x=>x.id===id);
   if (!t) return;
-  document.getElementById('e-subject').value = t.subject;
-  document.getElementById('e-body').value = t.body;
   var tplModal = document.getElementById('tpl-modal');
   if (tplModal) tplModal.remove();
+  // Cycle-9 F67: openCompose() resets every field, so it runs FIRST — it used
+  // to run after the template was filled in and left an empty form.
   openCompose();
+  document.getElementById('e-subject').value = t.subject || '';
+  document.getElementById('e-body').value = t.body || '';
 }
 async function saveAsTemplate() {
   var name = document.getElementById('tpl-name').value;
@@ -332,13 +334,21 @@ function openQuick() {
 }
 function closeQuick() { document.getElementById('quick-modal').classList.remove('active'); }
 
+// The recipient named in a Quick Send line (cycle-9 F72): the word after "to",
+// else the word after "email". One pattern for both read "email to Bob" as
+// the recipient "to".
+function quickRecipient(input) {
+  var s = String(input || '');
+  var m = s.match(/\\bto\\s+(?!(?:email|mail|send|write)\\b)(\\w+)/i) || s.match(/\\bemail\\s+(?!to\\b)(\\w+)/i);
+  return m ? m[1] : null;
+}
+
 var parsedQuick = null;
 async function parseQuick() {
   var input = document.getElementById('q-input').value.trim();
   if (!input) return;
   // Simple NLP: extract name, time, and topic
-  var nameMatch = input.match(/(?:to|email)\\s+(\\w+)/i);
-  var name = nameMatch ? nameMatch[1] : null;
+  var name = quickRecipient(input);
   var email = null;
   if (name) {
     try {
@@ -375,7 +385,8 @@ function parseTimeExpr(text) {
   var now = new Date();
   var days = {sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6,
               sun:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6};
-  var dayMatch = text.match(/(?:on\\s+|this\\s+|next\\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat)/i);
+  // Whole words only (cycle-9 F72): "wedding" scheduled Wednesday, "money" Monday.
+  var dayMatch = text.match(/\\b(?:on\\s+|this\\s+|next\\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|wed|thu|fri|sat)\\b/i);
   var timeMatch = text.match(/(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)/i);
   var morningMatch = text.match(/\\bmorning\\b/i);
   var afternoonMatch = text.match(/\\bafternoon\\b/i);

@@ -1457,7 +1457,12 @@ router.post("/api/manual-bills", async (req, res) => {
 router.patch("/api/manual-bills/:id", async (req, res) => {
   const { name, amount, due_day, cadence, category, notes, is_active } = req.body;
   const updates = []; const values = []; let idx = 1;
-  if (name !== undefined) { updates.push("name = $" + idx++); values.push(name.trim()); }
+  // Cycle-9 F27: a non-string name threw on .trim() before the try below — an
+  // unhandled rejection, so the request never got an answer.
+  if (name !== undefined) {
+    if (typeof name !== "string" || !name.trim()) return res.status(400).json({ error: "name must be a non-empty string" });
+    updates.push("name = $" + idx++); values.push(name.trim());
+  }
   // Same bounds as POST (DC-15): a non-numeric amount used to be stored as NaN
   // (NUMERIC accepts 'NaN'), poisoning every calendar/Sheets total it touched.
   if (amount !== undefined) {

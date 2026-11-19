@@ -78,11 +78,19 @@ function advanceRecurrence(date, rule, interval, anchorDay) {
 // caught up past today (PD-3). Completing a daily task due Sep 20 on Sep 27
 // used to create an instance due Sep 21 — overdue on arrival, so the midnight
 // roll marked it missed and wiped the streak just earned. Returns a Date.
+// The date a recurring instance's schedule steps FROM (cycle-9 F55): the date
+// it was due before it was snoozed (snoozed_from), else its due date. Snoozing
+// postpones one occurrence; it doesn't move the series.
+function scheduleBase(todo) {
+  const v = todo && (todo.snoozed_from || todo.due_date);
+  return v ? calDate(v) : null;
+}
+
 function nextDueAfter(todo, today) {
   const rule = todo.recurrence_rule;
   const interval = todo.recurrence_interval || 1;
   const anchor = recurrenceAnchorDay(todo);
-  let nextDue = advanceRecurrence(todo.due_date ? calDate(todo.due_date) : new Date(today + "T00:00:00"), rule, interval, anchor);
+  let nextDue = advanceRecurrence(scheduleBase(todo) || new Date(today + "T00:00:00"), rule, interval, anchor);
   let catchupLimit = 366;
   while (ymdLocal(nextDue) <= today && catchupLimit-- > 0) {
     nextDue = advanceRecurrence(nextDue, rule, interval, anchor);
@@ -92,7 +100,9 @@ function nextDueAfter(todo, today) {
 
 async function rollMissedRecurring(db, today) {
   const r = await db.query(
-    "SELECT * FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND due_date < $1",
+    // recurrence_rule IS NOT NULL (cycle-9 F55): with no rule the date never
+    // advances, so such a task was re-created — still overdue — every night.
+    "SELECT * FROM todos WHERE deleted_at IS NULL AND recurring = true AND recurrence_rule IS NOT NULL AND completed = false AND due_date < $1",
     [today]
   );
   let rolled = 0;
@@ -105,7 +115,7 @@ async function rollMissedRecurring(db, today) {
     const rule = todo.recurrence_rule;
     const interval = todo.recurrence_interval || 1;
     const anchor = recurrenceAnchorDay(todo);
-    let nextDue = advanceRecurrence(calDate(todo.due_date), rule, interval, anchor);
+    let nextDue = advanceRecurrence(scheduleBase(todo), rule, interval, anchor); // F55: from the pre-snooze date
     let catchupLimit = 365;
     while (ymdLocal(nextDue) < today && catchupLimit-- > 0) {
       nextDue = advanceRecurrence(nextDue, rule, interval, anchor);
@@ -234,13 +244,19 @@ async function sendSlackNotification(message) {
       console.error("sendSlackNotification: slack_webhook_url failed SSRF validation — skipping.");
       return;
     }
-    await fetch(url, {
+    const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: message }),
       redirect: "manual", // PB-14
     });
-  } catch {}
+    // Cycle-9 F58: a refused or failed post used to vanish (an empty catch and
+    // no status check), so a revoked Slack URL looked like a working one. The
+    // status / error text only — never the URL, which is the credential.
+    if (r && r.ok === false) console.error("sendSlackNotification: Slack answered " + r.status);
+  } catch (err) {
+    console.error("sendSlackNotification failed:", (err && err.name) || "error");
+  }
 }
 
 // Which entity each trigger fires on, and which actions make sense for it
@@ -322,4 +338,4 @@ function announceTodoEvent(event, todo) {
   fireWebhooks(event, todo).catch((err) => console.error(`${event} webhooks:`, err.message));
 }
 
-module.exports = { linkedTaskWebhookData, announceTodoEvent, advanceRecurrence, recurrenceAnchorDay, ymdLocal, calDate, ymdOf, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, slackLineFor, processDueReminders, runAutomations, validateAutomationRule };
+module.exports = { linkedTaskWebhookData, announceTodoEvent, advanceRecurrence, recurrenceAnchorDay, scheduleBase, ymdLocal, calDate, ymdOf, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, slackLineFor, processDueReminders, runAutomations, validateAutomationRule };
