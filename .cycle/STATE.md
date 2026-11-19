@@ -12,7 +12,7 @@ to the "none in progress" state.
 Cycle: 9
 Phase: implement
 Scope: broad (Nov 2026 broad scan — all non-frozen subsystems, weighted to the work since the cycle-8 scan: roadmap T4.1 A1–A10, cycle-8 expansion E1–E5, seams audit #4 S4-1..S4-5, the opening screen)
-Updated: 2026-11-18
+Updated: 2026-11-19
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
@@ -50,9 +50,15 @@ implement and reflect sessions only set Phase.)
     doesn't remove its balance snapshots; a re-link doesn't deactivate a stranded same-mask investment account; the
     two-column names are a fixed list; recordSyncResult's write still only logs a failure; two identical Plaid
     deliveries in one second share a key; the in-app budget alerts still depend on the snapshot job.
-  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs not yet synced for
-    Batches 6 and 7 — run `/sync-docs` (both blocks list what). Then `/broad-implement Batch 8` (Per-sistant: F52 F53
-    F50 F65–F72 F54 F55 F56 F58 F26 F27 — read the list from the plan below).
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). `/sync-docs` done for
+    Batches 6 and 7 (2026-11-19): CLAUDE.md — the tree entries (csv-formats, webhook-verify, cash-flow, payday-alerts,
+    advice, advice-alerts, tax-investments, projections, enrollments, investments, both webhook handlers, whats-new,
+    import-csv-cli), the feature text (CSV import, goal funding, budget alerts, the Plaid re-link gotcha, the Teller
+    re-link, the Plaid `added` rule, data freshness, the plan-change alert), the API list, Known Open Issues (Batches 6
+    and 7 done with their follow-ons; the Liabilities note moved under F60), INV-107 / 125 / 137 / 138 / 140 / 146 / 150,
+    the test list and counts (3544 / 187 / Perfin 2775 / contract 393); README counts. No new operator state, no
+    subsystem file changes. Next: `/broad-implement Batch 8` (Per-sistant: F52 F53 F50 F65–F72 F54 F55 F56 F58 F26 F27
+    — read the list from the plan below).
 - **Cycle 9 Batch 6 (DONE, 2026-11-18) — cash plan:** block `.cycle/blocks/9-batch6-broad-implement.md`.
   F30 (advice.js `detectRaises`: every deposit of the run must be 3% above the old level, so one raised deposit among
   cents-noisy paychecks is no longer a half-size raise dated to an old paycheck; advice-alerts.js keys a raise by payer +
@@ -82,9 +88,8 @@ implement and reflect sessions only set Phase.)
     ignored; the surplus doesn't subtract an unknown loan payment; no month of data → targets are the floor alone;
     whats-new's subscription / notification counts still capped; the capped headline names only the next debt; the
     medium headline names only the first debt.
-  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs not yet synced for
-    Batch 6 — run `/sync-docs` (the block lists what). Then `/broad-implement Batch 7` (F13 F14 F15 F17 F16 F18 F19
-    F35 F36 — bank-sync recovery; read the list from the plan below).
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs synced with Batch 7's
+    (2026-11-19). Batch 7 followed (above).
 - **Cycle 9 Batch 5 follow-on items (DONE, 2026-11-18):** block `.cycle/blocks/9-batch5-followons-broad-implement.md`.
   The seven follow-ons Batch 5's block listed, in its order. FO-1 (dashboard.ejs: the Debt Payoff mode returns a
   "settings couldn't be loaded" status instead of storing today's debt as the baseline when GET /api/settings fails),
