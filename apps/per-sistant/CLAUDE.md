@@ -21,7 +21,8 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   validity, Mermaid diagrams, capture-to-vault, never-sent-to-AI "secret" tier,
   and cross-app finance grounding from Perfin (read-only `perfinPool`). Migrations
   `db/013`–`db/019`. Full detail in the Knowledge block under **Database** below.
-- **Email**: nodemailer (SMTP) with scheduled sending via node-cron. The
+- **Email**: nodemailer 10 (SMTP; needs Node 20 or newer — on an older Node the `require`
+  fails and sending is switched off, cycle-9 F8) with scheduled sending via node-cron. The
   scheduler atomically CLAIMS due emails before sending, ONE row per loop
   iteration (≤`MAX_PER_RUN` = 100 per tick) — `UPDATE emails SET status='sent'
   WHERE id = (SELECT id … ORDER BY scheduled_at, id LIMIT 1 FOR UPDATE SKIP
@@ -39,7 +40,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 820 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b/x3a/x3b + seams-audit-3 + seams-audit-4-s5 + design-d1 + design-d6 + broad-scan-c8-batch5/batch6/batch7/batch8 + cycle8-e3c/e3e + cycle9-b5 + cycle9-b5-followons + cycle9-b8 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 838 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b/x3a/x3b + seams-audit-3 + seams-audit-4-s5 + design-d1 + design-d6 + broad-scan-c8-batch5/batch6/batch7/batch8 + cycle8-e3c/e3e + cycle9-b5 + cycle9-b5-followons + cycle9-b8 + cycle9-b9 + cycle9-b10 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -181,7 +182,8 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Calendar View**: Monthly calendar with iCal export, showing tasks, emails, and notes by date. The dashboard mini-calendar reads the same `event_date` through `calEventDay` (cycle-9 F65 — it read `ev.date`, so no day was ever marked). `routes/calendar.js` reads `advanceRecurrence` from `helpers` — routers receive only server.js's `{ pool, config, helpers, views }` (INV-96); reading it off deps made `/api/calendar` 500 whenever an open recurring todo existed.
 - **Weekly Review**: Stats summary + AI narrative of completed tasks, emails sent, notes created. "Upcoming" = open tasks due today (APP_TIMEZONE) or later in the coming week (F119 — it started tomorrow in UTC, so today's tasks were in neither list). "Overdue" = open tasks due before TODAY (APP_TIMEZONE `todayStr()`), not before the week's start — a task due Monday and still open on Wednesday used to be in neither list nor the AI summary's count (PD-14). The page asks `GET /api/ai/models` first and makes its AI summary / weekly-theme calls only when `available` (roadmap T1.5 — without a key the summary answered 500 on every load and the theme showed "AI is not configured").
 - **Keyboard Shortcuts**: Global shortcuts (n=new todo, e=new email, /=search, etc.) — the key ALONE: every single-key handler returns when Ctrl, Cmd or Alt is held (cycle-9 F69 — Cmd+C on the dashboard opened the Calendar)
-- **Keyboard access + dialogs** (PUI-5): custom controls rendered as divs — the task and subtask complete checks (`role="checkbox"` + `aria-checked`), note cards, metric cards and email-template rows (`role="button"`) — carry `tabindex="0"` and an `aria-label`; a global keydown in `views/js.js` turns Enter/Space on such an element into a click (so the existing delegation handles it) and Esc closes the top-most `.modal-overlay.active` (same as a backdrop click). A MutationObserver gives every `.modal` `role="dialog"` + `aria-modal` + an `aria-label` from its heading, moves focus inside when its overlay gains `active`, and restores focus when it closes or is removed — pages keep toggling `active` themselves. Habit day toggles carry `aria-pressed`.
+- **Keyboard access + dialogs** (PUI-5): custom controls rendered as divs — the task and subtask complete checks (`role="checkbox"` + `aria-checked`), note cards, metric cards and email-template rows (`role="button"`) — carry `tabindex="0"` and an `aria-label`; a global keydown in `views/js.js` turns Enter/Space on such an element into a click (so the existing delegation handles it) and Esc closes the top-most `.modal-overlay.active` (same as a backdrop click). A MutationObserver gives every `.modal` `role="dialog"` + `aria-modal` + an `aria-label` from its heading, moves focus inside when its overlay gains `active`, and restores focus when it closes or is removed — pages keep toggling `active` themselves. Habit day toggles carry `aria-pressed`. Since cycle-9 F79 an open modal also keeps Tab inside it (focus wraps between its first and last focusable control; a modal with no visible control swallows Tab), and `associateLabels(root)` (views/js.js) ties a bare `<label>` to the input / select / textarea that directly follows it — a generated id + `for` — at load and for dialogs added later; a label that already has `for`, wraps its control, or is followed by a wrapper element is left alone.
+- **Failed list loads** (cycle-9 F79): `fetchList(url)` (views/js.js, over `tryFetch`) returns the array, or null on any failure (network, a non-2xx answer, a body that isn't an array); the Notes, Emails, Contacts and To-Dos lists then show `loadFailedHtml(what)` — "Could not load <what> — reload the page to try again." (`role="alert"`) — instead of the empty state a failed request used to produce. Use both for a new list load.
 - **Drag-and-Drop**: Reorder todos by dragging
 - **Browser Notifications**: Optional notification permission for reminders
 - **PWA**: Installable as home screen app
@@ -228,6 +230,13 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - Older pages (notes, health, jobs, today, the dashboard script) report a save's HTTP
   failure through their own `r.ok` / `d.error` check, not `writeOk(tryFetch(…))`, so a
   rejected fetch isn't reported there.
+- Cycle-9 Batch 9 follow-ons: the Health, Jobs, Knowledge and dashboard loads still read a
+  failed request as empty (only Notes, Emails, Contacts and To-Dos use `fetchList`);
+  `associateLabels` handles only a label directly followed by its control; a modal with no
+  visible control swallows Tab while it is open.
+- Cycle-9 Batch 10: nodemailer 10 was verified against an SMTP server inside the test
+  process, not the real provider (STARTTLS, the provider's auth) — send one email after
+  deploying; node-cron 3 keeps a moderate `uuid` advisory (node-cron 4 is an ESM rewrite).
 - Cycle-9 Batch 8 follow-ons: the Job Radar profile's minimum salary, locations and remote
   preference are never used; once SMTP is configured every past-due scheduled email sends
   at once; `recurring: true` with no rule is still accepted on create; reopening a MISSED
@@ -301,6 +310,8 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/028_note_sensitivity.sql` — `notes.sensitivity` normal / private / secret + `chk_notes_sensitivity` (cycle-7 F134 / ST5: the notes privacy tier)
 - `db/029_vault_parse_version.sql` — `user_settings.vault_parse_version` (cycle-7 ST4): the `VAULT_PARSE_VERSION` (services/vault-sync.js) a successful FULL vault sync last ran under. **Bump `VAULT_PARSE_VERSION` whenever frontmatter parsing or sync semantics change** — Perfin's Settings → Sync Health → Operator Checks then asks for one full reindex (read-only through the wired pool) until a full sync stamps the new value Current value 4 (cycle-9 F50).
 - `db/032_todo_skip_snooze.sql` — `todos.skipped` (a skipped recurring instance — not a completion) + `todos.snoozed_from` (the due date before the first snooze; the schedule steps from it) (cycle-9 F55; additive, idempotent)
+- `tests/cycle9-b10.test.js` — cycle-9 Batch 10 pins (5, F8): Send Now through the real emails route and the installed nodemailer against an SMTP server inside the test (auth, from / to, subject, the text and HTML parts, two stored attachments; a rejected login marks the row failed), and the transport options both senders (Send Now and the scheduler) build
+- `tests/cycle9-b9.test.js` — cycle-9 Batch 9 pins (13, F79), run in a vm from the emitted bundle: `fetchList` (array / null on a network failure, a non-2xx, a non-array body) and `loadFailedHtml` with the Notes, Emails, Contacts and To-Dos loads showing it; `associateLabels` (a bare label tied to the control after it, one with `for` / a wrapped control / a hidden input left alone); Tab and Shift+Tab wrapping inside the open modal
 - `tests/cycle9-b8.test.js` — cycle-9 Batch 8 pins (51): the due-date SET's CASE (F52); skip / hand-reopen / undo, `nextDueAfter` + `scheduleBase` with a snooze, the snooze route's SQL, the roll and complete-recurring with a rule-less task, the calendar projection of a snoozed task (F55); `profileTextChanged` and the profile route (F53); the frontmatter continuation rule and parse version 4 (F50); `waitingEmails` and the check's entry (F54); `todoFieldsFromNote` and the route (F56); `looksFinancial`, Slack logging without the URL, the briefing's job line (F58); and, run in a vm from the emitted scripts, the mini-calendar (F65), the toggles (F66), Use template and the Quick Send parsers (F67 / F72), the notes click handler (F68), the three shortcut handlers (F69), `applyTheme` / `currentTheme` / `effectiveMode` (F70), `saveVault` (F71) and `quickMonthDay` (F72). The Perfin half is the root `tests/cycle9-b8.test.js`; the database-backed half the root `tests/contract/c9-batch8.contract.test.js`
 - `db/031_linked_task_tombstones.sql` — `linked_task_tombstones (source_key PK, deleted_at)` + the `trg_todos_tombstone_linked` BEFORE DELETE trigger that keeps a linked task's key on every hard-delete path (permanent delete, Empty Trash, the 30-day purge — cycle-8 F16); keys are kept for good
 - `tests/cycle9-b5-followons.test.js` — the cycle-9 Batch 5 follow-ons (16): PATCH /api/settings — the three switches refusing anything but true / false before any query, keep-alive hours 0-23, the zone, the session timeout (the live session gets the number), the default horizon, the dashboard layout's shape, GET's 500 on a failed read; the Settings script's `load` / `settingsReady` and four saves run in a vm (a 500 or a network failure on load → the message and nothing sent; a clean load → each save sends what the form holds); the dashboard's layout block in a vm (a failed read → a change isn't saved and says so, Reset still saves; a successful read → saved whole); the rent line across every unpaid month (a later month's showing task hides it, a month that isn't owed doesn't, no list → its own item, `housingDue`'s shape unchanged). The Perfin half is the root `tests/cycle9-b5-followons.test.js`; the database-backed half the root `tests/contract/c9-batch5-followons.contract.test.js`
@@ -354,7 +365,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (820 tests)
+# Run tests (838 tests)
 npm test
 
 # Pages
@@ -697,7 +708,7 @@ GET    /sw.js               # Service worker
   Perfin side.
 
 ## Express version
-Per-sistant is pinned to **express v4** (^4.21.0) to align with the
+Per-sistant is pinned to **express v4** (^4.22.3 since cycle-9 F8) to align with the
 Perfin sub-app and the shell. Do not introduce v5-only idioms (`req.host`,
 `app.del`, removed wildcard path patterns, etc.) — the workspace install
 hoists v4 across all sub-apps and a v5 idiom would break under the

@@ -43,8 +43,13 @@ implement and reflect sessions only set Phase.)
     value-tested only where earlier batches added cases; the tax notes read still fails silently; `plaid/server.js`
     (frozen) still forces TLS.
   - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Every cycle-9 fix batch
-    (1–10) is done. Docs are NOT synced for Batches 9 and 10 — run `/sync-docs` (both blocks list what). Then
-    `/reflect` to close the cycle, or the expansion / deferred items below.
+    (1–10) is done. Docs synced for Batches 9 and 10 (/sync-docs, 2026-11-19): CLAUDE.md (pg-ssl.js + INV-160, the
+    sheets-sync / goals.js / perfin-shared.css / perfin-materialize.js entries, Settle Up, the accounts grid, Quick
+    Add Bill, Ask, Web Push, the context export, money formatting, PGSSLMODE in Environment, Operator state item 7 —
+    Node 20 + the remaining advisories — Known Open Issues, the test list and counts 3699 / 193 / contract 410 /
+    Playwright 94), apps/per-sistant/CLAUDE.md (fetchList / loadFailedHtml, associateLabels, the Tab trap, nodemailer
+    10, the two test files, 838) and README.md (counts). Next: `/reflect` to close the cycle, or the expansion /
+    deferred items below.
 - **Cycle 9 Batch 9 (DONE, 2026-11-19) — Perfin UI (+ the Per-sistant items of F79):** block
   `.cycle/blocks/9-batch9-broad-implement.md`. F73 (Settle Up: `settleLeg` / `settleLoadState` — a failed leg means
   "Net not available", no Mark settled, a Try again; the Accounts net is "—" when investments couldn't be loaded), F74

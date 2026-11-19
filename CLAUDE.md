@@ -952,7 +952,14 @@ teller/
                            GET /api/transactions/csv-overlap (+ /resolve)
     goals.js             — GET/POST/PATCH/DELETE /api/goals, GET /api/goals/funding-options,
                            POST /api/net-worth/snapshot, GET /api/net-worth/history,
-                           GET /api/context-export, GET/POST /api/investment-accounts
+                           GET /api/context-export, GET/POST /api/investment-accounts.
+                           The context export reads each optional section (Financial Goals,
+                           Credit Card Details, Net Worth History, Most Recent AI Analysis,
+                           Location, Investment Accounts) through section(name, …) — cycle-9
+                           F63: a failed read is logged, listed in sections_unavailable (JSON)
+                           and named in a "Not included" line at the top of the markdown (six
+                           silent `.catch(() => ({ rows: [] }))` before); accounts, spending or
+                           subscriptions failing is still a 500
     budgets.js           — GET/POST/PATCH/DELETE /api/budgets, POST /api/budgets/suggest,
                            POST /api/budgets/accept, GET /api/budgets/alerts,
                            POST /api/budgets/snapshot, GET /api/budgets/history,
@@ -1337,7 +1344,9 @@ teller/
                            order and named in omitted_for_length, then the longest
                            list halved; always valid JSON), and get_cash_plan puts
                            what_if right after ok and the disclaimer (cycle-9 F41 —
-                           a plain slice cut the what-if comparison off).
+                           a plain slice cut the what-if comparison off). The widget sends
+                           one question at a time (an `asking` flag shared by Enter and the
+                           button — cycle-9 F78).
     whats-new.js         — GET /api/whats-new, POST /api/whats-new/seen
                            ("since you last looked" dashboard widget feed —
                            new transactions, balance deltas, new subscriptions,
@@ -1427,7 +1436,11 @@ teller/
                            the ink on a FILLED primary button (.btn.primary / .btn-sm.primary /
                            .actions button.primary — gold background); buttons are sentence
                            case (no uppercase transform); .amt-in / .amt-bad are the ONE pair
-                           of money colours; .empty-state* style emptyState().
+                           of money colours; .empty-state* style emptyState(). Cycle-9 Batch 9:
+                           `[hidden] { display: none !important; }` — the hidden attribute
+                           always wins over an element's own display rule (F75: the summary's
+                           skeleton cards and the Accounts CSV sign select stayed visible while
+                           hidden); `[data-theme="light"] td` has a visible row separator (F79).
     perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction,
                            btnLoading, beforeinstallprompt capture + perfinPromptInstall /
                            perfinIsInstalled exports). Calendar-date helpers (WUI-2):
@@ -1667,12 +1680,21 @@ shell/
     perfin-materialize.js      — Auto-init module: scans for
                                  [data-perfin-materialize] triggers, builds
                                  the helmet-SVG overlay lazily on first click.
+                                 A pageshow listener removes the overlay's `active`
+                                 class when the page comes back from the back /
+                                 forward cache (ev.persisted — cycle-9 F76).
 ```
 
 **Other key files:**
 - `design/tokens.json` — the shared design values both apps declare (design pass D6, decision 9 —
   see Shared design tokens under UI & UX; `tests/design-tokens.test.js` checks both stylesheets)
 - `plaid/server.js` — Legacy Plaid server (still functional)
+- `scripts/pg-ssl.js` — `pgSsl(env)`, the TLS setting for a script's own Postgres pool (cycle-9 F6): a verified
+  certificate unless `PGSSLMODE` is exactly `disable` — the apps' own rule (teller/services/database.js,
+  apps/per-sistant/db.js). Read when the pool is built, after dotenv. Used by `sheets-sync.js`, `reset-fresh.js`,
+  `import-csv-cli.js` and both detectors' CLI mode, which each hard-coded `ssl: { rejectUnauthorized: true }` and so
+  couldn't connect on the CI service container or the planned VPS compose network. A new script that builds a pool
+  uses it. (`plaid/server.js`, frozen, still forces TLS.)
 - `scripts/detect-subscriptions.js` — Recurring subscription detection (30/60/90/365-day cadences)
 - `scripts/detect-transfers.js` — Recurring transfer detection (7/14/30/60/90/365-day cadences,
   6 transfer types: peer_transfer, bill_payment, savings, investment, internal, other).
@@ -1699,7 +1721,15 @@ shell/
   route/services layer, so `incomePredicate` / `NOT_TRANSFER` /
   `SPLIT_AMOUNT` are duplicated from `services/financial-queries.js` —
   their full structure is byte-pinned (whitespace-normalized) by SX3 in
-  `tests/audit-regressions.test.js`, so a drift fails CI.
+  `tests/audit-regressions.test.js`, so a drift fails CI. Run directly
+  (`npm run sheets-sync`) it loads `.env` at the TOP of the file, before
+  `GOOGLE_SHEETS_ID`, `GOOGLE_SERVICE_ACCOUNT_KEY` and `APP_TIMEZONE` are read
+  (cycle-9 F63 — dotenv loaded in the CLI block at the bottom, after they had
+  been read as undefined). `syncAll()` runs `runSyncAll()`;
+  `_internals.runSyncAll({ sheets, pool })` is the test seam (cycle-9 F61 — an
+  injected Sheets client and pool; an injected pool is not closed), with
+  `syncTransactions`, `syncIncome`, `syncTaxDeductionsYear` and `getPool` exported
+  beside it.
 - `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs. Shares
   the route's logic via `teller/data/csv-formats.js`: content-only
   `detectCsvFormat` (no filename heuristic), the same `makeCsvTxnIdGenerator`
@@ -1766,9 +1796,36 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (3606 tests as of latest); use
+  Perfin and Per-sistant test files (3699 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 3606 tests across 189 test files (incl.
+  Current count: 3699 tests across 193 test files (incl.
+  `tests/cycle9-b10.test.js` — cycle 9 Batch 10: each of the five scripts that build their own pool RUN as a child
+  process with and without `PGSSLMODE=disable` (through `tests/_script-preload.js` — a `--require` preload that stands
+  in for `dotenv`, `pg` and `googleapis` and prints what the script asked for) (F6); sheets-sync reading its config
+  from the stand-in .env (F63); the context export's `sections_unavailable`, its "Not included" line and its log line,
+  with a required section still a 500 (F63); `runSyncAll` with the database down — every one of the 18 steps reported
+  — and with one failing tab while the others are written (F61); the installed versions equal to the lock file, the
+  declared ranges, `engines.node`, and csv-parse keeping a `__proto__` column as an own property (F8) — with
+  `apps/per-sistant/tests/cycle9-b10.test.js` (5: Send Now through the real emails route and the installed nodemailer
+  against an SMTP server inside the test — auth, from / to, subject, text + HTML, two attachments, a rejected login
+  marking the row failed — and both senders' transport options); the database-backed half is
+  `tests/contract/c9-batch10`;
+  `tests/api.test.js` — REWRITTEN in cycle 9 Batch 10 (F61 — 29 of its 33 tests asserted on values built inside the
+  test): 39 tests driving the standalone Perfin app (teller/server.js, its real middleware order) over a recording
+  fake pool through supertest — POST /api/subscriptions (400s before any query, the `manual_<name>` key, the next date
+  with the clock pinned to 31 January, the conflict rule, a fixed 500), GET /api/subscriptions (each filter's WHERE,
+  the summary split, cancel URLs), POST /api/cleanup, POST /api/investment-accounts, the CSRF check (a form post
+  refused with the route never run, the exact header value, JSON, x-api-key, reads, the three exempt posts), the
+  detector's `findModeAmount` / `addDays`, `findCancelUrl` and `esc()` run from perfin-shared.js in a vm;
+  `tests/cycle9-b9.test.js` — cycle 9 Batch 9 (Perfin UI, run in a vm from the views): Settle Up with each request
+  failing in turn ("Net not available", no Mark settled, Try again; the net kept when only the settled read failed)
+  and the Accounts net "—" when investments couldn't be loaded (F73); a limit / APR / payment save deferring the grid
+  re-render while a save is in flight or a grid input has focus (F74); the `[hidden]` rule, the light-theme separator
+  and the range select's label (F75 / F79); the Perfin entry overlay cleared on a back / forward-cache restore (F76);
+  `loadForecast`, the Recent errors Resolve and `linkAccount` on a failed request (F77); Ask and Quick Add Bill sending
+  one request per action (F78); `pushRegistration`'s 8-second deadline (F79) — with
+  `apps/per-sistant/tests/cycle9-b9.test.js` (13: `fetchList` / `loadFailedHtml` and the four list loads, a bare label
+  tied to its control, Tab kept inside the open modal);
   `tests/cycle9-b8.test.js` — cycle 9 Batch 8, the two Perfin items: runCategorize over a fake Anthropic SDK (a batch
   answered in prose twice — the call and its re-ask — charged once, every row stamped, no second page; each prompt row's
   plain date) (F26); both detectors' stale sweeps carrying `is_active = true`; the rename-rule delete and POST
@@ -3007,8 +3064,13 @@ shell/
   February; a rule-less recurring task not rolled and completed plainly; the same profile text keeping a fit score and
   changed text clearing it; a secret note's todo with no text; a past-due scheduled email reported without SMTP_HOST.
   Perfin: the review write and its superseded rule, a rename-rule delete reverting its row, a manual bill's name 400,
-  the stale sweeps leaving an inactive row's updated_at alone).
-  402 tests, run
+  the stale sweeps leaving an inactive row's updated_at alone). Since Batch 10, c9-batch10 (the Sheets Transactions tab
+  on real rows — a rename and user category, split lines under their parent, a reimbursed row, the Plaid PFC detail,
+  "CSV Import" as the source, a pending row left out; the Tax Deductions tab equal to getTaxDeductionReport and the
+  Income tab equal to getMonthlyIncome over its 24 / 12-month windows with a renamed source; a full Sheets run through
+  `runSyncAll` — every tab's SQL on the real schema, then one failing tab named while the others are written; the
+  subscriptions list / summary and filters, the cleanup windows and the investment-account types through the routes).
+  410 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3166,8 +3228,8 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN — the dial shaking red / spinning up before Per-sistant loads — the dial lighting a step per digit, post-login default, Perfin's cross-app link opening Per-sistant through the dial overlay), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check); a check that measures an element the page renders after load (the dashboard summary's cards replace skeletons) waits for its loader first — `aria-busy` cleared — since a skeleton detached mid-measure reads as no box, and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 93 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
-a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back, and Settings → Quiet Hours & Muting (cycle-8 E3c): quiet hours and a mute saved and read back, and Per-sistant's Settings link to it, and the nav sync badge (cycle-8 E4b): its level class and aria-label, and a click landing on Sync Health). Since cycle-8 E5a (ST4) `e2e/behaviour.spec.js` holds BEHAVIOUR tests: each does one key action on the page and checks the new state on the page, in the API and after a reload, then puts it back (through the app's own undo where there is one) — Activity rename + note, reimbursed, a duplicate deleted and brought back by the toast's Undo, Review Uncategorized Apply (no rule with Remember off), a manual bill marked paid on the Calendar and unmarked, a budget's rollover on and off, a rent payment recorded and undone, a subscription cancelled and restored, and (E5b) a credit score logged and removed, the theme switched (and still applied after a reload without the browser's copy), a dashboard widget switched off and on, a Settings switch whose save is refused going back while a saved one stays (the 400 routed with `page.route`), and Mark all read on the bell, and (E5c, Per-sistant) a note pinned through its dialog and unpinned, a todo's subtask ticked and the todo completed — the toast's Undo reopening it — completed again, reopened and unticked, today's habit marked done (the streak 1 → 2, the week grid) and unmarked, and a Job Radar listing saved (Saved view) and unsaved; each acts only on rows it creates under a unique "E5 … <tag>" name (its own "E5 Wallet" manual account) — the bell test's one unread notification and the job test's one listing are inserted straight into the databases (no route creates either) and, like the habit (the API only archives one), deleted directly afterwards, the listing's source trust put back. The login / page-problem helpers live in `e2e/helpers.js`; the seed runs once per run (`ensureSeeded` in seed.js — both spec files call it); the config runs ONE worker (`workers: 1`) so the behaviour file never runs beside the click sweep. The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN — the dial shaking red / spinning up before Per-sistant loads — the dial lighting a step per digit, post-login default, Perfin's cross-app link opening Per-sistant through the dial overlay), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check); a check that measures an element the page renders after load (the dashboard summary's cards replace skeletons) waits for its loader first — `aria-busy` cleared — since a skeleton detached mid-measure reads as no box, and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 94 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
+a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent, and the Cash Flow section's "What's in this forecast" list (cycle-8 E1b): the seeded subscription's setting switched to Leave out and back, and Settings → Quiet Hours & Muting (cycle-8 E3c): quiet hours and a mute saved and read back, and Per-sistant's Settings link to it, and the nav sync badge (cycle-8 E4b): its level class and aria-label, and a click landing on Sync Health, and the `hidden` attribute (cycle-9 F75): a failed summary leaving one line and the Accounts CSV sign select starting hidden). Since cycle-8 E5a (ST4) `e2e/behaviour.spec.js` holds BEHAVIOUR tests: each does one key action on the page and checks the new state on the page, in the API and after a reload, then puts it back (through the app's own undo where there is one) — Activity rename + note, reimbursed, a duplicate deleted and brought back by the toast's Undo, Review Uncategorized Apply (no rule with Remember off), a manual bill marked paid on the Calendar and unmarked, a budget's rollover on and off, a rent payment recorded and undone, a subscription cancelled and restored, and (E5b) a credit score logged and removed, the theme switched (and still applied after a reload without the browser's copy), a dashboard widget switched off and on, a Settings switch whose save is refused going back while a saved one stays (the 400 routed with `page.route`), and Mark all read on the bell, and (E5c, Per-sistant) a note pinned through its dialog and unpinned, a todo's subtask ticked and the todo completed — the toast's Undo reopening it — completed again, reopened and unticked, today's habit marked done (the streak 1 → 2, the week grid) and unmarked, and a Job Radar listing saved (Saved view) and unsaved; each acts only on rows it creates under a unique "E5 … <tag>" name (its own "E5 Wallet" manual account) — the bell test's one unread notification and the job test's one listing are inserted straight into the databases (no route creates either) and, like the habit (the API only archives one), deleted directly afterwards, the listing's source trust put back. The login / page-problem helpers live in `e2e/helpers.js`; the seed runs once per run (`ensureSeeded` in seed.js — both spec files call it); the config runs ONE worker (`workers: 1`) so the behaviour file never runs beside the click sweep. The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -3857,6 +3919,15 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   `investment_accounts.plaid_account_id` — only the correct card shows, no $0
   phantom twin (parallels the `la.plaid_item_id IS NULL` dedupe in
   `GET /api/investments`).
+  When the `/api/investment-accounts` request fails the grid lists what loaded, says
+  "Investment accounts couldn't be loaded, so the net balance isn't shown" and the Net
+  Balance card reads "—" (`setNetBalance` / `accountsInvFailedHtml`, cycle-9 F73 — it
+  showed a net without the investments). A limit / APR / payment save goes through
+  `saveAccountField`, and the grid's re-render (`reloadAccountsSoon` — the sync,
+  manual-balance and shared-split reloads use it too) waits while a save is in flight or
+  a grid input has focus and runs once focus leaves (F74 — typing a limit and then an
+  APR was wiped by the re-render after the first save). Trade-off: while a grid field
+  has focus the grid keeps showing its earlier figures.
 - **Loan accounts (auto loans etc.)**: `type='loan'` rows (Plaid-linked via the
   combined flow — credit-union auto loans arrive from accountsGet — or created
   via `POST /api/accounts/manual` with `type:"loan"`, subtype defaults `auto` — the
@@ -3981,6 +4052,13 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   via `POST /api/settlement/settle`); once settled the headline dims and shows
   "✓ Settled on <date>" with an Undo (`DELETE /api/settlement/:period`). This is
   display-only bookkeeping — it never alters the shared-card or housing math.
+  **A leg that couldn't be loaded (cycle-9 F73):** each of the widget's three requests
+  goes through `settleLeg` → `{ ok, data }` and `settleLoadState` names what failed. With
+  the shared-card or housing leg missing the headline reads "Net not available" (never
+  the other leg alone — a failed leg used to count as $0), there is no Mark settled /
+  Undo, and a "Try again" button reloads; when only the settled / not-settled read
+  failed the net still shows, without the button. A widget that was never shown stays
+  hidden on a failed first load.
 - **Since-you-last-looked widget**: aggregates new transactions, balance
   deltas (baseline = the newest snapshot dated BEFORE the watermark's day, vs
   the latest snapshot, which may be from that same day — DD-5: snapshots are one
@@ -4062,6 +4140,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   the existing one-way DB-as-source-of-truth flow. Distinct from the
   Calendar page's existing Add Bill modal — both write to the same
   `manual_bills` table.
+  Save is single-flight (`qabSaving`, cycle-9 F78): it stays disabled after a
+  success until the page reloads, and a refused save re-enables it.
 - **3D Financial Pyramid**: Interactive spinning pyramid with 4 frustum layers, neon wireframe edges,
   holographic effects. Layers computed by JS (`buildPyramidGeometry()`) with proper taper geometry.
   Configurable data sources: wellness, debt payoff, goal progress, etc. Mobile-optimized (reduced
@@ -4545,6 +4625,11 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   follows the AIN-7 rule (credit_limit, else owed + available when available is
   known, else unknown — JSON `credit_limit` / `utilization_pct` null, markdown
   "limit unknown"; cycle-7 F36: an unknown limit read as 100% utilized).
+  An optional section whose read fails (goals, card details, net-worth history, the
+  latest insight, location, investment accounts) is logged and NAMED — JSON
+  `sections_unavailable`, and in the markdown a "Not included: … could not be read
+  for this export" line under the title — instead of reading as "nothing to show"
+  (cycle-9 F63); accounts, spending or subscriptions failing is still a 500.
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
   (case-insensitive merchant grouping; separate from the 2x AI analysis threshold).
   Covers Teller AND Plaid rows: `runAnomalyCheck()` (routes/enrollments.js) runs ONCE
@@ -4708,6 +4793,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   return line and the Goals page's FIRE card follow the same sign rule. Stat-card
   `.value` font uses `clamp()` + `overflow-wrap` so large amounts never overflow
   narrow 2-up mobile cards.
+  Since cycle-9 F79 the Budgets cards and summary (with cents — the summary was whole
+  dollars), the Accounts page's manual-account list and the Activity split-total line
+  go through `fmt()` too; the Calendar chips, the pyramid (whole dollars) and the AI
+  cost line (three decimals) keep their own formats on purpose.
 - **Money colours (design pass D2)**: a charge, a balance and a debt are the
   default text colour; money coming in is green (`.amt-in` — an Activity credit
   also reads "+$X"); red (`.amt-bad`) only for something wrong — an overdue Rent
@@ -4868,7 +4957,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   OBJECT — `subscriptionFromRow` accepts an object or a JSON string (F74: the old
   `JSON.parse(row.keys)` threw on every row, so no push was ever delivered and dead
   subscriptions were never pruned). A 410/404 prunes the subscription; any other
-  send failure is logged. **Quiet hours and mutes (cycle-8 E3b, G2):** `sendToAll`
+  send failure is logged. Settings' Enable button asks for the service-worker
+  registration first and gives `serviceWorker.ready` an 8-second deadline
+  (`pushRegistration()`, cycle-9 F79) — it reports why push can't be enabled instead of
+  spinning, and the status check leaves the button usable. **Quiet hours and mutes (cycle-8 E3b, G2):** `sendToAll`
   holds a push during quiet hours (`notify_quiet_hours`, APP_TIMEZONE) and never pushes
   a muted kind (`notify_muted_types`) — the bell row is written either way, with its
   `push_state`. Held pushes go out once quiet hours end (the notify-release job — one
@@ -4907,7 +4999,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   shared `openDialog` / `watchDialog` (focus trap, Esc, focus restore — IF-1); form controls
   carry a `<label for>` or `aria-label` (IF-3, scan-pinned for the Activity, Rent, Accounts,
   Goals, Budgets, Calendar, Settings and Subscriptions pages — the last two since cycle-7
-  F101, with the template-built Goals link picker and investment remove buttons named too).
+  F101, with the template-built Goals link picker and investment remove buttons named too;
+  the account-history range select since cycle-9 F79).
 - **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no `'unsafe-inline'` in `scriptSrc`). Style policy is split: `styleSrcElem` is nonce-gated for `<style>` blocks while `styleSrcAttr` keeps `'unsafe-inline'` for inline `style=""` attributes.
 - **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep (10s timeout)
 - **Per-model cost tracking**: Usage history with granular pricing (Haiku/Sonnet/Opus)
@@ -5300,6 +5393,17 @@ on the operator's machine (or fed via env vars) before the app boots:
    Without it the GitHub checks read "off" (one info line in Sync Health); the
    backup check then reads the stamp db-backup.yml / backup.sh records instead
    (local:backup, cycle-8 E4a), and the go-live checks need no token at all.
+7. **Node 20 or newer** (cycle-9 F8) — the root `package.json` declares `engines.node` ">=20" and
+   Per-sistant's nodemailer 10 needs it: on an older Node `require("nodemailer")` fails, the app's
+   try/catch leaves it null and email sending is switched off ("nodemailer not installed") while
+   everything else runs. CI runs Node 22; the Dockerfile and csv-import.yml run Node 20; on Render,
+   check that no `NODE_VERSION` below 20 is pinned in the dashboard. nodemailer 10 was verified
+   against an SMTP server inside the test process, not the real provider — send one email from
+   Per-sistant (Emails → Send now, to yourself) after deploying. Six `npm audit` advisories remain
+   (1 low — @simplewebauthn/server; 5 moderate — uuid through googleapis 144 and node-cron 3); the
+   fixes need Node 22 (googleapis 190, @simplewebauthn/server 14) or node-cron 4's ESM rewrite, so
+   clearing them means moving the Dockerfile and csv-import.yml to Node 22 first. Nothing in CI
+   runs `npm audit`.
 
 Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
 Email") and the **daily activity digest** ("Daily Activity Digest"
@@ -5422,7 +5526,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 3606 tests passing across 189 test files (Perfin 2786 + Per-sistant 820), plus the real-Postgres route contract suite (402 tests; CI `migrations` job, `npm run test:contract`) and 93 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
+- 3699 tests passing across 193 test files (Perfin 2861 + Per-sistant 838), plus the real-Postgres route contract suite (410 tests; CI `migrations` job, `npm run test:contract`) and 94 Playwright browser tests (CI `e2e` job — smoke.spec.js, the seeded every-page pages.spec.js with its click sweep and behaviour.spec.js — cycle-8 E5); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5805,7 +5909,9 @@ GET  /api/net-worth/history # net worth snapshots over time
 GET  /api/context-export   # structured data dump for Claude chat (query: format=
                            # markdown|json). Latest REAL insight, investment_accounts
                            # included, no Plaid phantom, debts as "-$X owed" (JSON:
-                           # is_liability), ISO dates (SXE-9)
+                           # is_liability), ISO dates (SXE-9). JSON sections_unavailable
+                           # [names] / a markdown "Not included" line for an optional
+                           # section whose read failed (cycle-9 F63)
 GET  /api/tax-deductions   # accumulated tax-deductible transactions
 GET  /api/settings         # retrieve user settings (+ notify_kinds — the notification
                            # kind catalog — and notify_timezone, cycle-8 E3a)
@@ -6305,6 +6411,7 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 - `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
 - `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments. **Required under the unified shell, and it must name a different database from `NEON_DATABASE_URL`** — the shell refuses to start otherwise (cycle-8 F26, `shell/boot-checks.js`: the fallback used to migrate both apps into one database, merging their single-row `user_settings` and the two separate AI caps). Two different URLs that reach the same database (Neon's pooler and direct hosts) are refused too — the shell compares the databases themselves before either app migrates (seams audit #4 A3).
 - `ALLOW_SHARED_DATABASE` — `true` to run both apps in ONE database under the shell on purpose (skips the check above). Unset in every documented deployment.
+- `PGSSLMODE` — set to `disable` ONLY where Postgres speaks plaintext on a private network (the CI service container, the VPS compose network — `deploy/vps/`): both apps' pools and, since cycle-9 F6, every script's own pool (`scripts/pg-ssl.js`) then connect without TLS. Unset everywhere else (TLS with a verified certificate — Neon).
 - `TOKEN_ENCRYPTION_PASSPHRASE` — passphrase for encrypting access tokens at rest. **Required — boot fails without it** (escape hatch: `ALLOW_MISSING_TOKEN_PASSPHRASE=true` for local debug with no bank links).
 
 ### Teller (Perfin)
@@ -6346,7 +6453,7 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 
 ### Google Sheets (Perfin — optional)
 - `GOOGLE_SHEETS_ID` — the spreadsheet the server sync writes (`scripts/sheets-sync.js`); unset = Sheets sync off.
-- `GOOGLE_SERVICE_ACCOUNT_KEY` — the service account's JSON key (share the spreadsheet with its email as Editor). Both are read when `scripts/sheets-sync.js` loads.
+- `GOOGLE_SERVICE_ACCOUNT_KEY` — the service account's JSON key (share the spreadsheet with its email as Editor). Both are read when `scripts/sheets-sync.js` loads (run directly — `npm run sheets-sync` — it loads `.env` first, cycle-9 F63).
 
 ### Plaid (Perfin — investments + transactions for banks Teller doesn't cover)
 - `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — Plaid API credentials
@@ -7516,7 +7623,7 @@ SX3-pinned — the Sheets Income tab.
   `multer`, `csv-parse`, `supertest`). The root's `express` is pinned to v4
   to match `teller/` so tests run against the same Express version the
   primary tested module uses at runtime; `apps/per-sistant/` pins the same
-  v4 (`^4.21.0`) in its own workspace. CI runs a single `npm ci` at the root — npm workspaces
+  v4 (`^4.22.3` in all four package.json files since cycle-9 F8) in its own workspace. CI runs a single `npm ci` at the root — npm workspaces
   walks shell/, teller/, and apps/per-sistant/ in one pass. Local devs must
   `npm install` at the root before `npm test`.
 - **Source-pinned regression tests.** `tests/audit-regressions.test.js` includes
@@ -8095,7 +8202,7 @@ SX3-pinned — the Sheets Income tab.
   by `tests/scan-sept-fixes.test.js`, which mounts modules in server.js order).
 
 ## Known Open Issues
-**Cycle 9 (Nov 2026 broad scan) — open until their batches run** (79 findings, F1–F79; no Critical, two High — both in
+**Cycle 9 (Nov 2026 broad scan) — all ten fix batches are done; the deferred items at the end stay open** (79 findings, F1–F79; no Critical, two High — both in
 Batch 1; the batch plan with every finding's one-line description is in `.cycle/STATE.md`, the per-batch summaries in
 `.cycle/blocks/9-*-broad-implement.md`). **Batch 1 is done** (`.cycle/blocks/9-batch1-broad-implement.md`): F1 (the
 backup workflow's verify failed on every real-size dump), F9 (backup.sh discarded gpg's exit status), F12 (pg_dump's
@@ -8183,17 +8290,34 @@ run it once by hand and do one restore drill; if production's CALENDAR_FEED_TOKE
   defers its rows from the AI for 30 days (rules, the free maps and the Review widget still reach them). OPERATOR: run
   one full Knowledge reindex after deploying (VAULT_PARSE_VERSION 4); before setting `SMTP_HOST`, delete any past-due
   scheduled emails you no longer want sent.
-Still open, by batch:
-- **Batch 9 — Perfin UI:** Settle Up treats a failed leg as $0 and still offers "Mark settled" (F73); typing a card's
-  limit then APR is wiped by the grid re-render (F74); the Perfin entry overlay has no back/forward-cache handler (F76);
-  `hidden` is overridden by the element's own `display` rule on the dashboard summary cards and the Accounts CSV sign
-  select (F75); missing `res.ok` checks, double-submit windows and smaller access / theme items (F77–F79).
-- **Batch 10 — test honesty, docs, hygiene:** `tests/api.test.js` — 29 of its 33 tests assert on values built inside the
-  test, and the Sheets "pinned" tests check fragment text (mutations to the Income / Tax / Transactions tab queries
-  survive) (F61); remaining doc drift (F60 — incl. the Liabilities gotcha above: the transaction-sync path calls
-  `liabilitiesGet` for every Item, not only one with a card or loan); `scripts/sheets-sync.js`, `reset-fresh.js` and `import-csv-cli.js` build
-  pools that ignore `PGSSLMODE=disable`, so they can't connect on the planned VPS (F6); 18 advisories in production
-  dependencies, most cleared by `npm audit fix` (F8); `npm run sheets-sync` can't read its config from `.env` (F63).
+- **Batch 9 — Perfin UI, plus the Per-sistant items of F79 (F73 F74 F75 F76 F77 F78 F79)** is done
+  (`.cycle/blocks/9-batch9-broad-implement.md`). Also in it: the Upcoming Charges load, the Recent errors Resolve and
+  the Goals link picker no longer treat a failed request as data (F77). Follow-ons: the back / forward-cache fix (F76)
+  can't be exercised here — try Back from Perfin on an iPhone once; a Settle Up widget that was hidden stays hidden on
+  a failed FIRST load with nothing said (it can't tell "nothing to settle" from "couldn't ask"), and when only the
+  settled / not-settled read fails "Mark settled" isn't offered until "Try again" succeeds; the deferred re-render
+  (F74) covers the dashboard grid only — the Accounts page's lists still re-render after each save — and while a grid
+  field has focus the grid shows its earlier figures; `[hidden]` now always wins, so an element must not rely on being
+  visible with the attribute set; whole-dollar money on the Calendar chips and the pyramid and the AI cost line's three
+  decimals are still built by hand, and the dashboard keeps its own `fmtMoney` beside `fmt`; the Accounts net total is
+  also "—" (no tooltip) when no account has a balance yet; a service worker that fails to register is reported only
+  when Enable is pressed. Per-sistant: its Health, Jobs, Knowledge and dashboard loads still read a failed request as
+  empty; `associateLabels` handles only a label directly followed by its control; a modal with no visible control
+  swallows Tab while it is open.
+- **Batch 10 — test honesty, docs, hygiene (F61 F60 F6 F8 F63)** is done
+  (`.cycle/blocks/9-batch10-broad-implement.md`) — every cycle-9 fix batch is done. Follow-ons: six `npm audit`
+  advisories remain (1 low, 5 moderate — Operator state item 7) and nothing in CI runs `npm audit`; the Sheets tabs
+  other than Transactions, Tax and Income are value-tested only where earlier batches added cases — for Subscriptions,
+  Investments, Net Worth History, AI Trust, Categorization Rules, Manual Bills, Bill Payments, AI Insights and Recurring
+  Transfers the full-run test proves the SQL runs on the real schema, not the values written; the tax tab's and
+  `getTaxDeductionReport`'s merchant-note read still falls back to "no notes" silently; the context export lists
+  "Location" as unavailable when the settings read fails though a missing ZIP is also just an absent section, and it
+  has no retry; `plaid/server.js` (frozen) still forces TLS on its own pool; the remaining source-string pins on route
+  SQL (in `tests/audit-regressions.test.js`) were not reviewed; csv-parse 7 trims by ECMAScript whitespace and keeps a
+  `__proto__` column as an ordinary column; "the installed versions match the lock file" fails on a stale
+  `node_modules` (run `npm install`). OPERATOR: confirm Render runs Node 20 or newer and send one email from Per-sistant
+  after deploying (nodemailer 10 — Operator state item 7).
+Still open:
 - **Deferred (need a decision):** no timeout on web-push sends or database queries, with the post-sync steps on one
   serialized chain (F7); manual bills are not in the cash forecast or the low-cash alert (F29) and a quarterly / yearly
   manual bill can only fall in its creation month (F25); **Per-sistant's service worker is never registered** — no page
@@ -8948,7 +9072,7 @@ Platform, Shell & Auth:
   teller/services/github-ops.js, teller/services/operator-checks.js,
   teller/services/hosting.js, teller/services/error-log.js, teller/services/uptime.js,
   teller/services/webauthn-ids.js,
-  scripts/reset-fresh.js, scripts/ci-migration-test.js, db/*.sql
+  scripts/reset-fresh.js, scripts/ci-migration-test.js, scripts/pg-ssl.js, db/*.sql
 Web UI (Perfin):
   teller/pages/*.js, teller/views/*.ejs, teller/views/partials/*.ejs,
   teller/public/*.js, teller/public/*.css, teller/public/sw.js,
@@ -9025,7 +9149,7 @@ INV-20 | Shell requireAuth honors x-api-key; embedded sub-apps skip own check | 
 INV-21 | Shell safeReturnTo allows only same-origin absolute paths | Subsystem: Platform, Shell & Auth
 INV-22 | Tokens + webhook secret encrypted at rest; mismatch surfaces as decryption_failed (sync token reads use perfin_try_decrypt, never the raising pgp_sym_decrypt — one stale row never fails the query) | Subsystem: Platform, Shell & Auth
 INV-23 | Service worker never caches /api/* | Subsystem: Web UI
-INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AND every syncAll caller records the outcome via recordSheetsSyncResult (last_sheets_sync_result; one notification per change in the failing-tab set) — errors[] is never ignored | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-1 block)
+INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AND every syncAll caller records the outcome via recordSheetsSyncResult (last_sheets_sync_result; one notification per change in the failing-tab set) — errors[] is never ignored | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-1 block) + tests/cycle9-b10.test.js + tests/contract/c9-batch10 (a full run through runSyncAll with one failing tab)
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6). Trailing whitespace on a `---` delimiter still parses, and a repeated sensitivity / embed / private key keeps every value so the most restrictive wins (cycle-7 F132). A quoted key is read, and a frontmatter line the parser can't read that starts with a privacy key resolves private (cycle-8 F49). NOTES follow the same rule since cycle-7 F134 / ST5: only notes.sensitivity='normal' notes are embedded, keyword- or vector-retrieved, listed in Ask's context or AI-tagged; a note leaving 'normal' loses its chunks + embed_state, and outside webhooks never get a private / secret note's text; a privacy value on the line after its key (an indented line under an empty sensitivity / embed / private key) is that key's value and a block list survives a blank line (cycle-9 F50); a todo made from a private or secret note never carries the note's text (todoFieldsFromNote, cycle-9 F56) | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/knowledge.test.js (buildRetrievalQuery), apps/per-sistant/tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6), apps/per-sistant/tests/scan-oct-batch16.test.js + tests/contract/batch16-persistent.contract.test.js (notes), apps/per-sistant/tests/broad-scan-c8-batch6.test.js (F49), apps/per-sistant/tests/cycle9-b8.test.js + tests/contract/c9-batch8 (F50 / F56)
@@ -9085,7 +9209,7 @@ INV-91 | The Job Radar main bucket (and so top_pick, the job_radar notification 
 INV-92 | The Per-sistant service worker never reports a queued write as success (offline → 503 ok:false), never queues send / refresh / AI / RAG / auth writes, never caches /api/rag/secret* or auth responses, and removes a queued entry only on a definitive answer (2xx or a non-retryable 4xx) or after 24h | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PB-17 block — the emitted sw.js run in a vm)
 INV-93 | Every stored automation is validated by helpers.validateAutomationRule (runnable trigger/action pair for the trigger's entity, required value, priority/horizon enums) on POST and merged PATCH, runAutomations skips an invalid stored rule and isolates each rule in its own try/catch, and a set_* action only ever touches the todo that fired it | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PD-6 block)
 INV-94 | A change to route SQL or router mounting keeps the real-Postgres contract suite green: tests/contract/ runs both apps' own migrations and mounts every router in the order parsed from teller/server.js and apps/per-sistant/server.js with the real deps object — if either server.js's mount spelling changes, the parser regexes (pinned by scan-sept-batch15) must be updated, never bypassed | Subsystem: Test Coverage Quality (all route subsystems) | Verify: CI migrations job (npm run test:contract) + tests/scan-sept-batch15.test.js (contract wiring)
-INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS vars) carry a KNOWN_GAPS list that only shrinks: a new offender fails, and so does a listed entry that no longer occurs; a test never re-implements production logic inline (TQ-1) | Subsystem: Test Coverage Quality | Verify: tests/scan-sept-batch15.test.js
+INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS vars) carry a KNOWN_GAPS list that only shrinks: a new offender fails, and so does a listed entry that no longer occurs; a test never re-implements production logic inline (TQ-1) | Subsystem: Test Coverage Quality | Verify: tests/scan-sept-batch15.test.js + tests/api.test.js (rewritten against the real app — cycle-9 F61)
 INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
 INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public. Likewise Per-sistant's outbound webhooks and Slack never carry a linked task's title, description or snapshot (Perfin's amounts, payees, merchants) — only a kind label, dates and state (helpers.linkedTaskWebhookData, cycle-8 F19). Nor does a workflow print a tool's own error text that can name a host: db-backup.yml sends pg_dump's stderr to a file it removes and prints a fixed reason instead (cycle-9 F12) | Subsystem: Platform, Shell & Auth / Per-sistant Backend | Verify: tests/scan-oct-batch1.test.js (F2 block) + apps/per-sistant/tests/broad-scan-c8-batch5.test.js + tests/cycle9-b1.test.js
 INV-105 | Every scheduled job in teller/startup.js that ran its body records its outcome via jobHealth.result({ok, error}) (job_runs.last_status / last_error); GET /api/data-health flushes in-memory ticks + outcomes before reading and raises a failed job as an issue; every ticked job is in JOB_INTERVALS_MS; a skip for "away" or "not due" records nothing, while a job that finds its feature switched off records a clean outcome (jobOff, cycle-9 F5 — a failed outcome never outlives the job running its body) | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch3.test.js (F8 block) + tests/cycle9-b2.test.js
@@ -9120,7 +9244,7 @@ INV-131 | A Plaid item's re-authentication notification is sent once per transit
 INV-132 | Every Plaid investment write path (the holdings sync and both exchange routes) stores investment_accounts.mask, keeping a known mask (COALESCE), so the investments-only duplicate guard can match | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch19.test.js + tests/contract/plaid-update.contract.test.js
 INV-133 | Recording an error never throws into the caller and never recurses: the shell's console.error wrapper always prints first, capture() is re-entrancy guarded, the error log reports its own failures through the ORIGINAL console.error under an ignored "[error-log]" prefix, and a failed write re-buffers instead of dropping; new / reopened errors notify at most 5 times in 24 hours | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-134 | GET /health/deep is public but exposes only yes/no database fields (never an error message), is bounded per probe and cached 60s single-flight; the heartbeat never touches the database and is never activity-gated | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
-INV-135 | A Per-sistant email is sent with EVERY one of its stored attachments or not at all: both senders load them through routes/attachments.loadEmailAttachments; a missing file or a total over 20MB makes Send Now a 400 before its claim (the email stays unsent) and makes the scheduler mark the claimed row failed with the reason; Retry reuses the Send Now claim, so it can't double-send | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/roadmap-t1-batchc.test.js + tests/contract/persistent-batchc.contract.test.js
+INV-135 | A Per-sistant email is sent with EVERY one of its stored attachments or not at all: both senders load them through routes/attachments.loadEmailAttachments; a missing file or a total over 20MB makes Send Now a 400 before its claim (the email stays unsent) and makes the scheduler mark the claimed row failed with the reason; Retry reuses the Send Now claim, so it can't double-send | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/roadmap-t1-batchc.test.js + tests/contract/persistent-batchc.contract.test.js + apps/per-sistant/tests/cycle9-b10.test.js (Send Now through a real SMTP conversation)
 INV-137 | A bank webhook is verified before anything is recorded (Plaid's ES256 JWT incl. the body hash; Teller's HMAC with digest compares), recorded once per (provider, dedupe key) — a re-delivery is answered 200 and not processed again — answered 200 before its handler runs, and its body is never stored or logged; a provider without credentials / a secret answers 503 and writes nothing; only the two exact POST paths pass the shell gate; the Plaid dedupe key covers the signed bytes (header.payload) only, so a delivery replayed with its signature re-encoded is a duplicate (cycle-9 F19) | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/roadmap-t2-webhooks-w1.test.js + tests/roadmap-t2-webhooks-w2.test.js + tests/contract/webhooks-w1 / webhooks-w2 + tests/broad-scan-c8-batch4.test.js + tests/cycle9-b7.test.js + tests/contract/c9-batch7
 INV-141 | Bank webhooks are visible without ever exposing a payload: GET /api/data-health reports per provider the last event + status and the last 24 hours' count and failures from webhook_events (no body is read), raises a failed event in 24h as an issue, and lists each connection's own last_synced_at; the operator checks warn while a GOOD Plaid connection isn't registered under the current PUBLIC_URL (webhook_url prefix + /api/webhooks/plaid) and only inform about webhooks off or quiet; every part is fail-soft | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/roadmap-t2-webhooks-w6.test.js + tests/contract/webhooks-w6.contract.test.js
 INV-140 | A Teller webhook is a trigger, not data: transactions.processed syncs only the enrollment(s) it names (by enrollment id or its transactions' account ids — never a SUSPENDED one) through the same syncOneTellerEnrollment the scheduled sync loops, coalesced per enrollment, recording nothing global (the enrollment's last_synced_at only), then ONE runPostSyncSteps; enrollment.disconnected changes only a GOOD enrollment and notifies once per transition; that per-enrollment sync also refreshes the enrollment's own balances (refreshTellerEnrollmentBalances, cycle-9 F28 — still nothing global); a sync that comes back partial (errors[]) fails the event (cycle-9 F18) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w5.test.js + tests/contract/webhooks-w5.contract.test.js
@@ -9145,6 +9269,7 @@ INV-154 | Freshness has one definition — services/freshness.js (readConnection
 INV-157 | A Settings save's result reaches every updateSetting wrapper (the keep-alive wrapper passes it on), and a save the server refused or that never reached it puts the control back: a switch through saveToggle (and the insight-module / dashboard-widget switches), a select / box that saves on change through saveField — to the value loadSettings marked (data-saved) or the last saved one (cycle-8 F38 / E5b, seams audit #4 C2) | Subsystem: Web UI | Verify: tests/broad-scan-c8-batch7.test.js + tests/seams-audit-4-s5.test.js + e2e/behaviour.spec.js
 INV-158 | The shell login keypad posts the PIN as JSON to POST /login and navigates only to the redirect the server returns (safeReturnTo'd — a same-origin path); a plain form post (no JS) still redirects / renders as before; under prefers-reduced-motion the dial and the Per-sistant entry skip their animation | Subsystem: Platform, Shell & Auth / Web UI | Verify: tests/opening-screen.test.js + e2e/smoke.spec.js
 INV-159 | Sync Health's jobs[] (GET /api/data-health) lists exactly the watched jobs — job_runs rows whose name is in JOB_INTERVALS_MS — so the runner's claim-only rows and a retired job name are never shown or flagged stale | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch3.test.js + tests/ops-and-alerts.test.js
+INV-160 | Every script that builds its own Postgres pool (sheets-sync, reset-fresh, import-csv-cli, both detectors' CLI mode) takes its TLS setting from scripts/pg-ssl.js pgSsl() — a verified certificate unless PGSSLMODE is exactly `disable`, the apps' own rule — read when the pool is built, never hard-coded; sheets-sync loads .env before it reads its config | Subsystem: Platform, Shell & Auth / Sheets & External Export | Verify: tests/cycle9-b10.test.js (each script run as a child process)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats; since cycle-9 Batch 8 a SKIPPED instance has the same shape with skipped=true (F55), an edit that keeps the due date keeps the anchor (F52), a snoozed instance's next one steps from snoozed_from — the date before the snooze (scheduleBase, F55) — and a recurring task with no rule is never rolled | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks) + apps/per-sistant/tests/cycle9-b8.test.js + tests/contract/c9-batch8
 
 ### Policy Configuration
