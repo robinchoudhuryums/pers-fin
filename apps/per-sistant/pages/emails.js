@@ -114,7 +114,8 @@ async function emailBulkAction(action) {
 
 async function load() {
   var q = curFilter ? '?status='+curFilter : '';
-  var emails = await fetch('/api/emails'+q).then(r=>r.json());
+  var emails = await fetchList('/api/emails'+q);
+  if (!emails) { document.getElementById('email-list').innerHTML = loadFailedHtml('your emails'); return; } // F79
   if (!emails.length) { document.getElementById('email-list').innerHTML = '<div class="empty-msg">No emails found</div>'; return; }
   document.getElementById('email-list').innerHTML = '<table><thead><tr><th style="width:30px;"></th><th>Status</th><th>To</th><th>Subject</th><th>Scheduled</th><th>Actions</th></tr></thead><tbody>' +
     emails.map(e => '<tr><td><input type="checkbox" class="email-bulk-check" data-id="'+e.id+'" style="display:'+(emailSelectMode?'inline-block':'none')+';accent-color:var(--accent);cursor:pointer;"></td><td><span class="badge '+e.status+'">'+e.status+'</span></td><td>'+esc(e.recipient_name||e.recipient_email)+'</td><td>'+esc(e.subject)+(e.status==='failed'?'<div class="email-error" style="color:var(--warn);font-size:12px;margin-top:4px;">Not sent: '+esc(e.error_message||'unknown error')+'</div>':'')+'</td><td>'+(e.scheduled_at?new Date(e.scheduled_at).toLocaleString():'—')+'</td><td><div class="todo-actions">'+(e.status==='failed'?'<button data-action="retry-email" data-id="'+e.id+'" data-e2e-skip aria-label="'+escAttr('Retry sending: '+(e.subject||''))+'">Retry</button>':'')+'<button data-action="edit-email" data-id="'+e.id+'">&#9998;</button><button class="delete" data-action="delete-email" data-id="'+e.id+'">&#10005;</button></div></td></tr>'

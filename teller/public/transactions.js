@@ -293,7 +293,7 @@
         document.getElementById('split-totals').innerHTML =
           'Sum: ' + fmt(sum) + ' / ' + fmt(parentAmount) +
           ' &mdash; <span class="' + (ok ? 'ok' : 'bad') + '">' +
-          (ok ? '✓ matches' : (diff > 0 ? '$' + diff.toFixed(2) + ' over' : '$' + Math.abs(diff).toFixed(2) + ' under')) +
+          (ok ? '✓ matches' : (diff > 0 ? fmt(diff) + ' over' : fmt(Math.abs(diff)) + ' under')) +
           '</span>';
       }
 

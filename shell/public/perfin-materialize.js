@@ -83,6 +83,17 @@
     });
   }
 
+  // Back / forward cache (cycle-9 F76): a page restored after the animation
+  // navigated away came back with the full-screen overlay still on top,
+  // blocking it. The Per-sistant entry (transition.js) already does this.
+  function clearOverlay() {
+    var overlay = document.getElementById('perfin-materialize-overlay');
+    if (overlay) overlay.classList.remove('active');
+  }
+  window.addEventListener('pageshow', function(ev) {
+    if (ev && ev.persisted) clearOverlay();
+  });
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

@@ -18,6 +18,32 @@ Updated: 2026-11-19
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 Batch 9 (DONE, 2026-11-19) — Perfin UI (+ the Per-sistant items of F79):** block
+  `.cycle/blocks/9-batch9-broad-implement.md`. F73 (Settle Up: `settleLeg` / `settleLoadState` — a failed leg means
+  "Net not available", no Mark settled, a Try again; the Accounts net is "—" when investments couldn't be loaded), F74
+  (`saveAccountField` + `reloadAccountsSoon`: the grid isn't re-rendered while a grid input has focus or a save is in
+  flight), F75 (`[hidden] { display: none !important; }` in perfin-shared.css), F76 (pageshow handler in
+  perfin-materialize.js), F77 (loadForecast / Resolve / linkAccount check their answers), F78 (`asking` and `qabSaving`
+  guards), F79 (light-theme td separator, range-select label, fmt() in Budgets / Accounts / the split total,
+  `pushRegistration` with a deadline; Per-sistant `fetchList` + `loadFailedHtml` on the four list pages,
+  `associateLabels`, the modal Tab trap).
+  - **Tests:** `npm test` 3648 / 3648 (42 new — tests/cycle9-b9.test.js 29, apps/per-sistant/tests/cycle9-b9.test.js 13;
+    191 files; Perfin 2815, Per-sistant 833); contract 402 / 402 (no server change); Playwright 94 / 94 (1 new — the
+    hidden-attribute check); five shifted clocks 62 / 62 each; mutation check 29 of 29 Perfin and 12 of 13 Per-sistant
+    fail against the pre-fix source. One pin updated (design-d2's net-balance class).
+  - **Decisions:** F75 — one global rule rather than per-element `[hidden]` rules (the e2e sweeps of every page pass
+    with it). F74 — defer the re-render while a grid input has focus rather than rebuild-and-restore typed values. F73 —
+    no net at all when a money leg is missing; a hidden widget stays hidden on a failed first load. F79 — the "about 80
+    unassociated labels" are fixed by one runtime pass (`associateLabels`), not by editing each form; whole-dollar formats
+    (Calendar chips, pyramid) left as they are.
+  - **Net score:** 2 − 1 = +1 (F75's sign select and F79's labels / money / separators were present on every load; new:
+    F74's deferred re-render can show earlier figures while a grid field has focus).
+  - **Open follow-ons:** F76 not exercised (needs Safari bfcache); a hidden Settle Up widget stays hidden on a failed
+    first load; F74 covers the dashboard grid only; labels followed by a wrapper element, and Per-sistant's Health /
+    Jobs / Knowledge / dashboard loads, are not covered by F79.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs not yet synced for
+    Batch 9 — run `/sync-docs` (the block lists what). Then `/broad-implement Batch 10` (test honesty, docs, hygiene:
+    F61 F60 F6 F8 F63 — read the list from the plan below).
 - **Cycle 9 Batch 8 (DONE, 2026-11-19) — Per-sistant behaviour and UI (+ two Perfin items):** block
   `.cycle/blocks/9-batch8-broad-implement.md`. F52 (PATCH /api/todos/:id clears the anchor only when the due date
   changed), F53 (`profileTextChanged`: fit scores cleared only when the resume / preferences text changed), F50
@@ -334,7 +360,7 @@ implement and reflect sessions only set Phase.)
       `ev.date`; automation / webhook toggles send the current state; "Use template" opens an empty form; bulk checkbox opens
       the editor; single-key shortcuts ignore Ctrl / Cmd; Theme select does nothing; vault error hidden; quick parsers), F54,
       F55, F56, F58, F26, F27.
-    - **Batch 9 — Perfin UI:** F73 (Settle Up treats a failed leg as $0), F74 (card limit / APR typing wiped by the
+    - **Batch 9 (DONE) — Perfin UI:** F73 (Settle Up treats a failed leg as $0), F74 (card limit / APR typing wiped by the
       re-render), F76 (Perfin entry overlay has no pageshow handler), F75 (`hidden` overridden by the element's own display
       rule ×2), F77, F78, F79.
     - **Batch 10 — test honesty, docs, hygiene:** F61 (tests/api.test.js 29 of 33 replica tests; Sheets pins weak), F60 (doc

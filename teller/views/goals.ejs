@@ -246,8 +246,14 @@
       let options;
       try {
         const r = await apiFetch('/api/goals/funding-options');
+        // Cycle-9 F77: a failed request's { error } body has no account lists —
+        // the .map below threw and "Link account" did nothing.
+        if (!(await writeOk(r, 'Could not load funding options'))) return;
         options = await r.json();
       } catch (e) { showMsg('Could not load funding options: ' + e.message, false); return; }
+      options = options || {};
+      options.linked_accounts = Array.isArray(options.linked_accounts) ? options.linked_accounts : [];
+      options.investment_accounts = Array.isArray(options.investment_accounts) ? options.investment_accounts : [];
       const all = [
         ...options.linked_accounts.map(a => ({ kind: 'account', id: a.id, label: a.name + ' (' + a.type + ') — ' + fmt(a.balance) })),
         ...options.investment_accounts.map(a => ({ kind: 'investment', id: a.id, label: a.name + ' (' + a.type + ') — ' + fmt(a.balance) })),

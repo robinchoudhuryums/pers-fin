@@ -252,6 +252,18 @@ async function writeOk(res, what){
 }
 // fetch that resolves to null instead of throwing, for use with writeOk.
 function tryFetch(url, opts){ return fetch(url, opts).catch(function(){ return null; }); }
+// Cycle-9 F79: a list page's load. Resolves to the array the API returned, or
+// to null when the request failed — no connection, a non-2xx answer, a body
+// that isn't a list. A 500's { error } body used to read as an empty list, so
+// the page said "No notes yet" over notes it simply couldn't fetch.
+async function fetchList(url){
+  var r = await tryFetch(url);
+  if (!r || !r.ok) return null;
+  try { var d = await r.json(); return Array.isArray(d) ? d : null; } catch (e) { return null; }
+}
+function loadFailedHtml(what){
+  return '<div class="empty-msg" role="alert">Could not load ' + esc(what) + ' — reload the page to try again.</div>';
+}
 // F111: run fn at most once at a time per key (a double-click on Send Now
 // used to create and send two emails). Returns undefined while one is running.
 var _pending = {};
@@ -330,6 +342,20 @@ document.addEventListener('keydown',function(e){
     if(open.length){var top=open[open.length-1];if(top.id==='tpl-modal'){top.remove();}else{top.classList.remove('active');}e.preventDefault();}
     return;
   }
+  // Cycle-9 F79: Tab stays inside the top-most open modal — it used to walk
+  // on into the page behind the dialog.
+  if(key==='Tab'){
+    var dlgs=document.querySelectorAll('.modal-overlay.active .modal');
+    if(!dlgs.length)return;
+    var box=dlgs[dlgs.length-1];
+    var items=Array.prototype.filter.call(box.querySelectorAll('a[href],button:not([disabled]),input:not([type=hidden]):not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'),function(el){return el.offsetParent!==null||el===document.activeElement;});
+    if(!items.length){e.preventDefault();return;}
+    var first=items[0],last=items[items.length-1],cur=document.activeElement;
+    if(!box.contains(cur)){e.preventDefault();first.focus();}
+    else if(e.shiftKey&&cur===first){e.preventDefault();last.focus();}
+    else if(!e.shiftKey&&cur===last){e.preventDefault();first.focus();}
+    return;
+  }
   if(key!=='Enter'&&key!==' '&&key!=='Spacebar')return;
   var t=e.target;
   if(!t||!t.getAttribute)return;
@@ -339,6 +365,31 @@ document.addEventListener('keydown',function(e){
     t.click();
   }
 });
+
+// Cycle-9 F79: the forms write a bare label followed by its control
+// (a label, then an input / select / textarea as the next element) — about 80
+// of them, none associated, so a screen reader announced "edit text" with no
+// name and a click on the label did nothing. Each such label is tied to the
+// control that follows it (an id is given when the control has none). A label
+// that already has a "for", or wraps its own control, is left alone.
+var _labelSeq=0;
+function associateLabels(root){
+  if(!root||!root.querySelectorAll)return 0;
+  var done=0;
+  Array.prototype.forEach.call(root.querySelectorAll('label'),function(label){
+    if(label.htmlFor||label.getAttribute('for'))return;
+    if(label.querySelector('input,select,textarea'))return;
+    var el=label.nextElementSibling;
+    if(!el)return;
+    var tag=el.tagName;
+    if(tag!=='INPUT'&&tag!=='SELECT'&&tag!=='TEXTAREA')return;
+    if(el.type==='hidden')return;
+    if(!el.id){_labelSeq++;el.id='lbl-ctl-'+_labelSeq;}
+    label.htmlFor=el.id;
+    done++;
+  });
+  return done;
+}
 
 // Modal dialogs (PUI-5): every .modal inside a .modal-overlay gets
 // role="dialog" + aria-modal and a label from its heading; opening one moves
@@ -358,6 +409,7 @@ document.addEventListener('keydown',function(e){
     return box;
   }
   function opened(overlay){
+    associateLabels(overlay);
     var box=prep(overlay);if(!box)return;
     lastFocus.set(overlay,document.activeElement);
     setTimeout(function(){
@@ -380,6 +432,7 @@ document.addEventListener('keydown',function(e){
     });
   }
   function start(){
+    associateLabels(document);
     scan();
     if(window.MutationObserver){
       new MutationObserver(function(muts){

@@ -1010,6 +1010,50 @@
       }
     })();
 
+    // F73: shown in the accounts grid when the investments request failed.
+    function accountsInvFailedHtml() {
+      return '<div class="empty-msg" role="alert" style="grid-column:1/-1;">Investment accounts couldn\'t be loaded, so the net balance isn\'t shown. Reload the page to try again.</div>';
+    }
+    // The Net Balance card: a number, or "—" when it isn't known (no balances
+    // yet, or — `incomplete` — part of what it sums couldn't be loaded).
+    function setNetBalance(value, incomplete) {
+      var el = document.getElementById('net-balance');
+      if (!el) return;
+      if (value === null || value === undefined) {
+        el.textContent = '—';
+        el.className = 'value';
+        el.title = incomplete ? 'Not shown: investment accounts couldn\'t be loaded' : '';
+        return;
+      }
+      el.title = '';
+      animateCurrency(el, value);
+      el.className = 'value' + (value < 0 ? ' amt-bad' : '');
+    }
+
+    // Cycle-9 F74: saving one field of an account card re-rendered the whole
+    // grid, wiping whatever was half-typed in the next field (type a card's
+    // limit, Tab to APR, start typing — gone). The reload now waits while a
+    // save is in flight or a grid input has focus, and runs once focus leaves.
+    var acctSaving = 0, acctReloadDeferred = false;
+    function accountsInputFocused() {
+      var a = document.activeElement;
+      return !!(a && a.tagName === 'INPUT' && a.closest && a.closest('#accounts-grid'));
+    }
+    function reloadAccountsSoon() {
+      if (acctSaving > 0 || accountsInputFocused()) { acctReloadDeferred = true; return false; }
+      acctReloadDeferred = false;
+      loadAccounts();
+      return true;
+    }
+    // One account-field save: `run` resolves true when it was stored.
+    async function saveAccountField(run) {
+      var ok = false;
+      acctSaving++;
+      try { ok = await run(); } finally { acctSaving--; }
+      if (ok || acctReloadDeferred) reloadAccountsSoon();
+      return ok;
+    }
+
     async function loadAccounts() {
       try {
         const [res, invRes] = await Promise.all([
@@ -1018,7 +1062,12 @@
         ]);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         let accounts = await res.json();
-        const investments = invRes.ok ? await invRes.json() : [];
+        // Cycle-9 F73: a failed investments request used to read as "no
+        // investments" — the net total silently dropped them (and the Plaid
+        // brokerage twin below wasn't deduped). The list still shows what
+        // loaded; the net isn't shown.
+        const invFailed = !invRes.ok;
+        const investments = invFailed ? [] : await invRes.json();
         // Dedupe the Plaid brokerage twin: an investment account linked via the
         // combined Plaid flow lands in BOTH linked_accounts (often $0 from
         // accountsGet) AND investment_accounts (correct balance from holdings
@@ -1031,7 +1080,9 @@
         animateInt(document.getElementById('acct-count'), accounts.length + investments.length);
 
         if (!accounts.length && !investments.length) {
-          grid.innerHTML = '<div class="empty-msg">No accounts linked. <a href="' + (window.BASE_PATH || '') + '/accounts">Link an account</a> to get started.</div>';
+          grid.innerHTML = invFailed ? accountsInvFailedHtml()
+            : '<div class="empty-msg">No accounts linked. <a href="' + (window.BASE_PATH || '') + '/accounts">Link an account</a> to get started.</div>';
+          if (invFailed) setNetBalance(null, true);
           return;
         }
 
@@ -1168,16 +1219,9 @@
           html += otherAccts.map(renderAcctCard).join('');
         }
 
+        if (invFailed) html += accountsInvFailedHtml();
         grid.innerHTML = html;
-
-        if (hasBalances) {
-          animateCurrency(document.getElementById('net-balance'), netBalance);
-        } else {
-          document.getElementById('net-balance').textContent = '\u2014';
-        }
-        if (hasBalances) {
-          document.getElementById('net-balance').className = 'value' + (netBalance < 0 ? ' amt-bad' : '');
-        }
+        setNetBalance(hasBalances && !invFailed ? netBalance : null, invFailed);
       } catch (e) {
         document.getElementById('accounts-grid').innerHTML = '<div class="empty-msg">Could not load accounts: ' + esc(e.message) + '</div>';
       }
@@ -1379,7 +1423,7 @@
           if (errs.length) {
             showMsg('Plaid issues: ' + errs.map(function(e){ return (e.institution || '?') + ': ' + e.error; }).join('; '), false);
           }
-          loadAccounts();
+          reloadAccountsSoon();
         } else {
           showMsg('Balance sync error: ' + (data.error || 'HTTP ' + res.status), false);
         }
@@ -1414,7 +1458,7 @@
         var res = await apiFetch('/api/accounts/' + id + '/balance', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ current_balance: num, available_balance: num }) });
         if (!res.ok) { var e1 = await res.json().catch(function() { return {}; }); showMsg('Could not update balance: ' + (e1.error || 'HTTP ' + res.status), false); return; }
         showMsg('Balance updated', true);
-        loadAccounts();
+        reloadAccountsSoon();
       } catch (e) { showMsg('Could not update balance: ' + e.message, false); }
     }
 
@@ -1429,7 +1473,7 @@
         var res = await apiFetch('/api/accounts/' + id + '/shared', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ is_shared: num < 100, spending_split_pct: num }) });
         if (!res.ok) { var e1 = await res.json().catch(function() { return {}; }); showMsg('Could not update the split: ' + (e1.error || 'HTTP ' + res.status), false); return; }
         showMsg(num < 100 ? 'Shared at ' + num + '% yours' : 'Marked as fully yours', true);
-        loadAccounts();
+        reloadAccountsSoon();
         refreshSpending();
       } catch (e) { showMsg('Could not update the split: ' + e.message, false); }
     }
@@ -1457,46 +1501,61 @@
       return {};
     }
 
-    async function setMonthlyPayment(accountId, value) {
-      try {
-        const payment = value === '' ? null : parseFloat(value);
-        const res = await apiFetch('/api/accounts/' + accountId, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ monthly_payment: payment })
-        });
-        if (res.ok) { showMsg('Payment saved.', true); loadAccounts(); }
-        else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save payment', false); }
-      } catch (e) { showMsg(e.message, false); }
+    // The three account-card fields save through saveAccountField (F74), which
+    // reloads the grid only once no grid input is being typed in.
+    function setMonthlyPayment(accountId, value) {
+      return saveAccountField(async function() {
+        try {
+          const payment = value === '' ? null : parseFloat(value);
+          const res = await apiFetch('/api/accounts/' + accountId, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ monthly_payment: payment })
+          });
+          if (res.ok) { showMsg('Payment saved.', true); return true; }
+          const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save payment', false);
+        } catch (e) { showMsg(e.message, false); }
+        return false;
+      });
     }
 
-    async function setApr(accountId, value) {
-      try {
-        const apr = value === '' ? null : parseFloat(value);
-        const res = await apiFetch('/api/accounts/' + accountId, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ apr: apr })
-        });
-        if (res.ok) { showMsg('APR saved.', true); loadAccounts(); }
-        else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save APR', false); }
-      } catch (e) { showMsg(e.message, false); }
+    function setApr(accountId, value) {
+      return saveAccountField(async function() {
+        try {
+          const apr = value === '' ? null : parseFloat(value);
+          const res = await apiFetch('/api/accounts/' + accountId, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apr: apr })
+          });
+          if (res.ok) { showMsg('APR saved.', true); return true; }
+          const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save APR', false);
+        } catch (e) { showMsg(e.message, false); }
+        return false;
+      });
     }
 
-    async function setCreditLimit(accountId, value) {
-      try {
-        const lim = value === '' ? null : parseFloat(value);
-        const res = await apiFetch('/api/accounts/' + accountId + '/balance', {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ credit_limit: lim })
-        });
-        if (res.ok) { showMsg('Credit limit saved.', true); loadAccounts(); }
-        else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save limit', false); }
-      } catch (e) { showMsg(e.message, false); }
+    function setCreditLimit(accountId, value) {
+      return saveAccountField(async function() {
+        try {
+          const lim = value === '' ? null : parseFloat(value);
+          const res = await apiFetch('/api/accounts/' + accountId + '/balance', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ credit_limit: lim })
+          });
+          if (res.ok) { showMsg('Credit limit saved.', true); return true; }
+          const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save limit', false);
+        } catch (e) { showMsg(e.message, false); }
+        return false;
+      });
     }
 
     async function loadForecast() {
       try {
-        var res = await apiFetch('/api/forecast?days=30'); var data = await res.json();
-        if (data.charge_count === 0) return;
+        // Cycle-9 F77: a failed request's { error } body has no charge_count —
+        // it rendered "undefined charges totaling $0.00".
+        var res = await apiFetch('/api/forecast?days=30');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data || !data.charge_count || !Array.isArray(data.charges)) return;
         document.getElementById('forecast-section').style.display = 'block';
         document.getElementById('forecast-summary').innerHTML =
           '<strong>' + data.charge_count + ' charges</strong> totaling <strong>' + fmt(data.total_expected) +
@@ -1532,6 +1591,14 @@
     onDelegate('accounts-grid', 'change', 'input[data-payment-account]', function() {
       setMonthlyPayment(parseInt(this.dataset.paymentAccount), this.value);
     });
+    // F74: a reload that waited for typing runs once focus has left the grid's
+    // inputs (after the change handler above has started its save).
+    (function() {
+      var grid = document.getElementById('accounts-grid');
+      if (grid) grid.addEventListener('focusout', function() {
+        setTimeout(function() { if (acctReloadDeferred) reloadAccountsSoon(); }, 0);
+      });
+    })();
     onDelegate('accounts-grid', 'click', 'button[data-shared-toggle]', function() {
       toggleShared(parseInt(this.dataset.sharedToggle));
     });
@@ -1823,6 +1890,7 @@
         el.style.color = ok ? 'var(--green)' : 'var(--red)';
       }
 
+      var qabSaving = false; // F78
       openBtn.addEventListener('click', openModal);
       cancelBtn.addEventListener('click', closeModal);
       // IF-1: dialog semantics, focus trap, Esc and focus restore.
@@ -1843,6 +1911,12 @@
         if (!name) { showStatus('Bill name is required.', false); return; }
         if (!isFinite(amount) || amount <= 0) { showStatus('Amount must be > 0.', false); return; }
         if (!isFinite(dueDay) || dueDay < 1 || dueDay > 31) { showStatus('Due day must be 1-31.', false); return; }
+        // Cycle-9 F78: one save at a time, and the button stays off after a
+        // success — it was re-enabled during the 600 ms before the reload, so
+        // a second tap added the bill twice.
+        if (qabSaving) return;
+        qabSaving = true;
+        var saved = false;
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving…';
         try {
@@ -1855,6 +1929,7 @@
             var err = await res.json().catch(function() { return {}; });
             throw new Error(err.error || ('HTTP ' + res.status));
           }
+          saved = true;
           showStatus('Saved. Refreshing…', true);
           // Fire-and-forget Sheets sync so the new manual_bills row lands
           // in the Utilities tab right away instead of waiting for the next
@@ -1868,8 +1943,11 @@
         } catch (e) {
           showStatus('Failed: ' + (e.message || e), false);
         } finally {
-          saveBtn.disabled = false;
-          saveBtn.textContent = 'Save bill';
+          if (!saved) {
+            qabSaving = false;
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save bill';
+          }
         }
       });
     })();
@@ -3788,6 +3866,39 @@
       }
       sel.addEventListener('change', function() { loadSettlement(); });
     }
+    // Cycle-9 F73 — one Settle Up request: { ok, data }. A failure (a non-2xx
+    // answer, no connection, a body that isn't JSON) is ok:false, never "empty".
+    function settleLeg(url) {
+      return apiFetch(url).then(function(r) {
+        if (!r.ok) return { ok: false, data: null };
+        return r.json().then(function(data) { return { ok: true, data: data }; });
+      }).catch(function() { return { ok: false, data: null }; });
+    }
+    // What failed, in words: the two money legs, and the settled / not-settled read.
+    function settleLoadState(results) {
+      var moneyFailed = [];
+      if (!results[0] || !results[0].ok) moneyFailed.push('the shared-card totals');
+      if (!results[1] || !results[1].ok) moneyFailed.push('the rent & utilities even-up');
+      var stateFailed = !results[2] || !results[2].ok;
+      return { moneyFailed: moneyFailed, stateFailed: stateFailed, incomplete: moneyFailed.length > 0 || stateFailed };
+    }
+    function settleFailedNote(load) {
+      var what = load.moneyFailed.length
+        ? 'Couldn\'t load ' + load.moneyFailed.join(' or ') + ', so there is no net to settle yet.'
+        : 'Couldn\'t check whether this month is already settled.';
+      return '<div role="alert" style="margin-top:10px;font-size:12px;color:var(--text-muted);">' + esc(what) +
+        ' <button id="settle-retry-btn" class="btn btn-sm" style="font-size:11px;margin-left:6px;">Try again</button></div>';
+    }
+    function settleFailedHtml(load, month) {
+      return '<div style="padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;">' +
+        '<div style="font-size:11px;color:var(--text-muted);">Net to settle up' + (month ? ' &middot; ' + monthLabel(month) : '') + '</div>' +
+        '<div style="font-size:26px;font-weight:600;color:var(--text-muted);margin-top:2px;">Net not available</div>' +
+        settleFailedNote(load) + '</div>';
+    }
+    function wireSettleRetry() {
+      var retry = document.getElementById('settle-retry-btn');
+      if (retry) retry.addEventListener('click', function() { this.disabled = true; loadSettlement(); });
+    }
     async function loadSettlement() {
       buildSettlementMonthOptions();
       var section = document.getElementById('settlement-section');
@@ -3800,16 +3911,30 @@
         // month, then combine into one net "settle up with [partner]" figure.
         var qs = month ? ('?month=' + month) : '';
         var hqs = month ? ('?month=' + month) : '';
+        // Cycle-9 F73: each request reports whether it FAILED. A failed leg
+        // used to read as "nothing owed on that side" — the net was computed
+        // from the other leg alone and "Mark settled" recorded it.
         var results = await Promise.all([
-          apiFetch('/api/shared-settlement' + qs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
-          apiFetch('/api/housing/split' + hqs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
-          apiFetch('/api/settlement' + qs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
+          settleLeg('/api/shared-settlement' + qs),
+          settleLeg('/api/housing/split' + hqs),
+          settleLeg('/api/settlement' + qs)
         ]);
-        var d = results[0] || { month: month, accounts: [] };
-        var housing = results[1] && results[1].enabled ? results[1] : null;
-        var settlement = results[2] || null;
+        var load = settleLoadState(results);
+        var d = results[0].data || { month: month, accounts: [] };
+        var housing = results[1].data && results[1].data.enabled ? results[1].data : null;
+        var settlement = results[2].data || null;
         var hasShared = d.accounts && d.accounts.length;
-        if (!hasShared && !housing) { section.style.display = 'none'; return; }
+        if (!hasShared && !housing) {
+          // Nothing to show from what loaded. With a failed leg we can't tell
+          // "nothing owed" from "couldn't ask": a widget already on screen says
+          // so; one that was never shown stays hidden.
+          if (!load.moneyFailed.length) { section.style.display = 'none'; return; }
+          if (section.style.display === 'none') return;
+          headline.innerHTML = settleFailedHtml(load, month);
+          body.innerHTML = '';
+          wireSettleRetry();
+          return;
+        }
         section.style.display = '';
         var partner = (d && d.partner_name) || (housing && housing.partner_name) || 'Partner';
 
@@ -3851,7 +3976,10 @@
         var isSettled = settlement && settlement.settled;
         // Settle/undo control: when settled, show a confirmation pill + Undo;
         // otherwise a "Mark settled" button that records the current net.
-        var settleRow = isSettled
+        // F73: no control at all while a request failed — the net is unknown
+        // (a money leg) or it's unknown whether the month is settled.
+        var settleRow = load.incomplete ? settleFailedNote(load)
+          : isSettled
           ? ('<div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;">' +
                '<span style="font-size:12px;color:var(--teal);">&#10003; Settled' + (settlement.settled_at ? ' on ' + new Date(settlement.settled_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '') + '</span>' +
                '<button id="settle-undo-btn" class="btn btn-sm" data-month="' + esc(theMonth) + '" style="font-size:11px;">Undo</button>' +
@@ -3860,6 +3988,8 @@
                '<button id="settle-mark-btn" class="btn btn-sm primary" data-month="' + esc(theMonth) + '" data-net="' + net + '" style="font-size:12px;"' +
                  (awaiting.length ? ' disabled title="Enter the awaiting utility bill(s) first"' : '') + '>Mark settled</button>' +
              '</div>');
+        // F73: with a money leg missing there is no net to show.
+        if (load.moneyFailed.length) { netLabel = 'Net not available'; netColor = 'var(--text-muted)'; parts = []; }
         headline.innerHTML =
           '<div style="padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;' + (isSettled ? 'opacity:0.75;' : '') + '">' +
             '<div style="font-size:11px;color:var(--text-muted);">Net to settle up &middot; ' + monthLabel(theMonth) + '</div>' +
@@ -3871,6 +4001,7 @@
           '</div>';
 
         // Wire the settle/undo buttons (headline is re-rendered each load).
+        wireSettleRetry();
         var markBtn = document.getElementById('settle-mark-btn');
         if (markBtn) markBtn.addEventListener('click', async function() {
           this.disabled = true;
@@ -3987,9 +4118,14 @@
       var out = document.getElementById('ask-answer');
       var meta = document.getElementById('ask-meta');
       if (!input || !btn) return;
+      // Cycle-9 F78: one question at a time. The button was disabled while a
+      // request ran, but Enter in the box called ask() again — a second paid
+      // call for the same question.
+      var asking = false;
       async function ask() {
         var q = input.value.trim();
-        if (!q) return;
+        if (!q || asking) return;
+        asking = true;
         btn.disabled = true;
         out.style.display = 'block';
         out.textContent = 'Thinking…';
@@ -4007,6 +4143,7 @@
         } catch (e) {
           out.textContent = 'Request failed: ' + e.message;
         } finally {
+          asking = false;
           btn.disabled = false;
         }
       }

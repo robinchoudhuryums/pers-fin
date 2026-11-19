@@ -169,6 +169,23 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("the hidden attribute hides: a failed summary leaves one line, the CSV sign select starts hidden (cycle-9 F75)", async ({ page }) => {
+    // The element's own display rule used to beat [hidden]: the skeleton cards
+    // kept pulsing under the error line, and the sign select showed for every file.
+    const display = (sel) => page.locator(sel).evaluate((el) => getComputedStyle(el).display);
+    await page.route("**/perfin/api/dashboard/summary", (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "An internal error occurred." }) }));
+    await page.goto("/perfin/dashboard");
+    await expect(page.locator("#dash-summary-error")).toBeVisible();
+    await expect(page.locator("#dash-summary-error")).toContainText("The summary couldn't be loaded");
+    expect(await display("#dash-summary-cards")).toBe("none");
+    expect(await display("#dash-attention")).toBe("none");
+    expect(await display("#dash-csv-sign")).toBe("none");
+    await page.unroute("**/perfin/api/dashboard/summary");
+    await page.goto("/perfin/accounts");
+    expect(await display("#csv-sign-field")).toBe("none");
+  });
+
   test("the Cash Flow section lists what the forecast holds and saves a setting (cycle-8 E1b)", async ({ page }) => {
     const problems = watch(page);
     // The Subscriptions page's click sweep presses Dismiss on the seeded
