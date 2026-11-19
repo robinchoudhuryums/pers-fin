@@ -10,7 +10,7 @@ to the "none in progress" state.
 ## Current Cycle
 
 Cycle: 9
-Phase: implement
+Phase: reflect
 Scope: broad (Nov 2026 broad scan — all non-frozen subsystems, weighted to the work since the cycle-8 scan: roadmap T4.1 A1–A10, cycle-8 expansion E1–E5, seams audit #4 S4-1..S4-5, the opening screen)
 Updated: 2026-11-19
 
@@ -18,6 +18,17 @@ Updated: 2026-11-19
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 REFLECT (2026-11-19):** block `.cycle/blocks/9-a-reflect.md`, metrics row appended. Net −2 = 17 production
+  fixes (1 High — F59, CI only; 3 Medium — F20 F28 F39; 13 Low) − 19 new failure modes (1 Medium — F8's nodemailer 10
+  unverified against the real SMTP provider; 18 Low); 0 capabilities; 62 defensive. Corrected the summaries' 11 fixes /
+  20 failure modes: the always-broken Per-sistant controls F66–F70 and the manual-account delete F14 count as fixes;
+  F28's double-counted carried paycheck added; two Batch 5 failure modes removed (closed by the follow-ons / equal to
+  pre-cycle behaviour). INV-161–165 are candidates (backup verify, calendar-proof tests, `[hidden]`, a failed read is
+  never empty data, account removal) — add them to the library at the next /sync-docs. No estimates row: the scan's
+  batch plan carried no sizes. Seams counter 0 → 1.
+  - **Where I left off:** cycle 9 is closed. Open: the Deferred list (F7 F25 F29 F51 F57 F62 F64), the expansion plan
+    (E1 = G1 + G2, E2 = ST1 + ST2, E3 = ST4 + ST5 + G3) and the operator items (backup secrets + a restore drill, Node
+    20 on Render, one test email, the Knowledge reindex). The next /broad-scan, /targeted-audit or /audit opens cycle 10.
 - **Cycle 9 Batch 10 (DONE, 2026-11-19) — test honesty, docs, hygiene:** block
   `.cycle/blocks/9-batch10-broad-implement.md`. F61 (`tests/api.test.js` rewritten against the real standalone app over a
   recording pool — 39 tests; `tests/contract/c9-batch10` — the Sheets Transactions / Tax / Income tabs on real rows, a
@@ -2756,7 +2767,7 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 0 (Seams & Invariants audit #4, 2026-11-02 — record below; audit #3 2026-10-22 and #2 June 2026 below it.)
+- **Subsystem cycles since last Seams audit:** 1 (cycle 9's reflect, 2026-11-19; Seams & Invariants audit #4, 2026-11-02 — record below; audit #3 2026-10-22 and #2 June 2026 below it.)
 
 ### Seams & Invariants audit #4 (2026-11-02 — counter reset to 0)
 Four parallel read-only reviews of cycle 8's seams (cross-app, scheduler/ops/migrations, shared
