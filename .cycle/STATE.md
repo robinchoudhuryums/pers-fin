@@ -55,9 +55,13 @@ implement and reflect sessions only set Phase.)
     select doesn't follow the sidebar toggle until reload.
   - **Operator:** one full Knowledge reindex after deploy (parse version 4); delete unwanted past-due scheduled emails
     before setting SMTP_HOST.
-  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs not yet synced for
-    Batch 8 — run `/sync-docs` (the block lists what). Then `/broad-implement Batch 9` (Perfin UI: F73 F74 F76 F75 F77
-    F78 F79 — read the list from the plan below).
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs synced for Batch 8
+    (/sync-docs, 2026-11-19): CLAUDE.md (tree entries, API list, operator state item 3 — parse version 4, test list +
+    counts 3606 / 189 / contract 402, Known Open Issues — Batch 8 done with its follow-ons, INV-27 / 74 / 112 / 124),
+    apps/per-sistant/CLAUDE.md (recurring tasks, theme mechanism, Job Radar profile, frontmatter rule, finance gate,
+    notification check, links, shortcuts, db/032, the test file, count 820), README counts. No new source paths; no
+    new operator state beyond the reindex. Next: `/broad-implement Batch 9` (Perfin UI: F73 F74 F76 F75 F77 F78 F79 —
+    read the list from the plan below).
 - **Cycle 9 Batch 7 (DONE, 2026-11-18) — bank-sync recovery:** block `.cycle/blocks/9-batch7-broad-implement.md`.
   F13 (enrollments.js `retireEmptyEnrollments`: a Teller enrollment with no accounts, while another at the same
   institution has some, is deleted — inside POST /api/enroll's transaction, never the one just created, and fail-soft at
