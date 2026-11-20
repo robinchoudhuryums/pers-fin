@@ -1,3 +1,7 @@
+---
+description: "Post-cycle honest assessment"
+---
+
 Read CLAUDE.md before starting. Do not make any changes to any files
 during this session (other than the optional metrics / estimates / blocks
 writes and the STATE counter and phase update below).
@@ -34,10 +38,13 @@ Honest impact summary:
 - Was effort spent on dead code / zero-caller paths / future-proofing?
 
 Invariant growth: list rules this cycle establishes that the next
-Verification Pass should probe. Assign each a NEW invariant ID by reading
-the current maximum INV-N in the library and incrementing (INV-(max+1),
-INV-(max+2), …) — do not invent or reuse a number, so parallel sessions
-don't collide:
+Verification Pass should probe. Assign each a NEW invariant ID: take the
+highest INV-N in the library OR in any earlier "Invariant candidates" line
+under .cycle/blocks/ (a candidate keeps its number until it is promoted or
+dropped) and increment from there (INV-(max+1), INV-(max+2), …) — do not
+invent or reuse a number, so parallel sessions and unpromoted candidates
+don't collide. These are candidates: this session does not edit the
+library, and /sync-docs proposes their promotion:
 [INV-N] | [rule] | [subsystem/seam] | [Verify: test/assertion].
 
 End with: the single most structurally significant change; the finding

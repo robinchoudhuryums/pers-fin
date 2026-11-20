@@ -1,3 +1,8 @@
+---
+description: "Implement selected findings from a broad scan"
+argument-hint: "<finding IDs, a batch name, or G/ST expansion IDs>"
+---
+
 If $ARGUMENTS is empty or missing, respond with exactly this and stop:
 
 Usage: /broad-implement <finding IDs, G/ST expansion IDs, or description of fixes to implement>
@@ -123,12 +128,21 @@ exactly as the audit's CYCLE OPEN step set it — implement sessions never
 increment it, so every batch from one audit names its block with the
 same number. If .cycle/ does not exist, skip this step — the summary
 block above is the record, as usual.
+If STATE.md's sections still describe an EARLIER cycle (its Scope line
+says so), this is the new cycle's first checkpoint: move the old "In
+progress" and "Completed this cycle" entries to .cycle/HISTORY.md under a
+heading naming that cycle (create the file if needed), keep any pending
+item, follow-on or decision that is still live, and drop the note from
+the Scope line.
 
 ALSO write the summary block VERBATIM to
 .cycle/blocks/<cycle>-<version-or-scope>-broad-implement.md (create the
 directory if needed). §4v and §6a consume these blocks in a FRESH session
 that has none of this context, so a block that exists only in chat cannot
 reach them — STATE.md carries prose ABOUT the work, not the block itself.
+Never overwrite a block: if that name is taken (a second batch under the
+same version or scope), add the batch number before the command name —
+<cycle>-<version-or-scope>-2-broad-implement.md.
 
 After the summary, suggest running /test-sync if any test failures remain,
 and /sync-docs if any documentation updates are needed.

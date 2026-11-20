@@ -1,3 +1,7 @@
+---
+description: "Continue an in-progress implementation thread from .cycle/STATE.md"
+---
+
 You are RESUMING an in-progress implementation thread — you are NOT
 starting a new audit.
 
@@ -5,6 +9,9 @@ Read .cycle/STATE.md. If it does not exist or shows no in-progress /
 pending work, STOP and respond exactly:
 "Nothing to resume. Start a fresh audit with /broad-scan or
 /targeted-audit <subsystem>."
+If Phase is "audit", a new cycle's audit has opened and nothing has been
+implemented in it yet: any pending items listed still belong to the
+PREVIOUS cycle. Say so, and ask which to continue before doing anything.
 
 Also read this substrate (safe to carry forward): CLAUDE.md (Cycle
 Workflow Config, Common Gotchas, systems map if present) and the

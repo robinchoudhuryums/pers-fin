@@ -1,3 +1,8 @@
+---
+description: "Apply the cycle's audit rubrics to a single PR (health per-change); runs by hand or off a PR webhook"
+argument-hint: "<PR number, PR URL, or a pasted diff>"
+---
+
 If $ARGUMENTS is empty or missing AND no PR diff is available in this
 session (no <github-webhook-activity> PR event and no pasted diff),
 respond with exactly this and stop:

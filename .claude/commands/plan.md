@@ -1,3 +1,8 @@
+---
+description: "Convert audit findings into an implementation plan"
+argument-hint: "[paste the SESSION HANDOFF BLOCK first if it is not in this session]"
+---
+
 If $ARGUMENTS is empty AND no SESSION HANDOFF BLOCK exists earlier in
 this session, respond with exactly this and stop:
 

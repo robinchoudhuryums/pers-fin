@@ -14,7 +14,7 @@ Phase: reflect
 Scope: broad (Nov 2026 broad scan — all non-frozen subsystems, weighted to the work since the cycle-8 scan: roadmap T4.1 A1–A10, cycle-8 expansion E1–E5, seams audit #4 S4-1..S4-5, the opening screen)
 Updated: 2026-11-19
 
-(Machine-read fields for the v1.43.0 commands: the next /broad-scan,
+(Machine-read fields for the v1.51.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
