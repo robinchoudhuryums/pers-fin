@@ -3,8 +3,8 @@
 # Dumps BOTH Neon databases (Perfin + Per-sistant) with pg_dump, encrypts
 # each dump with AES-256 (gpg symmetric — the ciphertext carries an integrity
 # check, so a corrupted or altered file fails to decrypt instead of restoring
-# garbage), VERIFIES each one by decrypting it and reading its table of
-# contents with pg_restore --list, and stores them as GitHub Actions artifacts
+# garbage), VERIFIES each one by decrypting the whole file and then reading its
+# table of contents with pg_restore --list, and stores them as GitHub Actions artifacts
 # with 90-day retention. Runs independently of the app server, so backups
 # happen even while the Render free tier is asleep.
 #
@@ -56,20 +56,56 @@ jobs:
     env:
       # Shared by both dump steps: dump, encrypt, then verify the ENCRYPTED file
       # decrypts and is a readable pg_dump archive. Usage: backup_db <name> <url>
+      #
+      # The verify is two steps, never a pipe (cycle-9 F1): `gpg --decrypt | pg_restore
+      # --list` failed on every dump larger than one pipe buffer — pg_restore
+      # stops reading after the table of contents, gpg dies writing the rest
+      # ("Broken pipe") and pipefail failed the step before anything was uploaded.
+      # Decrypting to a file first also makes gpg's integrity check cover the
+      # WHOLE file: a truncated or altered backup fails here.
+      #
+      # pg_dump's own error text is never printed (cycle-9 F12): it names the
+      # database host, and this repository's logs can be public. The step says
+      # which kind of failure it was instead.
       BACKUP_FN: |
         set -o pipefail
         backup_db() {
-          local name="$1" url="$2" date out
+          local name="$1" url="$2" date out reason
           date=$(date -u +%F)
           out="$name-$date.dump.gpg"
-          pg_dump "$url" --no-owner --no-privileges --format=custom --file="$name.dump"
+          if ! pg_dump "$url" --no-owner --no-privileges --format=custom --file="$name.dump" 2> "$name.err"; then
+            reason="run pg_dump with the same connection string on your own machine to see why"
+            if grep -qi "version mismatch" "$name.err"; then
+              reason="the pg_dump client is older than the database server — raise the PostgreSQL client version this workflow installs"
+            elif grep -qiE "password authentication failed|no pg_hba\.conf entry|role .* does not exist" "$name.err"; then
+              reason="the database refused the credentials in the connection-string secret"
+            elif grep -qiE "could not translate host name|could not connect|connection .* failed|timeout|timed out" "$name.err"; then
+              reason="the database could not be reached"
+            elif grep -qi "permission denied" "$name.err"; then
+              reason="the role in the connection-string secret cannot read every table"
+            fi
+            rm -f "$name.dump" "$name.err"
+            echo "::error::pg_dump of the $name database failed: $reason. (pg_dump's own message is withheld — it can name the host.)"
+            return 1
+          fi
+          rm -f "$name.err"
           printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --yes --quiet --pinentry-mode loopback \
             --passphrase-fd 0 --symmetric --cipher-algo AES256 \
             --s2k-digest-algo SHA512 --s2k-count 65011712 --output "$out" "$name.dump"
           rm "$name.dump"
-          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --quiet --pinentry-mode loopback \
-            --passphrase-fd 0 --decrypt "$out" | pg_restore --list > /dev/null
-          echo "$out: $(du -h "$out" | cut -f1), verified (decrypts + pg_restore --list)"
+          if ! printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --yes --quiet --pinentry-mode loopback \
+            --passphrase-fd 0 --decrypt --output "$name.verify" "$out" 2> /dev/null; then
+            rm -f "$name.verify" "$out"
+            echo "::error::The encrypted $name backup did not decrypt cleanly — nothing was uploaded for it."
+            return 1
+          fi
+          if ! pg_restore --list "$name.verify" > /dev/null 2>&1; then
+            rm -f "$name.verify" "$out"
+            echo "::error::The $name backup decrypted but is not a readable pg_dump archive — nothing was uploaded for it."
+            return 1
+          fi
+          rm "$name.verify"
+          echo "$out: $(du -h "$out" | cut -f1), verified (decrypts in full + pg_restore --list)"
         }
     steps:
       - name: Check secrets

@@ -22,6 +22,33 @@ function normalizePerfinUrl(v) {
   return t.replace(/\/+$/, "");
 }
 
+// PATCH /api/settings (cycle-9 follow-on — the same rules Perfin's settings
+// route got in F47): a plain on / off switch takes only true or false ("false"
+// used to switch it ON through `!!value`), and a number is an integer or it is
+// refused — never truncated or silently replaced.
+const BOOLEAN_SWITCHES = ["keep_alive_enabled", "vault_enabled", "job_radar_enabled"];
+function toInt(v) {
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && /^\s*-?\d+\s*$/.test(v)) return parseInt(v, 10);
+  return NaN;
+}
+function isValidTimeZone(tz) {
+  if (typeof tz !== "string" || !tz || tz.length > 64) return false;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; } catch { return false; }
+}
+// The dashboard's layout: { widgets: [id…], hidden: [id…] } (or null — the
+// default layout). Anything else used to be stored and broke the dashboard's
+// loader, which calls widgets.filter().
+const WIDGET_ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
+function layoutError(v) {
+  if (v === null) return null;
+  const ids = (a) => Array.isArray(a) && a.length <= 40 && a.every((id) => typeof id === "string" && WIDGET_ID_RE.test(id));
+  if (!v || typeof v !== "object" || Array.isArray(v) || !ids(v.widgets) || !(v.hidden === undefined || ids(v.hidden))) {
+    return "dashboard_layout must be { widgets: [ids], hidden: [ids] } (or null for the default).";
+  }
+  return null;
+}
+
 const { serverError } = require("../errors");
 const { todayStr } = require("./health");
 
@@ -62,6 +89,11 @@ module.exports = function ({ pool, config }) {
   router.patch("/api/settings", async (req, res) => {
     try {
       const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, vault_enabled, vault_repo, vault_branch, job_radar_enabled, ai_monthly_budget_cents } = req.body;
+      for (const key of BOOLEAN_SWITCHES) {
+        if (req.body[key] !== undefined && typeof req.body[key] !== "boolean") {
+          return res.status(400).json({ error: `${key} must be true or false` });
+        }
+      }
       const fields = [];
       const params = [];
       let idx = 1;
@@ -69,8 +101,16 @@ module.exports = function ({ pool, config }) {
         if (!VALID_THEMES.includes(theme)) return res.status(400).json({ error: `theme must be one of ${VALID_THEMES.join(", ")}` });
         fields.push(`theme = $${idx++}`); params.push(theme);
       }
-      if (session_timeout_minutes !== undefined) { fields.push(`session_timeout_minutes = $${idx++}`); params.push(session_timeout_minutes); }
-      if (default_horizon !== undefined) { fields.push(`default_horizon = $${idx++}`); params.push(default_horizon); }
+      let timeoutMinutes;
+      if (session_timeout_minutes !== undefined) {
+        timeoutMinutes = toInt(session_timeout_minutes);
+        if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 1440) return res.status(400).json({ error: "session_timeout_minutes must be an integer 1-1440" });
+        fields.push(`session_timeout_minutes = $${idx++}`); params.push(timeoutMinutes);
+      }
+      if (default_horizon !== undefined) {
+        if (!config.VALID_HORIZONS.includes(default_horizon)) return res.status(400).json({ error: `default_horizon must be one of ${config.VALID_HORIZONS.join(", ")}` });
+        fields.push(`default_horizon = $${idx++}`); params.push(default_horizon);
+      }
       if (perfin_url !== undefined) {
         const url = normalizePerfinUrl(perfin_url);
         if (url === undefined) return res.status(400).json({ error: "perfin_url must be an http(s) URL (or empty to clear it)." });
@@ -87,7 +127,11 @@ module.exports = function ({ pool, config }) {
         if (!VALID_PALETTES.includes(palette)) return res.status(400).json({ error: `palette must be one of ${VALID_PALETTES.join(", ")}` });
         fields.push(`palette = $${idx++}`); params.push(palette);
       }
-      if (dashboard_layout !== undefined) { fields.push(`dashboard_layout = $${idx++}`); params.push(JSON.stringify(dashboard_layout)); }
+      if (dashboard_layout !== undefined) {
+        const bad = layoutError(dashboard_layout);
+        if (bad) return res.status(400).json({ error: bad });
+        fields.push(`dashboard_layout = $${idx++}`); params.push(JSON.stringify(dashboard_layout));
+      }
       if (slack_webhook_url !== undefined) {
         // Reject an SSRF-prone Slack URL at write-time (PB-5), parallel to how
         // webhook URLs are validated on create. Empty clears it.
@@ -96,14 +140,21 @@ module.exports = function ({ pool, config }) {
         }
         fields.push(`slack_webhook_url = $${idx++}`); params.push(slack_webhook_url || null);
       }
-      if (keep_alive_enabled !== undefined) { fields.push(`keep_alive_enabled = $${idx++}`); params.push(!!keep_alive_enabled); }
-      if (keep_alive_start !== undefined) { fields.push(`keep_alive_start = $${idx++}`); params.push(parseInt(keep_alive_start) || 0); }
-      if (keep_alive_end !== undefined) { fields.push(`keep_alive_end = $${idx++}`); params.push(parseInt(keep_alive_end) || 0); }
-      if (keep_alive_timezone !== undefined) { fields.push(`keep_alive_timezone = $${idx++}`); params.push(keep_alive_timezone || "America/New_York"); }
+      if (keep_alive_enabled !== undefined) { fields.push(`keep_alive_enabled = $${idx++}`); params.push(keep_alive_enabled); }
+      for (const [key, value] of [["keep_alive_start", keep_alive_start], ["keep_alive_end", keep_alive_end]]) {
+        if (value === undefined) continue;
+        const h = toInt(value);
+        if (!Number.isInteger(h) || h < 0 || h > 23) return res.status(400).json({ error: `${key} must be an hour 0-23` });
+        fields.push(`${key} = $${idx++}`); params.push(h);
+      }
+      if (keep_alive_timezone !== undefined) {
+        if (!isValidTimeZone(keep_alive_timezone)) return res.status(400).json({ error: "keep_alive_timezone must be a valid IANA time zone" });
+        fields.push(`keep_alive_timezone = $${idx++}`); params.push(keep_alive_timezone);
+      }
       // Knowledge / Obsidian vault config (non-secret — the GitHub token is the
       // VAULT_GITHUB_TOKEN env var, never stored here).
-      if (vault_enabled !== undefined) { fields.push(`vault_enabled = $${idx++}`); params.push(!!vault_enabled); }
-      if (job_radar_enabled !== undefined) { fields.push(`job_radar_enabled = $${idx++}`); params.push(!!job_radar_enabled); }
+      if (vault_enabled !== undefined) { fields.push(`vault_enabled = $${idx++}`); params.push(vault_enabled); }
+      if (job_radar_enabled !== undefined) { fields.push(`job_radar_enabled = $${idx++}`); params.push(job_radar_enabled); }
       // Roadmap T2.3 C4: the monthly AI budget in cents — an integer 1–10000
       // ($0.01–$100), or null to fall back to PERSISTENT_AI_BUDGET_CENTS / $1.00.
       // Number(), not parseInt(): "6abc" or 1.5 is refused, never truncated (INV-59).
@@ -147,7 +198,7 @@ module.exports = function ({ pool, config }) {
       if (!fields.length) return res.status(400).json({ error: "No fields to update." });
       const r = await pool.query(`UPDATE user_settings SET ${fields.join(", ")} WHERE id = 1 RETURNING *`, params);
       if (theme && req.session) req.session.theme = theme;
-      if (session_timeout_minutes && req.session) req.session.timeoutMinutes = session_timeout_minutes;
+      if (timeoutMinutes && req.session) req.session.timeoutMinutes = timeoutMinutes;
       res.json(r.rows[0]);
     } catch (err) {
       serverError(res, err);
@@ -157,7 +208,7 @@ module.exports = function ({ pool, config }) {
   router.get("/api/stats", async (req, res) => {
     try {
       const [todos, emails, notes] = await Promise.all([
-        pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT auto_closed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL", [todayStr()]),
+        pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT COALESCE(skipped, false) AND NOT auto_closed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL", [todayStr()]),
         pool.query("SELECT count(*) FILTER (WHERE status = 'draft') as drafts, count(*) FILTER (WHERE status = 'scheduled') as scheduled, count(*) FILTER (WHERE status = 'sent') as sent, count(*) FILTER (WHERE status = 'failed') as failed FROM emails WHERE deleted_at IS NULL"),
         pool.query("SELECT count(*) as total FROM notes WHERE deleted_at IS NULL"),
       ]);

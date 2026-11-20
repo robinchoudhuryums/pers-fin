@@ -26,11 +26,51 @@ jobs:
       - name: Check schedule and ping
         env:
           SERVER_URL: ${{ secrets.SERVER_URL }}
+          API_KEY: ${{ secrets.API_KEY }}
+          # CHECK_STATUS reports a curl timeout or unreachable server ("000") as an
+          # error annotation instead of the step dying silently under `bash -e`.
+          # Usage: check_status <label> <status> [expected…]
+          CHECK_STATUS: |
+            check_status() {
+              local label="$1" status="$2"; shift 2
+              if [ "$status" = "000" ]; then
+                echo "::error::$label: no response (timed out or server unreachable). The server may still be working."
+                return 1
+              fi
+              for ok in "${@:-200}"; do [ "$status" = "$ok" ] && { echo "$label: HTTP $status"; return 0; }; done
+              echo "::error::$label failed with HTTP $status"
+              return 1
+            }
+          # FETCH_SCHEDULE asks the server for its keep-alive schedule and leaves
+          # the HTTP status in SCHEDULE_STATUS (cycle-9 F10). A sleeping host can
+          # take a minute to wake, so an unanswered or 5xx call is retried
+          # (SCHEDULE_TRIES times, SCHEDULE_RETRY_SECONDS apart); a rejected one
+          # (401 / 403 / 404) is not. Usage: fetch_schedule <output file>
+          FETCH_SCHEDULE: |
+            fetch_schedule() {
+              local out="$1" attempt=1
+              SCHEDULE_STATUS=000
+              while :; do
+                SCHEDULE_STATUS=$(curl -s -o "$out" -w "%{http_code}" --max-time "${SCHEDULE_MAX_TIME:-60}" \
+                  -H "x-api-key: $API_KEY" \
+                  "$SERVER_URL/perfin/api/keep-alive-schedule" 2>/dev/null) || true
+                [ -n "$SCHEDULE_STATUS" ] || SCHEDULE_STATUS=000
+                case "$SCHEDULE_STATUS" in
+                  000|5??) ;;
+                  *) return 0 ;;
+                esac
+                [ "$attempt" -ge "${SCHEDULE_TRIES:-3}" ] && return 0
+                attempt=$((attempt + 1))
+                sleep "${SCHEDULE_RETRY_SECONDS:-10}"
+              done
+            }
         run: |
           if [ -z "$SERVER_URL" ]; then
             echo "SERVER_URL secret not set, skipping"
             exit 0
           fi
+          eval "$CHECK_STATUS"
+          eval "$FETCH_SCHEDULE"
 
           # Fetch keep-alive schedule from server (may wake it from cold start).
           # Endpoint lives under /perfin/* now that Perfin runs as a sub-app
@@ -38,10 +78,20 @@ jobs:
           # Perfin side, but the shell auth gate fronts it — the shell treats
           # /perfin/api/keep-alive-schedule as auth-required, so we send the
           # API key the same way the daily-sync workflow does.
-          SCHEDULE=$(curl -s --max-time 30 \
-            -H "x-api-key: ${{ secrets.API_KEY }}" \
-            "$SERVER_URL/perfin/api/keep-alive-schedule" 2>/dev/null || echo '{}')
-          ENABLED=$(echo "$SCHEDULE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('enabled',False))" 2>/dev/null || echo "False")
+          # A call that is rejected or never answered FAILS the run (cycle-9
+          # F10): it used to read as "disabled, skipping" and stay green, so a
+          # wrong API_KEY secret or a server that was down looked like a
+          # keep-alive that was switched off. The body is never printed.
+          export SCHEDULE_FILE="${RUNNER_TEMP:-/tmp}/keep-alive-schedule.json"
+          fetch_schedule "$SCHEDULE_FILE"
+          if [ "$SCHEDULE_STATUS" = "401" ] || [ "$SCHEDULE_STATUS" = "403" ]; then
+            echo "::error::Keep-alive: the server rejected the schedule call — check that the API_KEY repository secret matches the app's API_KEY."
+          fi
+          check_status "Keep-alive schedule" "$SCHEDULE_STATUS"
+          ENABLED=$(python3 -c "import json,os; d=json.load(open(os.environ['SCHEDULE_FILE'])); print(d.get('enabled',False))" 2>/dev/null) || {
+            echo "::error::Keep-alive: the schedule reply was not JSON — something other than the app answered."
+            exit 1
+          }
 
           if [ "$ENABLED" != "True" ]; then
             echo "Keep-alive disabled in settings, skipping"
@@ -49,12 +99,12 @@ jobs:
           fi
 
           # Check if current time is within active hours
-          ACTIVE=$(echo "$SCHEDULE" | python3 -c "
-          import json, sys
+          ACTIVE=$(python3 -c "
+          import json, os
           from datetime import datetime
           from zoneinfo import ZoneInfo
 
-          d = json.load(sys.stdin)
+          d = json.load(open(os.environ['SCHEDULE_FILE']))
           start = int(d.get('start', 0))
           end = int(d.get('end', 0))
           tz_name = d.get('timezone', 'America/New_York')
@@ -80,5 +130,5 @@ jobs:
           fi
 
           # Ping health endpoint
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$SERVER_URL/health")
-          echo "Ping response: $HTTP_CODE"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$SERVER_URL/health") || true
+          check_status "Ping" "${HTTP_CODE:-000}"

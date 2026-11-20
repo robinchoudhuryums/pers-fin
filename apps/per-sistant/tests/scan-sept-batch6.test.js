@@ -70,7 +70,9 @@ describe("PD-2 — advanceRecurrence keeps the anchor day", () => {
     assert.match(sql, /IF NOT EXISTS \(SELECT 1 FROM pg_constraint WHERE conname = 'chk_todos_recurrence_anchor_day'\)/);
   });
   it("a manual due-date edit resets the chain anchor; calendar projections pass it", () => {
-    assert.match(read("routes/todos.js"), /recurrence_anchor_day = NULL/);
+    // cycle-9 F52: reset only when the date actually changed (the edit dialog
+    // always sends the due date).
+    assert.match(read("routes/todos.js"), /recurrence_anchor_day = CASE WHEN due_date IS DISTINCT FROM \$\$\{p\}::date THEN NULL ELSE recurrence_anchor_day END/);
     assert.match(read("routes/calendar.js"), /recurrence_anchor_day/);
   });
 });
@@ -140,9 +142,10 @@ describe("PB-10 — rollMissedRecurring marks missed instances", () => {
 
   it("completion analytics + /api/stats don't count missed instances as done", () => {
     const analytics = read("routes/analytics.js");
-    assert.equal((analytics.match(/FILTER \(WHERE completed AND NOT COALESCE\(missed, false\)\)/g) || []).length, 2);
+    // cycle-9 F55: nor skipped ones.
+    assert.equal((analytics.match(/FILTER \(WHERE completed AND NOT COALESCE\(missed, false\) AND NOT COALESCE\(skipped, false\)\)/g) || []).length, 2);
     // cycle-8 F18: a linked task the sync closed isn't done either.
-    assert.match(read("routes/settings.js"), /FILTER \(WHERE completed AND NOT COALESCE\(missed, false\)(?: AND NOT auto_closed)?\) as done/);
+    assert.match(read("routes/settings.js"), /FILTER \(WHERE completed AND NOT COALESCE\(missed, false\) AND NOT COALESCE\(skipped, false\) AND NOT auto_closed\) as done/);
   });
 });
 

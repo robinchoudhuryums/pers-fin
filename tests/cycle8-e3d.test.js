@@ -38,18 +38,18 @@ function fakeDb() {
     db.queries.push(sql);
     if (/SELECT notify_quiet_hours, notify_muted_types FROM user_settings/.test(sql)) return { rows: [db.prefs] };
     if (/^INSERT INTO notification_log/.test(sql)) {
-      const [type, title, body, data, push_state, item_key, is_read] = params;
+      const [type, title, body, data, push_state, item_key, is_read, hold_until = null] = params;
       const id = db.nextId++;
-      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, created_at: new Date(db.clock) });
+      db.log.push({ id, type, title, body, data: JSON.parse(data), push_state, item_key, is_read, hold_until, created_at: new Date(db.clock) });
       return { rows: [{ id }] };
     }
-    if (/SET push_state = 'expired'/.test(sql)) return { rows: [] };
-    if (/SELECT id, type, title, body, data, item_key FROM notification_log/.test(sql)) {
-      return { rows: db.log.filter((r) => r.push_state === "held") };
+    if (/SELECT id, type, title, body, data, item_key, push_state, created_at, hold_until FROM notification_log/.test(sql)) {
+      return { rows: db.log.filter((r) => ["held", "retry"].includes(r.push_state)) };
     }
-    const m = /UPDATE notification_log SET push_state = '(\w+)'(, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state = '(\w+)'/.exec(sql);
+    const m = /UPDATE notification_log SET push_state = '(\w+)'(, is_read = true)? WHERE id = ANY\(\$1::int\[\]\) AND push_state (?:= '(\w+)'|IN \('held', 'retry'\))/.exec(sql);
     if (m) {
-      db.log.filter((r) => params[0].includes(r.id) && r.push_state === m[3]).forEach((r) => { r.push_state = m[1]; if (m[2]) r.is_read = true; });
+      const from = m[3] ? [m[3]] : ["held", "retry"];
+      db.log.filter((r) => params[0].includes(r.id) && from.includes(r.push_state)).forEach((r) => { r.push_state = m[1]; if (m[2]) r.is_read = true; });
       return { rows: [] };
     }
     if (/SELECT endpoint, keys FROM push_subscriptions/.test(sql)) return { rows: db.subs };
@@ -65,9 +65,12 @@ function fakePersistent(open = new Set(), { throws = false } = {}) {
     pp.calls.push([sql, params]);
     if (throws) throw new Error("persistent down");
     // Per-sistant's own predicate (services/linked-tasks.openLinkedItems —
-    // seams audit #4 A2: no source_detached filter).
-    assert.match(sql, /FROM todos\s+WHERE source_key = ANY\(\$1::text\[\]\) AND NOT completed AND deleted_at IS NULL/);
+    // seams audit #4 A2: no source_detached filter; cycle-9 F45: only a task
+    // that is SHOWING on the day of the push — due that day or earlier).
+    assert.match(sql, /FROM todos\s+WHERE source_key = ANY\(\$1::text\[\]\) AND NOT completed AND deleted_at IS NULL AND due_date IS NOT NULL AND due_date <= \$2::date/);
     assert.doesNotMatch(sql, /source_detached/);
+    assert.match(params[1], /^\d{4}-\d{2}-\d{2}$/);
+    pp.days = (pp.days || []).concat(params[1]);
     return { rows: params[0].filter((k) => open.has(k)).map((source_key) => ({ source_key })) };
   };
   return pp;
@@ -113,7 +116,8 @@ describe("sendToAll with an item (cycle-8 E3d)", () => {
     assert.deepEqual(r, { sent: 0, failed: 0, logged: true, push_state: "covered" });
     assert.deepEqual(pushed, []);
     assert.deepEqual(db.log.map((l) => [l.type, l.push_state, l.item_key, l.is_read]), [["housing-due-2026-11", "covered", "housing:2026-11", true]]);
-    assert.deepEqual(pp.calls.map((c) => c[1]), [[["perfin:housing:2026-11"]]]);
+    // The day of the push rides along (cycle-9 F45 — only a task showing that day covers).
+    assert.deepEqual(pp.calls.map((c) => c[1]), [[["perfin:housing:2026-11"], "2026-10-29"]]);
   });
 
   it("the task closed (or never made): pushed, item_key still stored, the push payload without `item`", async () => {

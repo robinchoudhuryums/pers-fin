@@ -15,9 +15,19 @@
 //   node scripts/sheets-sync.js --dashboard  # rebuild dashboard only
 // ============================================================================
 
+// Run directly (npm run sheets-sync): load .env BEFORE anything reads the
+// environment. The config constants below are read when this file loads, so
+// loading dotenv in the CLI block at the bottom left GOOGLE_SHEETS_ID,
+// GOOGLE_SERVICE_ACCOUNT_KEY and APP_TIMEZONE undefined for a .env-only setup
+// (cycle-9 F63). Required by the app, the app has already loaded it.
+if (require.main === module) {
+  require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
+}
+
 const { google } = require("googleapis");
 const { Pool } = require("pg");
 const path = require("path");
+const { pgSsl } = require("./pg-ssl");
 // The app's pure recurring-date rules (no DB, no route layer): manual bills and
 // month-scale transfers are placed exactly as the in-app calendar and the ICS
 // feed place them (cycle-7 F76).
@@ -170,7 +180,7 @@ const SHEETS_RETRY_CONFIG = {
 function getPool() {
   return new Pool({
     connectionString: process.env.NEON_DATABASE_URL,
-    ssl: { rejectUnauthorized: true },
+    ssl: pgSsl(),
     max: 2,
     connectionTimeoutMillis: 10000,
   });
@@ -3693,9 +3703,11 @@ async function runSyncTransactionsOnly() {
 // ---------------------------------------------------------------------------
 // API endpoint handler (called from server.js)
 // ---------------------------------------------------------------------------
-async function runSyncAll() {
-  const sheets = await getSheetsClient();
-  const pool = getPool();
+// `deps` is a test seam: { sheets, pool } replace the Google client and the
+// script's own pool (an injected pool is the caller's to close).
+async function runSyncAll(deps = {}) {
+  const sheets = deps.sheets || await getSheetsClient();
+  const pool = deps.pool || getPool();
 
   // Per-step isolation: each tab sync runs independently so one failing tab
   // (e.g. a query referencing a renamed column) no longer aborts syncAll and
@@ -3756,7 +3768,7 @@ async function runSyncAll() {
       timestamp: new Date().toISOString(),
     };
   } finally {
-    await pool.end();
+    if (!deps.pool) await pool.end();
   }
 }
 
@@ -3776,8 +3788,6 @@ async function runSyncDashboardOnly() {
 // CLI entry point
 // ---------------------------------------------------------------------------
 if (require.main === module) {
-  require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
-
   if (!SPREADSHEET_ID || !SERVICE_ACCOUNT_KEY_PATH) {
     console.error("Error: Set GOOGLE_SHEETS_ID and GOOGLE_SERVICE_ACCOUNT_KEY in .env");
     process.exit(1);
@@ -3798,4 +3808,4 @@ if (require.main === module) {
 
 module.exports = { syncAll, syncDashboardOnly, syncTransactionsOnly };
 // Test seams (SXE-2/SXE-14).
-module.exports._internals = { buildDashboard, completedMonthAverages, syncUtilities, syncImportantDates, syncCreditScores, singleFlight, PLAIN_NUMBER_RE, syncWatchlist, guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, ARCHIVE_MONTHS_SQL, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };
+module.exports._internals = { runSyncAll, syncTransactions, syncIncome, syncTaxDeductionsYear, getPool, buildDashboard, completedMonthAverages, syncUtilities, syncImportantDates, syncCreditScores, singleFlight, PLAIN_NUMBER_RE, syncWatchlist, guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, ARCHIVE_MONTHS_SQL, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };

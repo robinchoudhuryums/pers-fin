@@ -22,7 +22,7 @@
 if (!process.env.NEON_DATABASE_URL) process.env.NEON_DATABASE_URL = "postgres://mock:mock@localhost/mock";
 if (!process.env.TOKEN_ENCRYPTION_PASSPHRASE) process.env.TOKEN_ENCRYPTION_PASSPHRASE = "test-passphrase";
 
-const { describe, it, afterEach } = require("node:test");
+const { describe, it, before, after, afterEach, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -33,7 +33,8 @@ const ROOT = path.join(__dirname, "..");
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), "utf8");
 const dbModule = require("../teller/services/database");
 const originalQuery = dbModule.pool.query;
-afterEach(() => { dbModule.pool.query = originalQuery; });
+const originalConnect = dbModule.pool.connect;
+afterEach(() => { dbModule.pool.query = originalQuery; dbModule.pool.connect = originalConnect; });
 
 const fq = require("../teller/services/financial-queries");
 const helpers = require("../teller/routes/categorize-helpers");
@@ -133,6 +134,13 @@ describe("DD-3 — Plaid personal_finance_category", () => {
 // FAN-5 / DD-4 — cash-flow
 // ---------------------------------------------------------------------------
 describe("FAN-5 / DD-4 — cash-flow forecast", () => {
+  // The route reads the real clock and a monthly transfer steps by CALENDAR
+  // MONTH (INV-70): with "tomorrow" in February its next date (+28 days) also
+  // fell inside the 30-day window and the totals doubled, failing this file from
+  // late January to late February every year (cycle-9 F59). Pinned to mid-June.
+  before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-06-15T12:00:00Z") }));
+  after(() => mock.timers.reset());
+
   function cashFlowPool(sqls) {
     const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
     return async (sql) => {
@@ -230,6 +238,8 @@ describe("DC-13 — implicit 'remember' rules default to exact match", () => {
   it("POST /api/categorize/review with create_rule and no match_type → exact", async () => {
     const captured = [];
     dbModule.pool.query = rulePool(captured);
+    // The review write is one transaction on a client since cycle-9 F27.
+    dbModule.pool.connect = async () => ({ query: dbModule.pool.query, release() {} });
     await supertest(mountApp("../teller/routes/categorize")).post("/api/categorize/review")
       .send({ transaction_id: "tx1", category: "Gas & Fuel", create_rule: true }).expect(200);
     assert.equal(captured[0][2], "exact");
@@ -244,6 +254,7 @@ describe("DC-13 — implicit 'remember' rules default to exact match", () => {
   it("an explicit match_type is still honored; the explicit rules API keeps its contains default", async () => {
     const captured = [];
     dbModule.pool.query = rulePool(captured);
+    dbModule.pool.connect = async () => ({ query: dbModule.pool.query, release() {} });
     await supertest(mountApp("../teller/routes/categorize")).post("/api/categorize/review")
       .send({ transaction_id: "tx1", category: "Gas & Fuel", create_rule: true, match_type: "starts_with" }).expect(200);
     assert.equal(captured[0][2], "starts_with");

@@ -294,13 +294,17 @@ async function getInvestmentTaxData(pool, year) {
        WHERE id IN (SELECT DISTINCT investment_account_id FROM investment_transactions)`
     ),
     // Every row before the year ends: earlier buys are the lots a sale this
-    // year draws on.
+    // year draws on. Plus any LATER row that cancels one of them (cycle-9
+    // F38): a December transaction cancelled in January was still counted in
+    // December's year, because its cancel row was never read.
     pool.query(
       `SELECT plaid_investment_transaction_id, investment_account_id, txn_date::text AS txn_date,
               type, subtype, security_id, ticker, security_name, security_type,
               quantity, price, amount, fees, name, cancel_transaction_id
        FROM investment_transactions
        WHERE txn_date < $1::date
+          OR (cancel_transaction_id IS NOT NULL AND cancel_transaction_id IN (
+                SELECT plaid_investment_transaction_id FROM investment_transactions WHERE txn_date < $1::date))
        ORDER BY txn_date, plaid_investment_transaction_id`,
       [next]
     ),
@@ -310,7 +314,12 @@ async function getInvestmentTaxData(pool, year) {
     accounts.set(a.id, { ...a, tax_advantaged: accountTaxAdvantaged(a.account_type) });
   }
   const yearStr = String(year);
-  const all = txns.rows.map((t) => ({ ...t, account_name: (accounts.get(t.investment_account_id) || {}).name || null }));
+  // A later-year row is read only for what it cancels; it is never a lot,
+  // a sale or income of this year's figures.
+  const cancelledLater = new Set(txns.rows.filter((t) => String(t.txn_date) >= next).map((t) => t.cancel_transaction_id).filter(Boolean));
+  const all = txns.rows
+    .filter((t) => String(t.txn_date) < next && !cancelledLater.has(t.plaid_investment_transaction_id))
+    .map((t) => ({ ...t, account_name: (accounts.get(t.investment_account_id) || {}).name || null }));
   const taxable = all.filter((t) => {
     const a = accounts.get(t.investment_account_id);
     return a && !a.tax_advantaged;

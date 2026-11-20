@@ -1,3 +1,7 @@
+---
+description: "Define subsystems, dimensions, invariants — plus optional regression scenarios, frozen subsystems, and deploy commands"
+---
+
 Do not make any changes to any files during this session.
 
 You are setting up the cycle workflow configuration for this project.

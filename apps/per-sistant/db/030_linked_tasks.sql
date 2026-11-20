@@ -26,10 +26,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_todos_source_key ON todos (source_key) WHER
 
 -- A change to a linked task's completed state that the sync didn't make (the
 -- sync always changes auto_closed in the same UPDATE) detaches the task.
+-- It also clears auto_closed (cycle-9 F48): once you change the task yourself
+-- it is no longer "closed by the sync". Reopening an auto-closed task by hand
+-- used to leave auto_closed = true on an OPEN task — a later completion by you
+-- was then left out of every count (they skip auto_closed), and Ask described
+-- the open task as closed by Perfin.
 CREATE OR REPLACE FUNCTION todos_detach_linked()
 RETURNS TRIGGER AS $$
 BEGIN
   NEW.source_detached := true;
+  NEW.auto_closed := false;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -41,3 +47,10 @@ CREATE TRIGGER trg_todos_detach_linked
           AND NEW.completed IS DISTINCT FROM OLD.completed
           AND NEW.auto_closed IS NOT DISTINCT FROM OLD.auto_closed)
     EXECUTE FUNCTION todos_detach_linked();
+
+-- Rows left in that state before the fix. The sync sets auto_closed only on a
+-- task that isn't detached and never touches a detached one, so a task that is
+-- both was changed by hand afterwards. (No "completed" in the SET list, so the
+-- trigger above doesn't fire; a second run finds nothing.)
+UPDATE todos SET auto_closed = false
+ WHERE source_key IS NOT NULL AND source_detached AND auto_closed;

@@ -1,3 +1,8 @@
+---
+description: "Sync this project's command files with the latest templates from the workflow tools repo"
+argument-hint: "<path-or-url-to-workflow-tools-repo>"
+---
+
 If $ARGUMENTS is empty or missing, respond with exactly this and stop:
 
 Usage: /sync-commands <path-or-url-to-workflow-tools-repo>
@@ -28,7 +33,18 @@ If $ARGUMENTS is a URL: fetch the raw CLAUDE.md from the repository
 If neither works, stop and report the error.
 Step 2: Read all command files in this project's .claude/commands/
 Step 3: For each command file, compare against the corresponding
-template in the workflow tools CLAUDE.md.
+template in the workflow tools CLAUDE.md. Where a template's body has a
+line that is only an include marker — two opening braces, "include:", a
+section heading, two closing braces — the command's text is that line
+replaced by the fenced block under that heading in the same CLAUDE.md;
+compare and copy the expanded text (the template repo's own
+.claude/commands/ file is exactly that).
+Each command file also opens with a frontmatter block — the lines between
+two "---" lines: a description, and an argument hint where the command
+takes arguments — taken from that command's row in the Command Index table
+of the same CLAUDE.md. The frontmatter is part of the file: compare it and
+copy it with the body. A project file with no frontmatter, or with a
+different description, is OUTDATED.
 
 For each command, report:
 - CURRENT: matches template (no action needed)

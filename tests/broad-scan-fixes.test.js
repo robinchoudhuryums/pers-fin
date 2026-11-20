@@ -51,8 +51,15 @@ describe("F1 — db-backup workflow", () => {
 
   it("verifies each encrypted backup and names missing secrets up front (cycle-7 F3/F16)", () => {
     const src = fs.readFileSync(wfPath, "utf8");
-    assert.match(src, /set -o pipefail/, "the verify pipe must fail when gpg fails");
-    assert.match(src, /--decrypt "\$out" \| pg_restore --list > \/dev\/null/, "the ENCRYPTED file is decrypted and its archive TOC read");
+    assert.match(src, /set -o pipefail/);
+    // Cycle-9 F1: decrypt to a file, THEN list it — the old `--decrypt "$out" |
+    // pg_restore --list` pipe failed on every real-size dump (gpg died on the
+    // broken pipe once pg_restore had read the table of contents). The function
+    // is run for real in tests/cycle9-b1.test.js.
+    const code = src.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    assert.doesNotMatch(code, /--decrypt[^\n]*\|\s*pg_restore/);
+    assert.match(src, /--decrypt --output "\$name\.verify" "\$out"/, "the ENCRYPTED file is decrypted in full");
+    assert.match(src, /pg_restore --list "\$name\.verify"/, "and its archive TOC read");
     const steps = src.slice(src.indexOf("steps:"));
     assert.ok(steps.indexOf("name: Check secrets") < steps.indexOf("name: Install PostgreSQL"), "secrets are checked first");
     assert.match(src, /Repository secret\(s\) not set:\$missing/);

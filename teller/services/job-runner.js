@@ -80,6 +80,7 @@ function createJobRunner({
   sleep = (ms) => new Promise((resolve) => { const h = setTimeout(resolve, ms); if (h && h.unref) h.unref(); }),
   onCheck = null, // (name) — called for every registered job on each check (job-health's tick, E2b)
   onTimeout = null, // (name, ms) — a run passed its deadline (seams audit #4 B1)
+  onLoad = null, // ({ at, lastRan, jobs }) — the first read of job_runs, before any claim (cycle-9 F2)
   setDeadline = (fn, ms) => { const h = setTimeout(fn, ms); if (h && h.unref) h.unref(); return h; },
   clearDeadline = (h) => clearTimeout(h),
   log = console,
@@ -94,6 +95,7 @@ function createJobRunner({
   let running = false; // started and not stopped
   let stopped = false; // stop() called — a check in progress runs no more jobs
   let checking = null; // the promise of the check in progress
+  let wakeGap = null; // ends the gap sleep between two jobs early (stop())
 
   function register({ name, everyMs, run, when = null, timeoutMs = null }) {
     if (typeof name !== "string" || !name) throw new Error("job name required");
@@ -127,7 +129,27 @@ function createJobRunner({
       }
     } catch (err) {
       log.error("job runner: could not read job_runs — every job counts as due:", err.message);
+      return;
     }
+    // What the last process left behind, before this one claims anything: the
+    // missed-job watchdog judges an outage from it (job-health, cycle-9 F2).
+    if (onLoad) {
+      try { onLoad({ at: now(), lastRan: new Map(lastRan), jobs: list() }); }
+      catch (err) { log.error("job runner: onLoad threw:", err && err.message); }
+    }
+  }
+
+  // The pause between two jobs. stop() ends it at once (cycle-9 F11): a
+  // shutdown that landed in the gap used to wait out the 20 s, and the shell —
+  // which waits 7 s for a job in progress — logged "a scheduled job was still
+  // running" when none was.
+  function gap(ms) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; if (wakeGap === finish) wakeGap = null; resolve(); };
+      wakeGap = finish;
+      Promise.resolve(sleep(ms)).then(finish, finish);
+    });
   }
 
   function dueAt(job) {
@@ -179,7 +201,7 @@ function createJobRunner({
         log.error(`job runner: ${job.name} is still running from an earlier start — skipped`);
         continue;
       }
-      if (!first && cfg.gapMs > 0) await sleep(cfg.gapMs);
+      if (!first && cfg.gapMs > 0) await gap(cfg.gapMs);
       if (stopped) break;
       first = false;
       if (!(await claim(job))) continue;
@@ -237,6 +259,7 @@ function createJobRunner({
     stopped = true;
     if (timer) clearTimer(timer);
     timer = null;
+    if (wakeGap) wakeGap();
     return checking || Promise.resolve();
   }
 

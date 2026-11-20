@@ -1,3 +1,7 @@
+---
+description: "Read-only: report standing + the next action for the current phase"
+---
+
 Do not make any changes to any files during this session. This is a
 read-only status check — do not start any audit or implementation.
 
@@ -20,10 +24,16 @@ Produce a CYCLE STATUS report:
 - Seams cadence: [K of N subsystem cycles since the last Seams audit —
   K from STATE.md's "Subsystem cycles since last Seams audit", N from the
   Cycle Workflow Config's Seams Audit Cadence; flag "DUE" if K >= N]
-- RECOMMENDED NEXT ACTION — choose explicitly:
-  → RESUME — there is unfinished implementation work in STATE.md →
-    run /cycle-resume
-  → FRESH AUDIT — the last cycle is complete (or none is in progress) →
-    start /broad-scan or /targeted-audit <subsystem>
+- RECOMMENDED NEXT ACTION — choose explicitly, from STATE.md's Phase:
+  → RESUME — Phase is implement and there is unfinished implementation
+    work in STATE.md → run /cycle-resume
+  → IMPLEMENT — Phase is audit: an audit has opened this cycle and
+    nothing is implemented yet → choose findings and run the implement
+    command for that tier
+  → CLOSE OUT — Phase is reflect: reflected, not yet closed → run
+    /cycle-close. In a project that verifies and synthesizes, first run
+    /verify in a fresh session and then /health-synthesis
+  → FRESH AUDIT — the last cycle is complete (Phase is idle, or none is
+    in progress) → start /broad-scan or /targeted-audit <subsystem>
   State which and why in one sentence. A fresh audit must use fresh
   eyes — it does NOT inherit prior findings as conclusions.

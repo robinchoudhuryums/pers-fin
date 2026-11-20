@@ -40,7 +40,8 @@ ${navBar("/contacts")}
 
 <script${nonceAttr()}>
 async function load() {
-  var contacts = await fetch('/api/contacts').then(r=>r.json());
+  var contacts = await fetchList('/api/contacts');
+  if (!contacts) { document.getElementById('contact-list').innerHTML = loadFailedHtml('your contacts'); return; } // F79
   if (!contacts.length) { document.getElementById('contact-list').innerHTML = emptyState({ title: 'No contacts yet', text: 'Add one to address an email by name.', action: { label: '+ Add contact', click: 'btn-add-contact' } }); return; }
   document.getElementById('contact-list').innerHTML = '<table><thead><tr><th>Name</th><th>Email</th><th>Actions</th></tr></thead><tbody>' +
     contacts.map(c => '<tr><td>'+esc(c.name)+'</td><td>'+esc(c.email)+'</td><td><div class="todo-actions"><button data-action="editContact" data-id="'+c.id+'">&#9998;</button><button class="delete" data-action="deleteContact" data-id="'+c.id+'">&#10005;</button></div></td></tr>').join('') +

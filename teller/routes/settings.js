@@ -43,8 +43,12 @@ router.get("/api/settings", async (req, res) => {
     // always_on (services/hosting.js): the host never sleeps, so Settings
     // replaces the Keep-Alive controls with a note.
     res.json({ ...defaults, ...row, embedded, always_on: require("../services/hosting").alwaysOn(), available_modules: INSIGHT_MODULES });
-  } catch {
-    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", available_modules: INSIGHT_MODULES });
+  } catch (err) {
+    // Cycle-9 F47: a failed read is an error, not a page of defaults. It used
+    // to answer 200 with hard-coded defaults, so the Settings page showed
+    // switches that weren't the stored ones and the next save wrote them back.
+    console.error("settings read error:", err.message);
+    res.status(500).json({ error: "Your settings couldn't be read — try again." });
   }
 });
 
@@ -91,8 +95,20 @@ function sanitizeBoolMap(obj) {
   return out;
 }
 
+// The plain on / off switches (cycle-9 F47): each takes a strict boolean, like
+// the newer switches (INV-59). They used to be stored as !!value, so the string
+// "false" (a form post, a script) switched the setting ON.
+const BOOLEAN_SWITCHES = ["insights_enabled", "keep_alive_enabled", "sheets_auto_sync_enabled", "auto_sync_enabled",
+  "csv_reminder_enabled", "persistent_webhook_enabled", "sync_notifications_enabled", "weekly_digest_enabled",
+  "daily_digest_enabled", "critical_alert_emails_enabled"];
+
 // PATCH /api/settings
 router.patch("/api/settings", async (req, res) => {
+  for (const key of BOOLEAN_SWITCHES) {
+    if (req.body && req.body[key] !== undefined && typeof req.body[key] !== "boolean") {
+      return res.status(400).json({ error: key + " must be true or false" });
+    }
+  }
   const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, partner_name } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
@@ -115,7 +131,7 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("dashboard_months = $" + idx++); values.push(m);
     }
     if (insights_enabled !== undefined) {
-      updates.push("insights_enabled = $" + idx++); values.push(!!insights_enabled);
+      updates.push("insights_enabled = $" + idx++); values.push(insights_enabled);
     }
     if (insights_model !== undefined) {
       if (!["haiku", "sonnet", "opus"].includes(insights_model)) return res.status(400).json({ error: "insights_model must be haiku, sonnet or opus" });
@@ -127,7 +143,7 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("insights_cadence_days = $" + idx++); values.push(val);
     }
     if (keep_alive_enabled !== undefined) {
-      updates.push("keep_alive_enabled = $" + idx++); values.push(!!keep_alive_enabled);
+      updates.push("keep_alive_enabled = $" + idx++); values.push(keep_alive_enabled);
     }
     // PSC-15: these bounded fields used to drop a bad value silently and still
     // return 200 when sent alongside other fields — now a 400, like INV-59.
@@ -154,7 +170,12 @@ router.patch("/api/settings", async (req, res) => {
     if (insight_modules !== undefined) {
       const clean = sanitizeBoolMap(insight_modules);
       if (!clean) return res.status(400).json({ error: "insight_modules must be an object of {module: boolean}" });
-      updates.push("insight_modules = $" + idx++); values.push(JSON.stringify(clean));
+      // Cycle-9 F47: MERGED over the stored map, like linked_tasks_sources, so
+      // the page sends just the switch that changed. It used to read the whole
+      // map, change one key and send it back — two quick toggles could each
+      // write the other's old value, and a toggle after a failed read replaced
+      // the stored map with defaults.
+      updates.push("insight_modules = insight_modules || $" + idx++ + "::jsonb"); values.push(JSON.stringify(clean));
     }
     if (pyramid_data_source !== undefined) {
       if (!["wellness", "debt_payoff", "goal_progress", "spending_categories", "net_worth"].includes(pyramid_data_source)) return res.status(400).json({ error: "unknown pyramid_data_source" });
@@ -174,7 +195,7 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("debt_baseline_amount = $" + idx++); values.push(val);
     }
     if (req.body.sheets_auto_sync_enabled !== undefined) {
-      updates.push("sheets_auto_sync_enabled = $" + idx++); values.push(!!req.body.sheets_auto_sync_enabled);
+      updates.push("sheets_auto_sync_enabled = $" + idx++); values.push(req.body.sheets_auto_sync_enabled);
     }
     if (req.body.sheets_auto_sync_interval !== undefined) {
       if (!["daily", "weekly", "monthly"].includes(req.body.sheets_auto_sync_interval)) return res.status(400).json({ error: "sheets_auto_sync_interval must be daily, weekly or monthly" });
@@ -182,7 +203,7 @@ router.patch("/api/settings", async (req, res) => {
     }
     // Bank auto-sync (Phase A)
     if (req.body.auto_sync_enabled !== undefined) {
-      updates.push("auto_sync_enabled = $" + idx++); values.push(!!req.body.auto_sync_enabled);
+      updates.push("auto_sync_enabled = $" + idx++); values.push(req.body.auto_sync_enabled);
     }
     if (req.body.auto_sync_interval_hours !== undefined) {
       const h = toInt(req.body.auto_sync_interval_hours);
@@ -195,12 +216,12 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("csv_reminder_days = $" + idx++); values.push(val);
     }
     if (req.body.csv_reminder_enabled !== undefined) {
-      updates.push("csv_reminder_enabled = $" + idx++); values.push(!!req.body.csv_reminder_enabled);
+      updates.push("csv_reminder_enabled = $" + idx++); values.push(req.body.csv_reminder_enabled);
     }
     if (req.body.dashboard_widgets !== undefined) {
       const clean = sanitizeBoolMap(req.body.dashboard_widgets);
       if (!clean) return res.status(400).json({ error: "dashboard_widgets must be an object of {widget: boolean}" });
-      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(clean));
+      updates.push("dashboard_widgets = dashboard_widgets || $" + idx++ + "::jsonb"); values.push(JSON.stringify(clean)); // merged (F47)
     }
     // Per-sistant integration settings
     if (req.body.persistent_url !== undefined) {
@@ -220,14 +241,14 @@ router.patch("/api/settings", async (req, res) => {
       }
     }
     if (req.body.persistent_webhook_enabled !== undefined) {
-      updates.push("persistent_webhook_enabled = $" + idx++); values.push(!!req.body.persistent_webhook_enabled);
+      updates.push("persistent_webhook_enabled = $" + idx++); values.push(req.body.persistent_webhook_enabled);
     }
     if (req.body.sync_notifications_enabled !== undefined) {
-      updates.push("sync_notifications_enabled = $" + idx++); values.push(!!req.body.sync_notifications_enabled);
+      updates.push("sync_notifications_enabled = $" + idx++); values.push(req.body.sync_notifications_enabled);
     }
     // Weekly digest (S2)
     if (req.body.weekly_digest_enabled !== undefined) {
-      updates.push("weekly_digest_enabled = $" + idx++); values.push(!!req.body.weekly_digest_enabled);
+      updates.push("weekly_digest_enabled = $" + idx++); values.push(req.body.weekly_digest_enabled);
     }
     if (req.body.weekly_digest_day !== undefined) {
       const d = toInt(req.body.weekly_digest_day);
@@ -236,7 +257,7 @@ router.patch("/api/settings", async (req, res) => {
     }
     // Daily digest (#19)
     if (req.body.daily_digest_enabled !== undefined) {
-      updates.push("daily_digest_enabled = $" + idx++); values.push(!!req.body.daily_digest_enabled);
+      updates.push("daily_digest_enabled = $" + idx++); values.push(req.body.daily_digest_enabled);
     }
     // Insight emails (cycle-7 F81) — on by default. A strict boolean (INV-59).
     if (req.body.insight_emails_enabled !== undefined) {
@@ -247,7 +268,7 @@ router.patch("/api/settings", async (req, res) => {
     }
     // Critical-alert emails (budget exceeded / anomaly) — opt-in
     if (req.body.critical_alert_emails_enabled !== undefined) {
-      updates.push("critical_alert_emails_enabled = $" + idx++); values.push(!!req.body.critical_alert_emails_enabled);
+      updates.push("critical_alert_emails_enabled = $" + idx++); values.push(req.body.critical_alert_emails_enabled);
     }
     // Low projected cash alert (roadmap T2.2 L2 — services/cash-alerts.js).
     // Strict: a non-boolean switch, a threshold that isn't a number 0-10,000,000
@@ -421,7 +442,8 @@ router.patch("/api/settings", async (req, res) => {
       const m = toInt(req.body.shell_idle_timeout_minutes);
       // F11: 400 on out-of-bounds instead of silently dropping (consistent with
       // the other bounded numeric settings) so a bad value isn't a silent no-op.
-      if (!(Number.isFinite(m) && m >= 5 && m <= 10080)) {
+      // Number.isInteger: 7.5 passed isFinite and then failed the INT column — a 500 (cycle-9 F47).
+      if (!(Number.isInteger(m) && m >= 5 && m <= 10080)) {
         return res.status(400).json({ error: "shell_idle_timeout_minutes must be an integer between 5 and 10080" });
       }
       updates.push("shell_idle_timeout_minutes = $" + idx++); values.push(m);

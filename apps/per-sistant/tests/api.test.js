@@ -115,7 +115,7 @@ describe("Quick-add todo parser (todos page parseQuickTodo, as emitted)", () => 
     const el = { value: input, innerHTML: "", style: {} };
     const document = { getElementById: (id) => (id === "qt-input" ? el : { innerHTML: "", style: {} }) };
     const src = require("../pages/todos-script-2");
-    const { ctx } = runClient("var parsedTodo = null;\n" + extractFunction(src, "parseQuickTodo") + "\nfunction esc(s){return String(s);}", "parseQuickTodo", { document });
+    const { ctx } = runClient("var parsedTodo = null;\n" + extractFunction(src, "quickMonthDay") + "\n" + extractFunction(src, "parseQuickTodo") + "\nfunction esc(s){return String(s);}", "parseQuickTodo", { document });
     ctx.__fn();
     return ctx.parsedTodo;
   }

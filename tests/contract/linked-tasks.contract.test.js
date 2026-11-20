@@ -97,7 +97,9 @@ describe("Linked tasks (T2.4 X1a) on real Postgres", { skip: SKIP }, () => {
     await supertest(app).patch(`/api/todos/${t.id}`).send({ completed: false }).expect(200);
     await supertest(app).patch(`/api/todos/${t.id}`).send({ completed: true }).expect(200);
     const mid = await byKey("perfin:housing:2027-04");
-    assert.equal(mid.auto_closed, true, "auto_closed is left as the sync set it");
+    // Cycle-9 F48: the hand reopen cleared it, so this completion is yours
+    // (it used to stay true — the completion was then left out of every count).
+    assert.equal(mid.auto_closed, false, "a task you changed yourself is no longer 'closed by the sync'");
     assert.equal(mid.source_detached, true);
     assert.equal((await sync([rent("2027-04")])).reopened, 0);
     assert.equal((await byKey("perfin:housing:2027-04")).completed, true);

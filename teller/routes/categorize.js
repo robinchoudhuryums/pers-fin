@@ -27,6 +27,18 @@ const {
   rulePatternError,
   deactivateSupersededRules,
 } = require("./categorize-helpers");
+const { inTransaction } = require("./merchant-rename");
+
+// Rows the AI was sent and didn't categorize (F54, cycle-9 F26): stamped so
+// they aren't re-sent on the next page / run. A failure here only costs a
+// re-send. Never a row the user categorized meanwhile.
+async function markAiSkipped(ids) {
+  if (!ids || !ids.length) return;
+  await pool.query(
+    "UPDATE transactions SET ai_skipped_at = now() WHERE transaction_id = ANY($1::text[]) AND user_category IS NULL",
+    [ids]
+  ).catch((e) => console.error("categorize: could not mark unanswered rows:", e.message));
+}
 
 // GET /api/categorize/status — how many uncategorized transactions exist
 //
@@ -151,8 +163,10 @@ async function runCategorizeOnce() {
       // produced: REPLACE(REPLACE(REPLACE(LOWER($2),'\','\\'),'%','\%'),'_','\_')
       // with ESCAPE '\'.)
       const escPat = "REPLACE(REPLACE(REPLACE(LOWER($2), '\\', '\\\\'), '%', '\\%'), '_', '\\_')";
+      // An exact rule compares TRIMmed values (cycle-9 F24): the pattern is
+      // stored trimmed, so a merchant with a trailing space never matched.
       const cond = rule.match_type === "exact"
-        ? "LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) = LOWER($2)"
+        ? "TRIM(LOWER(COALESCE(user_merchant_name, merchant_name, name, ''))) = LOWER(TRIM($2))"
         : rule.match_type === "starts_with"
         ? `LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE ${escPat} || '%' ESCAPE '\\'`
         : `LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE '%' || ${escPat} || '%' ESCAPE '\\'`;
@@ -331,7 +345,11 @@ async function runCategorizeOnce() {
       // next page (the same rows, paid for again, up to AI_MAX_PER_RUN) and in
       // every later run. Rules and the free maps still reach it.
       const batchRes = await pool.query(
-        `SELECT transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant, amount, date, category
+        // txn_day: the plain 'YYYY-MM-DD' (cycle-9 F26 — the DATE column
+        // arrives as a JS Date, so every prompt line carried "Mon Nov 16 2026
+        // 00:00:00 GMT+0000 (Coordinated Universal Time)").
+        `SELECT transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant, amount, date,
+                to_char(date, 'YYYY-MM-DD') AS txn_day, category
          FROM transactions
          WHERE ${uncatPredicate}
            AND (ai_skipped_at IS NULL OR ai_skipped_at < now() - make_interval(days => ${AI_SKIP_RETRY_DAYS}))
@@ -344,7 +362,7 @@ async function runCategorizeOnce() {
 
       const txnList = batch.map((t, i) => {
         const hint = Array.isArray(t.category) && t.category[0] ? " [bank hint: " + t.category[0] + "]" : "";
-        return (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + t.date + hint;
+        return (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + (t.txn_day || t.date) + hint;
       }).join("\n");
 
       // tool_choice "auto" + strict tool + one re-ask (services/claude.js) —
@@ -386,7 +404,14 @@ async function runCategorizeOnce() {
       }
 
       if (!toolBlock || !toolBlock.input || !Array.isArray(toolBlock.input.categories)) {
+        // Cycle-9 F26: the batch was charged but nothing marked it, so the same
+        // rows were re-sent — and charged again — on every run. Stamp them like
+        // unanswered rows (F54): the AI leaves them for AI_SKIP_RETRY_DAYS;
+        // rules, the free maps and the Review widget still reach them.
         console.error("AI did not return expected tool_use block — stopping loop");
+        await markAiSkipped(batch.map((t) => t.transaction_id));
+        aiProcessed += batch.length;
+        catProgress.ai_batches += 1;
         break;
       }
       const answered = new Set();
@@ -411,12 +436,7 @@ async function runCategorizeOnce() {
       // Rows the model left unanswered (F54): stamped so they aren't re-sent
       // on the next page / run. Failure here only costs a re-send.
       const skipped = batch.map((t) => t.transaction_id).filter((id) => !answered.has(id));
-      if (skipped.length) {
-        await pool.query(
-          "UPDATE transactions SET ai_skipped_at = now() WHERE transaction_id = ANY($1::text[]) AND user_category IS NULL",
-          [skipped]
-        ).catch((e) => console.error("categorize: could not mark unanswered rows:", e.message));
-      }
+      await markAiSkipped(skipped);
       aiProcessed += batch.length;
       catProgress.by_ai = aiUpdated;
       catProgress.ai_batches += 1;
@@ -540,15 +560,20 @@ router.post("/api/categorize/review", async (req, res) => {
   // match_type is still honored.
   const ruleType = validTypes.includes(match_type) ? match_type : "exact";
   try {
+   // One transaction (cycle-9 F27): the category, the rule and the superseded
+   // rules' deactivation used to be three separate statements — a failure
+   // after the first left the category applied with the request answering 500,
+   // or a new rule beside the still-active rule it replaces.
+   const out = await inTransaction(pool, async (db) => {
     // Set user_category — the same path PATCH /api/transactions/:id/category uses.
-    const upd = await pool.query(
+    const upd = await db.query(
       `UPDATE transactions SET user_category = $1, user_category_source = 'review',
          category_verified_at = NULL, category_was_correct = NULL
        WHERE transaction_id = $2
        RETURNING transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant`,
       [category, transaction_id]
     );
-    if (!upd.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    if (!upd.rows.length) return { error: "Transaction not found", status: 404 };
     const merchant = upd.rows[0].merchant;
 
     let ruleCreated = false, ruleError;
@@ -563,17 +588,20 @@ router.post("/api/categorize/review", async (req, res) => {
       // implicit "remember" path, so silently widening an existing rule's scope
       // (e.g. flipping an exact rule to contains) would surprise the user. Only
       // the explicit POST /api/categorization-rules honors a chosen match_type.
-      await pool.query(
+      await db.query(
         `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
          VALUES ($1, $2, $3)
          ON CONFLICT (merchant_pattern, category) DO UPDATE SET
            is_active = true, updated_at = now()`,
         [merchant.trim(), category, ruleType]
       );
-      await deactivateSupersededRules(pool, merchant, category); // F46
+      await deactivateSupersededRules(db, merchant, category); // F46
       ruleCreated = true;
     }
-    res.json({ ok: true, transaction_id, category, rule_created: ruleCreated, rule_error: ruleError });
+    return { ok: true, transaction_id, category, rule_created: ruleCreated, rule_error: ruleError };
+   });
+   if (out.error) return res.status(out.status || 400).json({ error: out.error });
+   res.json(out);
   } catch (err) {
     console.error("review apply error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -840,7 +868,7 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
       const escPat = "REPLACE(REPLACE(REPLACE(LOWER($1), '\\', '\\\\'), '%', '\\%'), '_', '\\_')";
       let condition;
       if (rule.match_type === "exact") {
-        condition = "LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) = LOWER($1)";
+        condition = "TRIM(LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, ''))) = LOWER(TRIM($1))"; // F24
       } else if (rule.match_type === "starts_with") {
         condition = `LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE ${escPat} || '%' ESCAPE '\\'`;
       } else {

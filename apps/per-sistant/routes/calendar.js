@@ -20,20 +20,26 @@ module.exports = function ({ pool, helpers }) {
         pool.query("SELECT id, title, due_date as event_date, priority, 'todo' as type FROM todos WHERE deleted_at IS NULL AND due_date >= $1 AND due_date < $2 AND NOT completed", [startDate, endDate]),
         pool.query("SELECT id, subject as title, scheduled_at as event_date, status as priority, 'email' as type FROM emails WHERE deleted_at IS NULL AND scheduled_at >= $1 AND scheduled_at < $2", [startDate, endDate]),
         pool.query("SELECT id, COALESCE(title, CASE WHEN sensitivity = 'secret' THEN 'Secret note' ELSE LEFT(content, 30) END) as title, reminder_at as event_date, 'note' as type FROM notes WHERE deleted_at IS NULL AND reminder_at >= $1 AND reminder_at < $2", [startDate, endDate]),
-        pool.query("SELECT id, title, due_date, recurrence_rule, recurrence_interval, recurrence_anchor_day, priority FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND due_date IS NOT NULL"),
+        pool.query("SELECT id, title, due_date, snoozed_from, recurrence_rule, recurrence_interval, recurrence_anchor_day, priority FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND due_date IS NOT NULL"),
       ]);
       // Project future recurring instances into this month
       const projected = [];
       const start = new Date(startDate);
       const end = new Date(endDate);
       for (const t of recurring.rows) {
-        let nextDate = calDate(t.due_date); // a DATE value as local midnight (cycle-8 F52)
+        // A snoozed instance projects from the date it was due BEFORE the
+        // snooze (cycle-9 F55 — the same base the next real instance steps
+        // from); dates up to its snoozed due date are this instance itself.
+        const due = calDate(t.due_date); // a DATE value as local midnight (cycle-8 F52)
+        const snoozed = !!t.snoozed_from;
+        let nextDate = snoozed ? calDate(t.snoozed_from) : due;
+        const anchorDay = t.recurrence_anchor_day || nextDate.getDate();
         let safety = 0;
         // F124: the bound is a runaway guard, not a horizon — 100 steps of a
         // daily task stopped projecting ~3 months out, so later months showed
         // none of its instances. 5000 steps ≈ 13 years of a daily task.
         while (nextDate < end && safety++ < 5000) {
-          if (nextDate >= start && nextDate < end) {
+          if (nextDate >= start && nextDate < end && !(snoozed && nextDate <= due)) {
             // Only add if not already in the actual todos
             const dateStr = ymdOf(nextDate);
             if (!todos.rows.some(x => x.id === t.id && x.event_date && ymdOf(x.event_date) === dateStr)) {
@@ -41,7 +47,7 @@ module.exports = function ({ pool, helpers }) {
             }
           }
           // Chain anchor day keeps month-end projections on month-end (PD-2).
-          nextDate = advanceRecurrence(nextDate, t.recurrence_rule, t.recurrence_interval || 1, t.recurrence_anchor_day || calDate(t.due_date).getDate());
+          nextDate = advanceRecurrence(nextDate, t.recurrence_rule, t.recurrence_interval || 1, anchorDay);
         }
       }
       res.json([...todos.rows, ...emails.rows, ...notes.rows, ...projected]);

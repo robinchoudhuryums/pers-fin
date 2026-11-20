@@ -199,7 +199,8 @@ describe("money colours (decision 11)", () => {
     assert.doesNotMatch(dash, /class="value (warm|cost)"/);
     assert.doesNotMatch(dash, /color:var\(--(warm|red)\);">' \+ fmt\(/);
     assert.doesNotMatch(dash, /\.acct-balance\.(positive|negative|neutral)/);
-    assert.match(dash, /'value' \+ \(netBalance < 0 \? ' amt-bad' : ''\)/);
+    // (cycle-9 F73 moved this into setNetBalance(value, incomplete).)
+    assert.match(dash, /'value' \+ \(value < 0 \? ' amt-bad' : ''\)/);
   });
 
   it("an account card: a debt reads -$X owed in the default colour; only overdrawn cash is red", () => {

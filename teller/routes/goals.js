@@ -333,11 +333,25 @@ router.patch("/api/goals/:id", async (req, res) => {
         linkingAccount
           ? pool.query("SELECT COALESCE(available_balance, current_balance) AS balance FROM linked_accounts WHERE id = $1", [coercedBody.funding_account_id])
           : pool.query("SELECT balance FROM investment_accounts WHERE id = $1", [coercedBody.funding_investment_id]),
-        pool.query("SELECT current_amount FROM financial_goals WHERE id = $1", [req.params.id]),
+        // The goal WITH its present funding source (cycle-9 F35): its progress
+        // is the derived amount (balance − baseline) when it is already linked.
+        // The stored current_amount is the pre-link figure, so re-linking to
+        // another account — or saving the same link again — reset the goal to
+        // what it had before it was ever linked.
+        pool.query(
+          `SELECT g.current_amount, g.funding_account_id, g.funding_investment_id, g.goal_baseline_amount,
+                  la.name AS funding_account_name,
+                  COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+                  ia.name AS funding_investment_name,
+                  ia.balance AS funding_investment_balance
+             FROM financial_goals g
+             LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
+             LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+            WHERE g.id = $1`, [req.params.id]),
       ]);
       if (acctRow.rows.length && goalRow.rows.length) {
         const accountBalance = parseFloat(acctRow.rows[0].balance || 0);
-        const goalCurrent = parseFloat(goalRow.rows[0].current_amount || 0);
+        const goalCurrent = deriveGoalProgress(goalRow.rows[0]).current;
         inferredBaseline = Math.max(0, accountBalance - goalCurrent);
       } else {
         console.error("funding baseline inference: account or goal not found, skipping link");
@@ -532,6 +546,18 @@ router.delete("/api/investment-accounts/:id", async (req, res) => {
 router.get("/api/context-export", async (req, res) => {
   const format = req.query.format || "markdown";
   try {
+    // An optional section that can't be read is left out AND named (cycle-9
+    // F63): each used to fall back to an empty list with nothing said, so an
+    // export whose goals read failed looked like "no goals". The failure is
+    // logged; the export lists the section under sections_unavailable (JSON) /
+    // a "Not included" line (markdown). Accounts, spending and subscriptions
+    // are required — a failure there is still a 500.
+    const unavailable = [];
+    const section = (name, promise, fallback) => promise.catch((err) => {
+      console.error("context-export: " + name + " could not be read:", err.message);
+      unavailable.push(name);
+      return fallback;
+    });
     const [accounts, monthlySpend, subs, goals, creditCards, netWorth, recentInsight, settings, investmentAccts] = await Promise.all([
       // SXE-9: drop the Plaid brokerage phantom (the same account also lives in
       // investment_accounts with the real holdings value — getNetWorth's
@@ -550,7 +576,7 @@ router.get("/api/context-export", async (req, res) => {
       pool.query("SELECT display_name, amount, cadence_days, category, next_expected FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"),
       // JOIN the funding account/investment so deriveGoalProgress can compute
       // the same funding-derived current_amount the dashboard shows (F2).
-      pool.query(
+      section("Financial Goals", pool.query(
         `SELECT g.*,
                 COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
                 la.name AS funding_account_name,
@@ -561,16 +587,16 @@ router.get("/api/context-export", async (req, res) => {
          LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
          WHERE g.is_active = true
          ORDER BY g.target_date ASC NULLS LAST`
-      ).catch(() => ({ rows: [] })),
-      pool.query("SELECT name, mask, current_balance, available_balance, credit_limit, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL").catch(() => ({ rows: [] })),
-      pool.query("SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC LIMIT 6").catch(() => ({ rows: [] })),
+      ), { rows: [] }),
+      section("Credit Card Details", pool.query("SELECT name, mask, current_balance, available_balance, credit_limit, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL"), { rows: [] }),
+      section("Net Worth History", pool.query("SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC LIMIT 6"), { rows: [] }),
       // SXE-9: only real insights — categorize / rebuild / ask / scan usage rows
       // share this table, and auto-sync's categorize run made "[ML
       // Categorization] AI returned 12 categorization(s)" the "latest analysis".
-      pool.query("SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] })),
-      pool.query("SELECT zip_code FROM user_settings WHERE id = 1").catch(() => ({ rows: [{}] })),
+      section("Most Recent AI Analysis", pool.query("SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1"), { rows: [] }),
+      section("Location", pool.query("SELECT zip_code FROM user_settings WHERE id = 1"), { rows: [{}] }),
       // SXE-9: Plaid + manual brokerages were missing from the Accounts section.
-      pool.query("SELECT name, account_type, institution, balance FROM investment_accounts WHERE is_active = true ORDER BY balance DESC NULLS LAST").catch(() => ({ rows: [] })),
+      section("Investment Accounts", pool.query("SELECT name, account_type, institution, balance FROM investment_accounts WHERE is_active = true ORDER BY balance DESC NULLS LAST"), { rows: [] }),
     ]);
 
     const zipCode = settings.rows[0]?.zip_code;
@@ -606,11 +632,17 @@ router.get("/api/context-export", async (req, res) => {
         net_worth_history: netWorth.rows,
         latest_insight: recentInsight.rows[0] || null,
         location: state ? { zip: zipCode, state } : null,
+        // F63: the sections above that could not be read (empty there for that
+        // reason, not because there is nothing).
+        sections_unavailable: unavailable,
       });
     }
 
     // Markdown format
     let md = "# My Personal Finance Data (exported " + new Date().toLocaleDateString() + ")\n\n";
+    if (unavailable.length) {
+      md += "> **Not included:** " + unavailable.join(", ") + " could not be read for this export. Their absence below does not mean there is nothing to show — export again to retry.\n\n";
+    }
 
     md += "## Accounts\n";
     for (const a of accounts.rows) {
@@ -703,7 +735,7 @@ router.get("/api/context-export", async (req, res) => {
 router.get("/api/fire-projection", async (req, res) => {
   try {
     const { getNetWorth, getMonthlyIncome, getMonthlySpending } = require("../services/financial-queries");
-    const { computeFireProjection, computeRunwayMonths } = require("../services/projections");
+    const { computeFireProjection, computeRunwayMonths, fireAverages } = require("../services/projections");
 
     const [nw, incomeRows, spendingRows, settingsRow] = await Promise.all([
       getNetWorth(pool),
@@ -715,15 +747,11 @@ router.get("/api/fire-projection", async (req, res) => {
     const annualReturnPct = s.fire_expected_return_pct != null ? parseFloat(s.fire_expected_return_pct) : 5;
     const withdrawalRatePct = s.fire_withdrawal_rate_pct != null ? parseFloat(s.fire_withdrawal_rate_pct) : 4;
 
-    // Drop the current (partial) month, average the completed remainder.
-    const thisMonth = currentMonth();
-    const completed = (rows) => rows.filter(r => String(r.month).slice(0, 7) !== thisMonth);
-    const avg = (rows, key) => {
-      const vals = completed(rows).map(r => parseFloat(r[key]) || 0);
-      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-    };
-    const avgIncome = avg(incomeRows, "total_income");
-    const avgSpending = avg(spendingRows, "total_spend");
+    // Drop the current (partial) month; income and spending are averaged
+    // over the same completed months (fireAverages — cycle-9 F33).
+    const averages = fireAverages(incomeRows, spendingRows, currentMonth());
+    const avgIncome = averages.avg_income;
+    const avgSpending = averages.avg_spending;
     const monthlySpending = s.fire_monthly_spending_override != null
       ? parseFloat(s.fire_monthly_spending_override)
       : avgSpending;
@@ -750,7 +778,7 @@ router.get("/api/fire-projection", async (req, res) => {
         spending_overridden: s.fire_monthly_spending_override != null,
       },
       data_basis: {
-        completed_months_used: completed(spendingRows).length,
+        completed_months_used: averages.months,
         avg_monthly_income: Math.round(avgIncome * 100) / 100,
         avg_monthly_spending: Math.round(avgSpending * 100) / 100,
         monthly_savings: Math.round(monthlySavings * 100) / 100,

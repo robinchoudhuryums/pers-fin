@@ -1,3 +1,7 @@
+---
+description: "Scaffold the optional .cycle/ state dir + PROJECT_HEALTH.md (idempotent)"
+---
+
 Scaffold the optional .cycle/ state directory for this project so the
 file-backed workflow (the implement commands' CHECKPOINT, /cycle-status,
 /cycle-resume, and per-cycle metrics) works. Create only what is

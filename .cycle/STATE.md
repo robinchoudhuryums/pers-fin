@@ -9,15 +9,411 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-Cycle: 8
+Cycle: 9
 Phase: reflect
-Scope: broad (late-Oct 2026 broad scan — all non-frozen subsystems, weighted to the unaudited work since seams audit #3: roadmap T2.1–T3.3 + design D1–D7)
-Updated: 2026-11-04
+Scope: broad (Nov 2026 broad scan — all non-frozen subsystems, weighted to the work since the cycle-8 scan: roadmap T4.1 A1–A10, cycle-8 expansion E1–E5, seams audit #4 S4-1..S4-5, the opening screen)
+Updated: 2026-11-19
 
-(Machine-read fields for the v1.43.0 commands: the next /broad-scan,
-/targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
+(Machine-read fields for the v1.51.0 commands: the next /broad-scan,
+/targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Cycle 9 REFLECT (2026-11-19):** block `.cycle/blocks/9-a-reflect.md`, metrics row appended. Net −2 = 17 production
+  fixes (1 High — F59, CI only; 3 Medium — F20 F28 F39; 13 Low) − 19 new failure modes (1 Medium — F8's nodemailer 10
+  unverified against the real SMTP provider; 18 Low); 0 capabilities; 62 defensive. Corrected the summaries' 11 fixes /
+  20 failure modes: the always-broken Per-sistant controls F66–F70 and the manual-account delete F14 count as fixes;
+  F28's double-counted carried paycheck added; two Batch 5 failure modes removed (closed by the follow-ons / equal to
+  pre-cycle behaviour). INV-161–165 are candidates (backup verify, calendar-proof tests, `[hidden]`, a failed read is
+  never empty data, account removal) — add them to the library at the next /sync-docs. No estimates row: the scan's
+  batch plan carried no sizes. Seams counter 0 → 1.
+  - **Where I left off:** cycle 9 is closed. Open: the Deferred list (F7 F25 F29 F51 F57 F62 F64), the expansion plan
+    (E1 = G1 + G2, E2 = ST1 + ST2, E3 = ST4 + ST5 + G3) and the operator items (backup secrets + a restore drill, Node
+    20 on Render, one test email, the Knowledge reindex). The next /broad-scan, /targeted-audit or /audit opens cycle 10.
+- **Cycle 9 Batch 10 (DONE, 2026-11-19) — test honesty, docs, hygiene:** block
+  `.cycle/blocks/9-batch10-broad-implement.md`. F61 (`tests/api.test.js` rewritten against the real standalone app over a
+  recording pool — 39 tests; `tests/contract/c9-batch10` — the Sheets Transactions / Tax / Income tabs on real rows, a
+  full run with every tab's SQL on the real schema and one failing tab isolated, and the subscription / cleanup /
+  investment-account routes; `runSyncAll(deps)` test seam), F60 (README "12 modules" → 13; CLAUDE.md's liabilities
+  sentence — the other listed items were already correct), F6 (`scripts/pg-ssl.js` `pgSsl()` in the five scripts that
+  build their own pool), F8 (`npm audit fix`; express ^4.22.3, csv-parse ^7.0.3, nodemailer ^10.6.0, engines >=20 — 18
+  advisories → 6, none high), F63 (sheets-sync loads dotenv first; the context export's `section()` — logged,
+  `sections_unavailable`, a "Not included" line).
+  - **Tests:** `npm test` 3699 / 3699 (193 files; Perfin 2861, Per-sistant 838); contract 410 / 410 (8 new); Playwright
+    94 / 94 on the upgraded dependencies; five shifted clocks 84 / 84 (unit) and 8 / 8 (contract) each; 22 of 22
+    single-rule mutations of production code caught, tree restored.
+  - **Decisions:** F8 — took the two majors that run on Node 20 and could be verified here (csv-parse 7: its changelog
+    says no breaking change; nodemailer 10: a real SMTP round trip in the test process), left googleapis 190 and
+    @simplewebauthn/server 14 (Node 22) and node-cron 4 (ESM rewrite). F6 — the two detectors' CLI pools included (same
+    hard-coded setting as the three named scripts). F63 — the export also SAYS what is missing (JSON key + markdown
+    line), not only logs it. F61 — rewrite, not delete: the routes behind the replicas had little or no real coverage.
+  - **Net score:** 0 − 1 = −1 (no finding would have fired in production this month; new: the nodemailer major is
+    unverified against the real SMTP provider and needs Node 20).
+  - **Operator:** confirm Render runs Node 20+; send one email after deploying; decide on Node 22 for the Dockerfile /
+    csv-import.yml to clear the last 6 advisories.
+  - **Open follow-ons:** 6 advisories remain and nothing in CI runs `npm audit` (ST5); most other Sheets tabs are
+    value-tested only where earlier batches added cases; the tax notes read still fails silently; `plaid/server.js`
+    (frozen) still forces TLS.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Every cycle-9 fix batch
+    (1–10) is done. Docs synced for Batches 9 and 10 (/sync-docs, 2026-11-19): CLAUDE.md (pg-ssl.js + INV-160, the
+    sheets-sync / goals.js / perfin-shared.css / perfin-materialize.js entries, Settle Up, the accounts grid, Quick
+    Add Bill, Ask, Web Push, the context export, money formatting, PGSSLMODE in Environment, Operator state item 7 —
+    Node 20 + the remaining advisories — Known Open Issues, the test list and counts 3699 / 193 / contract 410 /
+    Playwright 94), apps/per-sistant/CLAUDE.md (fetchList / loadFailedHtml, associateLabels, the Tab trap, nodemailer
+    10, the two test files, 838) and README.md (counts). Next: `/reflect` to close the cycle, or the expansion /
+    deferred items below.
+- **Cycle 9 Batch 9 (DONE, 2026-11-19) — Perfin UI (+ the Per-sistant items of F79):** block
+  `.cycle/blocks/9-batch9-broad-implement.md`. F73 (Settle Up: `settleLeg` / `settleLoadState` — a failed leg means
+  "Net not available", no Mark settled, a Try again; the Accounts net is "—" when investments couldn't be loaded), F74
+  (`saveAccountField` + `reloadAccountsSoon`: the grid isn't re-rendered while a grid input has focus or a save is in
+  flight), F75 (`[hidden] { display: none !important; }` in perfin-shared.css), F76 (pageshow handler in
+  perfin-materialize.js), F77 (loadForecast / Resolve / linkAccount check their answers), F78 (`asking` and `qabSaving`
+  guards), F79 (light-theme td separator, range-select label, fmt() in Budgets / Accounts / the split total,
+  `pushRegistration` with a deadline; Per-sistant `fetchList` + `loadFailedHtml` on the four list pages,
+  `associateLabels`, the modal Tab trap).
+  - **Tests:** `npm test` 3648 / 3648 (42 new — tests/cycle9-b9.test.js 29, apps/per-sistant/tests/cycle9-b9.test.js 13;
+    191 files; Perfin 2815, Per-sistant 833); contract 402 / 402 (no server change); Playwright 94 / 94 (1 new — the
+    hidden-attribute check); five shifted clocks 62 / 62 each; mutation check 29 of 29 Perfin and 12 of 13 Per-sistant
+    fail against the pre-fix source. One pin updated (design-d2's net-balance class).
+  - **Decisions:** F75 — one global rule rather than per-element `[hidden]` rules (the e2e sweeps of every page pass
+    with it). F74 — defer the re-render while a grid input has focus rather than rebuild-and-restore typed values. F73 —
+    no net at all when a money leg is missing; a hidden widget stays hidden on a failed first load. F79 — the "about 80
+    unassociated labels" are fixed by one runtime pass (`associateLabels`), not by editing each form; whole-dollar formats
+    (Calendar chips, pyramid) left as they are.
+  - **Net score:** 2 − 1 = +1 (F75's sign select and F79's labels / money / separators were present on every load; new:
+    F74's deferred re-render can show earlier figures while a grid field has focus).
+  - **Open follow-ons:** F76 not exercised (needs Safari bfcache); a hidden Settle Up widget stays hidden on a failed
+    first load; F74 covers the dashboard grid only; labels followed by a wrapper element, and Per-sistant's Health /
+    Jobs / Knowledge / dashboard loads, are not covered by F79.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs not yet synced for
+    Batch 9 — run `/sync-docs` (the block lists what). Then `/broad-implement Batch 10` (test honesty, docs, hygiene:
+    F61 F60 F6 F8 F63 — read the list from the plan below).
+- **Cycle 9 Batch 8 (DONE, 2026-11-19) — Per-sistant behaviour and UI (+ two Perfin items):** block
+  `.cycle/blocks/9-batch8-broad-implement.md`. F52 (PATCH /api/todos/:id clears the anchor only when the due date
+  changed), F53 (`profileTextChanged`: fit scores cleared only when the resume / preferences text changed), F50
+  (parseFrontmatter: an indented line after an empty privacy key is its value, a blank line doesn't end a block list;
+  VAULT_PARSE_VERSION 4), F65 (`calEventDay` reads event_date), F66 (toggles send the other state), F67 (openCompose
+  first), F68 (the click handler ignores `.note-bulk-check`), F69 (shortcuts return on Ctrl / Cmd / Alt), F70
+  (applyTheme sets body[data-mode] + ps-ui.mode; themeScript's effectiveMode for Auto), F71 (`status-msg error`), F72
+  (`quickRecipient`, whole-word weekdays, `quickMonthDay`), F54 (`waitingEmails` → an email_failed entry while SMTP_HOST
+  is unset), F55 (db/032 `todos.skipped` + `snoozed_from`; skip = completed with no completion time; `scheduleBase`;
+  the roll ignores a rule-less task and complete-recurring completes it plainly), F56 (`todoFieldsFromNote`), F58
+  (narrower `looksFinancial`, Slack failures logged, briefing on main_new), F26 (a no-tool batch stamped via
+  `markAiSkipped`; txn_day), F27 (stale sweeps `AND is_active = true`; rename-rule delete and categorize review in one
+  transaction; manual-bill name 400).
+  - **Tests:** `npm test` 3606 / 3606 (62 new — apps/per-sistant/tests/cycle9-b8.test.js 51, tests/cycle9-b8.test.js 11;
+    189 files; Perfin 2786, Per-sistant 820); contract 402 / 402 (9 new — tests/contract/c9-batch8); Playwright 93 / 93;
+    five shifted clocks 147 / 147 each; mutation check 43 of 47 Per-sistant unit, 10 of 11 Perfin unit and 8 of 9
+    contract fail against the pre-fix source (the old manual-bill PATCH never answers, so that test hangs there).
+    Pins / doubles updated: api.test.js (Quick Add harness), broad-scan-c8-batch5 / batch6, scan-sept-batch6,
+    scan-oct-batch3 (helpers.js bare catches 3 → 2), scan-sept-batch3 (connect stub), scan-sept-batch4, seams-audit-4-s4.
+  - **Decisions:** F50 — parse the continuation (an indented line under an empty privacy key) instead of the plan's
+    "empty value → private": a truly empty `sensitivity:` (Obsidian leaves blank properties) stays absent, so existing
+    notes don't silently leave the index. F53 — the plan's fix only (reset on a text change); salary / locations / remote
+    still unused. F54 — the notice only; no age limit on the burst once SMTP is set. F55 — a `skipped` flag with
+    completed_at NULL (the missed-row shape) rather than reusing `missed`; snooze keeps the schedule by storing
+    `snoozed_from`; a rule-less recurring task completes as a plain one rather than a 400. F56 — the todo is still
+    created (title or a plain label, no description) rather than refused. F58 — `renew` and bare `$` removed from the
+    gate; `bill` / `account` / `credit` only in finance phrases. F70 — the select drives the real mechanism
+    (body[data-mode] + ps-ui) and shows this browser's choice. F27 — `inTransaction` exported from merchant-rename.js and
+    reused by categorize.js.
+  - **Net score:** 2 − 4 = −2 (F65 and F27's sweep fired; new: snooze no longer moves a series, the narrower finance
+    gate's false negatives, F50's restrictive continuation, F26's 30-day deferral after a one-off failure).
+  - **Open follow-ons:** profile salary / locations / remote unused; past-due emails still burst once SMTP is set;
+    recurring-without-rule still accepted on create; a hand-reopened MISSED instance keeps `missed`; the snooze route
+    500s on a malformed date; Quick Add's UTC date and title cleanup; a secret note's title copied to its todo; the Theme
+    select doesn't follow the sidebar toggle until reload.
+  - **Operator:** one full Knowledge reindex after deploy (parse version 4); delete unwanted past-due scheduled emails
+    before setting SMTP_HOST.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs synced for Batch 8
+    (/sync-docs, 2026-11-19): CLAUDE.md (tree entries, API list, operator state item 3 — parse version 4, test list +
+    counts 3606 / 189 / contract 402, Known Open Issues — Batch 8 done with its follow-ons, INV-27 / 74 / 112 / 124),
+    apps/per-sistant/CLAUDE.md (recurring tasks, theme mechanism, Job Radar profile, frontmatter rule, finance gate,
+    notification check, links, shortcuts, db/032, the test file, count 820), README counts. No new source paths; no
+    new operator state beyond the reindex. Next: `/broad-implement Batch 9` (Perfin UI: F73 F74 F76 F75 F77 F78 F79 —
+    read the list from the plan below).
+- **Cycle 9 Batch 7 (DONE, 2026-11-18) — bank-sync recovery:** block `.cycle/blocks/9-batch7-broad-implement.md`.
+  F13 (enrollments.js `retireEmptyEnrollments`: a Teller enrollment with no accounts, while another at the same
+  institution has some, is deleted — inside POST /api/enroll's transaction, never the one just created, and fail-soft at
+  the top of syncAllEnrollments for one stranded earlier), F14 (DELETE /api/accounts/manual/:id: 409 `has_transactions`
+  with the count until `?delete_transactions=1`, then transactions + snapshots + account in one transaction; the Accounts
+  page asks and retries), F15 (csv-formats.js: a generic file with Debit / Credit columns and no Amount column is
+  |debit| − |credit|; `isTwoColumnGeneric`; such a file has positive_means null in the route, CLI and both forms), F16
+  (a Plaid `modified` row the upsert inserted counts in `added`), F17 (findDuplicateInvestmentItem inner-joins the
+  registry; the investments-only unlink falls back to the institution name when it can't list the accounts, unless
+  another connection has that name), F18 (`transactionRunSynced` gates the last_txn_sync_at stamp; a failed read in
+  recordSyncResultNow writes nothing and returns `recorded: false`; a partial webhook sync fails its event in both
+  handlers), F19 (the Plaid dedupe key is the hash of header.payload), F35 (the goal PATCH's inferred baseline uses
+  deriveGoalProgress of the goal with its present funding source), F36 (runBudgetAlertTick calls runBudgetSnapshot when
+  a budget has rollover on, then re-reads the status).
+  - **Tests:** `npm test` 3544 / 3544 (52 new — tests/cycle9-b7.test.js; 187 files; Perfin 2775, Per-sistant 769);
+    contract 393 / 393 (10 new — tests/contract/c9-batch7); Playwright 93 / 93; five shifted clocks 217 / 217 each;
+    mutation check 39 of 52 unit and 10 of 10 contract fail against the pre-fix source. A double and three pins updated
+    (cycle-fixes' recordSyncResult double, w2's dedupe key, batch16's sign-select pin, batch5's `let budgets` pin).
+  - **Decisions:** F13 — delete (not SUSPEND) and no revoke at Teller: the row has no accounts or transactions, and its
+    token is usually why the bank was re-linked; the sync-time call also clears enrollments stranded before the fix.
+    F14 — confirm-then-delete rather than a silent cascade or a bare 409, since a manual account's entries exist nowhere
+    else. F15 — the two-column read only when there is no Amount column, and the sign option dropped for such a file.
+    F17 — both the recommended guard change and the unlink fallback, the fallback only when no other connection shares
+    the institution name. F18 — a partly synced run still stamps; only a run of errors with nothing synced doesn't. F36 —
+    the existing runBudgetSnapshot (so days 1–5 refresh), called only when a budget has rollover on.
+  - **Net score:** 0 − 2 = −2 (no fix I can confirm fired this month; a zero-account second login at the same bank is
+    retired at the next sync; a stranded investment account is listed twice after a now-permitted re-link).
+  - **Open follow-ons:** Teller issuing new account ids on a reconnect still duplicates transactions (no Teller
+    duplicate guard); an empty enrollment with no same-institution replacement is still unlisted; unlinking a bank
+    doesn't remove its balance snapshots; a re-link doesn't deactivate a stranded same-mask investment account; the
+    two-column names are a fixed list; recordSyncResult's write still only logs a failure; two identical Plaid
+    deliveries in one second share a key; the in-app budget alerts still depend on the snapshot job.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). `/sync-docs` done for
+    Batches 6 and 7 (2026-11-19): CLAUDE.md — the tree entries (csv-formats, webhook-verify, cash-flow, payday-alerts,
+    advice, advice-alerts, tax-investments, projections, enrollments, investments, both webhook handlers, whats-new,
+    import-csv-cli), the feature text (CSV import, goal funding, budget alerts, the Plaid re-link gotcha, the Teller
+    re-link, the Plaid `added` rule, data freshness, the plan-change alert), the API list, Known Open Issues (Batches 6
+    and 7 done with their follow-ons; the Liabilities note moved under F60), INV-107 / 125 / 137 / 138 / 140 / 146 / 150,
+    the test list and counts (3544 / 187 / Perfin 2775 / contract 393); README counts. No new operator state, no
+    subsystem file changes. Next: `/broad-implement Batch 8` (Per-sistant: F52 F53 F50 F65–F72 F54 F55 F56 F58 F26 F27
+    — read the list from the plan below).
+- **Cycle 9 Batch 6 (DONE, 2026-11-18) — cash plan:** block `.cycle/blocks/9-batch6-broad-implement.md`.
+  F30 (advice.js `detectRaises`: every deposit of the run must be 3% above the old level, so one raised deposit among
+  cents-noisy paychecks is no longer a half-size raise dated to an old paycheck; advice-alerts.js keys a raise by payer +
+  `since`, with the old payer + level key kept as `legacy`), F31 (a high-tier carried debt with no payment on file stays
+  in `planned` with a $0 payment and `minimum_unknown`; its payoff figures are null; headline "on top of its regular
+  payment"; the card says "Set its monthly payment", the prompt line says there is no payoff date), F32 (the spending
+  average over the completed months that have data, `cash.spending_months`, a note under 3 months; the starter-buffer
+  step's emergency date = buffer months + high-debt payoff + the rest), F33 (projections.js `fireAverages` — income and
+  spending over the same completed months — behind GET /api/fire-projection and Ask's get_fire_projection), F37
+  (`unplaced`: what a step's debts can't take this month goes to the emergency fund or investing and the headline says
+  so, `headline.amount_*` unchanged; idle-cash lines exact unless the cash cap cuts them; only announced windfalls are
+  marked seen), F38 (cash-flow `avg_daily_spend` = the projected daily average; payday candidates `ORDER BY
+  transactions.id`; whats-new `COUNT(*) OVER()`; tax-investments reads a later row that cancels a row of the year).
+  - **Tests:** `npm test` 3492 / 3492 (38 new — tests/cycle9-b6.test.js; 186 files; Perfin 2723, Per-sistant 769);
+    contract 383 / 383 (5 new — tests/contract/c9-batch6); Playwright 93 / 93; five shifted clocks 249 / 249 each;
+    mutation check 29 of 38 unit and 5 of 5 contract fail against the pre-fix source. Two existing pins updated
+    (roadmap-t4-1-a6's alert key, roadmap-t2-2-cash-l3's ORDER BY).
+  - **Decisions:** F31 limited to the high tier, as the finding says (a 4–8% loan with no payment is a follow-on); the
+    loan's payment counts as $0 and its payoff figures are blank rather than computed without the real payment. F37: the
+    remainder goes to the next step instead of lowering the headline amount, so the plan-change alert doesn't fire for a
+    debt's last payment; with a medium-interest debt present it is still shown as investing (simplification). F32: with
+    no month of data the average stays $0 and a note says so. F30: the `legacy` key avoids a repeat push after deploy
+    only when the level is unchanged. F38: `avg_daily_spend` fixed in the projection's output, the 60-day input left.
+  - **Net score:** 1 − 2 = −1 (the "Daily discretionary" label; a small noisy raise not reported, the remainder shown
+    as investing beside a medium-interest debt).
+  - **Open follow-ons:** a 4–8% loan with no payment still left out; a what-if extra payment on a loan with no payment
+    ignored; the surplus doesn't subtract an unknown loan payment; no month of data → targets are the floor alone;
+    whats-new's subscription / notification counts still capped; the capped headline names only the next debt; the
+    medium headline names only the first debt.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs synced with Batch 7's
+    (2026-11-19). Batch 7 followed (above).
+- **Cycle 9 Batch 5 follow-on items (DONE, 2026-11-18):** block `.cycle/blocks/9-batch5-followons-broad-implement.md`.
+  The seven follow-ons Batch 5's block listed, in its order. FO-1 (dashboard.ejs: the Debt Payoff mode returns a
+  "settings couldn't be loaded" status instead of storing today's debt as the baseline when GET /api/settings fails),
+  FO-2 (new push_state `failed` in CHECK_LISTS: a stale `retry` row → `failed`, a stale `held` row → `expired`; bell
+  "Push failed — not delivered"), FO-3 (notifications.js `urgentRetry`: a retry of a `bypassQuiet` kind — a PIN lockout
+  — opens the release gate during quiet hours and the job then reads and pushes only those rows; true at boot), FO-4
+  (`passingPushError`: no status / 408 / 429 / 5xx are retried, any other 4xx and an unreadable stored subscription are
+  `lasting` → `none`, logged, the subscription kept), FO-5 (new column `notification_log.hold_until`, written at the
+  hold; the 12-hour base is the later of it and the end by today's settings), FO-6 (Per-sistant settings.js: the three
+  switches strict booleans checked before any query, keep-alive hours 0-23, a real IANA zone, session timeout 1-1440,
+  default_horizon in VALID_HORIZONS, dashboard_layout `{ widgets, hidden }` or null; settings-script.js `settingsReady`
+  blocks the four saves after a failed load; dashboard-script.js `layoutLoaded` blocks a layout save — Reset excepted),
+  FO-7 (the rent push carries `cover_items` = the other unpaid months, kept in the row's `data.cover_items` for the
+  release job; `itemCovered` takes a list; Per-sistant's `housingDueUnlessTask` asks about every unpaid month).
+  Decisions: `hold_until` is combined with today's settings by taking the LATER end (a stored end alone would cut a
+  lengthened window short); lasting failures keep the subscription (only 404 / 410 prune); the Settings page blocks
+  every form after a failed load rather than field by field; the cover list is stored in `data`, not a new column, and
+  `item_key` stays the oldest month's (Per-sistant's `perfinPushedItems` reads it). New tests/cycle9-b5-followons.test.js
+  (28), apps/per-sistant/tests/cycle9-b5-followons.test.js (16), tests/contract/c9-batch5-followons (8). npm test 3454
+  (185 files, Perfin 2685, Per-sistant 769), contract 378, Playwright 93, migrations re-run, five shifted clocks,
+  pre-fix the new files fail 27 of 28, 10 of 16 and 8 of 8. Net −2 (0 production fixes; a 4xx-refused push is dropped
+  rather than retried; with several months owed a hand-completed oldest task no longer resumes the rent push while a
+  later month's task shows).
+  - **Open follow-ons:** Debt Payoff shows 100% on a failed `/api/accounts` read (display only); a push dropped for a
+    lasting error is visible only in Recent errors; Per-sistant's Settings blocks the theme change too after a failed
+    load; `vault_branch` unchecked; `hold_until` can be up to a minute past the hour; a held rent push's cover list is
+    the unpaid months at send time.
+  - **Where I left off:** committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). `/sync-docs` done for
+    these follow-ons (2026-11-18): CLAUDE.md (notifications.js / housing.js entries, Web Push, the bell wording, the
+    Rent reminder, Per-sistant tasks, Debt Payoff, Database, Scheduled Tasks, Known Open Issues, INV-59 / INV-153, the
+    test list, counts 3454 / 185 / 378), apps/per-sistant/CLAUDE.md, README counts. No new operator state.
+    Next: `/broad-implement Batch 6` (F30 F31 F32 F33 F37 F38 — cash plan).
+- **Cycle 9 Batch 5 (DONE, 2026-11-18) — notifications and settings:** block `.cycle/blocks/9-batch5-broad-implement.md`.
+  F44 (notifications.js: the release job decides expiry per row — 12 hours past the END of the quiet window the row was
+  created in, by today's settings, else past its creation; the SQL expiry is gone), F46 (new push_state `retry` in
+  CHECK_LISTS: a push that reached no device with at least one passing failure is kept, the release gate opened, and
+  the release job pushes `held` and `retry` rows alike; dead subscriptions counted as `gone` → still `none`; the bell
+  says "Push failed — trying again"), F34 (housing.js: MIN(period) of the unpaid rows decides the window; item
+  `housing:<oldest>`; tag next month's when next month's rent is announced, else the oldest month's), F45
+  (openLinkedItems `surfacingOn` — due that day or earlier; passed by Perfin's itemCovered and Per-sistant's
+  housingTaskOpen / housingDueUnlessTask), F47 (settings.js: GET 500 on a failed read; insight_modules /
+  dashboard_widgets merged with `||`; ten switches strict booleans checked before any query; the idle timeout
+  Number.isInteger; settings.ejs toggles send one key, no read first; a toast on a failed load), F48 (db/030: the
+  detach function also clears auto_closed + one repair UPDATE), F49 (SSO validate: a non-string token a 400;
+  minutesUntilQuietEnd returns real minutes across a clock change). New tests/cycle9-b5.test.js (46),
+  apps/per-sistant/tests/cycle9-b5.test.js (10), tests/contract/c9-batch5 (14). npm test 3410 (183 files, Perfin 2657,
+  Per-sistant 753), contract 370, Playwright 93, five shifted clocks (two of them clock-change nights), pre-fix the new
+  files fail 36 of 46, 5 of 10 and 14 of 14. Net −1 (F45 likely − 2: a lasting push failure is now a repeating failed
+  job for up to 12 h; snoozing a linked task un-covers its reminder).
+  - **Where I left off:** Batch 5 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). `/sync-docs` done
+    for Batches 2, 3, 4 and 5 together (2026-11-18): CLAUDE.md — the tree entries (keep-alive, job-health, job-runner,
+    cash-flow, notify-prefs, ai-audit, enrollments, subscriptions, housing, settings, insights, categorize,
+    merchant-rename, notifications, ask, shell auth), `scripts/transfer-keywords.js` under Other key files and the
+    Detection & Categorization subsystem list (the one path the tree had that the list didn't), the feature sections
+    (subscription / transfer detection, rename + categorization rules, cash flow, Rent & Utilities, Per-sistant tasks,
+    auto-trigger, the audit, Web Push, the bell, Workflow hygiene, Scheduled Tasks, Security, the settings PATCH notes),
+    Database (two detected_subscriptions columns, push_state `retry`), the API list, Operator state item 5 (Keep Alive's
+    secrets), Known Open Issues (Batches 2–5 done with their follow-ons; two stale lines corrected), INV-59 / 71 / 104 /
+    105 / 112 / 113 / 123 / 124 / 140 / 142 / 149 / 150 / 153 / 155, the test list and counts (3410 / 183 / Perfin 2657 /
+    Per-sistant 753 / contract 370); apps/per-sistant/CLAUDE.md — linked tasks, housing-due, db/030, openLinkedItems,
+    the new test entry, 753; README — counts and one clause. Next: `/broad-implement Batch 6` (F30 F31 F32 F33 F37 F38
+    — cash plan).
+  - **Decisions:** F46 — a distinct state (`retry`) rather than reusing `held`, so the bell and the summary push don't
+    blame quiet hours; Per-sistant's perfinPushedItems still counts only sent / held (a retry reached no one). Dead
+    subscriptions (404 / 410) are not a reason to retry. F44 — the base uses today's quiet-hours settings; a failed
+    settings read falls back to the creation time. F45 — one predicate with a day (`surfacingOn`), passed by every
+    caller that asks "does the task cover this?"; openLinkedItems without it is unchanged. F34 — the tag keeps next
+    month's period when next month's rent is announced (its own 72 h dedup), the item is always the month owed. F47 —
+    the maps keep their PATCH field names and are merged (no new endpoint); a key can no longer be removed by omission.
+    F48 — db/030 edited in place (it is re-run every boot with CREATE OR REPLACE) rather than a second definition in a
+    new file.
+  - **Follow-ons:** the dashboard's Debt Payoff mode overwrites the stored baseline when its settings read fails; an
+    expired retry reads "Held for quiet hours — not pushed" in the bell; a never-held kind that fails during quiet hours
+    retries only after they end; a lasting push error (403) is retried for the full 12 h; with several months owed only
+    the oldest month's task is consulted; Per-sistant's own PATCH /api/settings untouched.
+- **Cycle 9 Batch 4 (DONE, 2026-11-18) — AI audit trust:** block `.cycle/blocks/9-batch4-broad-implement.md`.
+  F39 (ai-audit.js: subscriptions and utilities read apart, a total claim compared with the nearest real total;
+  savingsRateClaim — a percentage is the rate only when the phrase reaches it unbroken, never a recommendation /
+  benchmark / change; a monthly-rate category figure isn't compared with the month to date), F40 (claimSegments'
+  afterFigure → the period phrase counts only after the figure; contribution-room per_period in planFigures; an empty
+  comparison set is a warning unless the sentence is about pay), F41 (ask.js toolResultContent — trims by key in a
+  fixed order, then halves the longest list, always valid JSON; get_cash_plan puts what_if third), F42
+  (ACCOUNT_NAMES_SQL in tier 2's known set), F43 (the empty-run path no longer stamps insights_last_run;
+  seedPlanActions reads the earlier entry from the stored summary; the tax prompt gives 2024's amounts as 2024's). New
+  tests/cycle9-b4.test.js (56) and tests/contract/c9-batch4 (7). npm test 3354 (181 files, Perfin 2611), contract 356,
+  four shifted clocks, pre-fix the new files fail 37 of 56 and 6 of 7. Playwright not run. Net 0 (F39, F42 likely − 2 Low).
+  - **Where I left off:** Batch 4 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs synced with Batch 5's (above); when this was written they were NOT yet synced
+    for Batches 2, 3 and 4 — run `/sync-docs` (each block's DOCUMENTATION UPDATES NEEDED has the list). Next:
+    `/broad-implement Batch 5` (F44 F34 F45 F47 F46 F48 F49 — notifications and settings).
+  - **Decisions:** F39 — CROSS_PERIOD_RE and its pins are untouched; the monthly-rate skip is a separate rule on the
+    category comparison only (the subscription total is itself monthly). A subscription total may be either total (the
+    prompt gives one, the Subscriptions page the other). A colon doesn't break the savings-rate reach. F40 — the
+    empty-set finding is a warning, not a critical (nothing to measure the miss against). F43 — all three parts of the
+    finding were done; the tax prompt was reworded rather than given newer figures I couldn't verify.
+  - **Follow-ons:** the audit fetches monthly totals and the subscription count and checks neither; a pay sentence is
+    still judged against a non-empty plan set; the tax prompt has no per-year table; Ask's limit is still 12,000.
+- **Cycle 9 Batch 3 (DONE, 2026-11-17) — forecast and detection accuracy:** block `.cycle/blocks/9-batch3-broad-implement.md`.
+  F20 (scripts/transfer-keywords.js is the one keyword source; detect-subscriptions skips a row the transfer classifier
+  takes — unless the user dismissed that transfer — and retires active non-manual subscription rows keyed on a transfer
+  merchant), F28 (projectCashFlow carries today's unlanded payday to day 1 — paydayLanded, carried_income; the Teller
+  per-enrollment sync calls refreshTellerEnrollmentBalances, extracted from syncAllBalances), F21 (a new row's prior price
+  is its own series'; isOtherPlan → the upsert's $11 records no price change for a second plan under one key; new column
+  early_price_alerted_amount — each rule writes its own memory and reads both; the early rule skips an amount already
+  being charged), F22 (new column category_user_set; detection's promotion adds AND NOT category_user_set), F23
+  (rollManualSubscriptions in detection and GET /api/subscriptions), F24 (exact rules compare TRIMmed values in
+  merchant-rename and both categorize sites). New tests/cycle9-b3.test.js (35) and tests/contract/c9-batch3 (9); six
+  older tests' pins / stubs updated. npm test 3298 (180 files, Perfin 2555), contract 349, Playwright 93 / 93, five
+  shifted clocks, the contract file fails 7 of 9 pre-fix. Net +1 (F20, F28 − 1 Low).
+  - **Where I left off:** Batch 3 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
+    for Batches 2 and 3 — run `/sync-docs` (each block's DOCUMENTATION UPDATES NEEDED has the list; the new file
+    scripts/transfer-keywords.js needs a Subsystems entry). Batch 4 followed (above).
+  - **Decisions:** F20 — the transfer detector is unchanged and wins; a dismissed transfer is the user's way to keep a
+    series as a subscription (so a duplicate the user already resolved by dismissing the transfer isn't lost). F21 —
+    "another plan" = the new amount was already charged within two cadences up to the old price's last charge (same
+    price = within a cent or 0.5%). F28 — only TODAY's payday is carried (the plan's wording); a late one is a follow-on.
+    F23 — the anchor (last_charged) is kept so the day of month doesn't drift.
+  - **Follow-ons:** a paycheck a day late is still dropped; carried_income isn't shown on the dashboard; a two-plan key
+    still has one row per cadence; a variable-amount subscription alerts on each $1+ increase; daily-sync's two sync steps
+    leave transactions newer than balances for minutes; a raw-description transfer can't become a subscription by
+    dismissing it. OPERATOR: after the first detection run, look for real subscriptions that moved to Recurring Transfers
+    (dismiss the transfer to bring one back).
+- **Cycle 9 Batch 2 (DONE, 2026-11-17) — pre-auth and scheduler safety:** block `.cycle/blocks/9-batch2-broad-implement.md`.
+  F3 (auth.js: `verify` takes a string only, the PIN a string or number — a `j:{}` cookie or a PIN object no longer
+  throws in an async handler), F2 (the missed-jobs push can fire: job-runner `onLoad` hands its first read of
+  job_runs.last_ran_at to `jobHealth.noteBootSnapshot`; ungated watched jobs last claimed 36 h+ ago are the outage,
+  reported by one watchdog pass), F5 (`jobOff` — a job that finds itself switched off records a clean outcome;
+  notify-release records every run past quiet hours; the watchdog records its finished pass; cash-alerts only when both
+  checks are off), F4 (standalone gate: the .js / .css exemption only outside /api, any case), F10 (keep-alive.js never
+  caches a failed read and serves the last good schedule; keep-alive.yml retries a waking host and fails on a rejected /
+  unanswered schedule call), F11 (job-runner `gap()` ends on stop()). New tests/cycle9-b2.test.js (47; the workflow step
+  run in bash against a fake server); four older tests that pinned "records nothing when off" updated. npm test 3263
+  (179 files, Perfin 2520), contract 340, browser smoke 10 / 10, four shifted clocks, mutation 41 of 47 fail pre-fix.
+  Net −1 (0 fixes this month − 1 Low: keep-alive.yml is red while its secret is wrong or the server is down).
+  - **Where I left off:** Batch 2 committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR). Docs NOT yet synced
+    for Batch 2 — run `/sync-docs` (the list is in the block's DOCUMENTATION UPDATES NEEDED). Batch 3 followed (above).
+  - **Decisions:** F2 judges the outage from last_ran_at (the claim stamp) rather than the heartbeat, because heartbeats
+    are flushed only while the user is active (a "read before flush" would false-alarm after the user was away with the
+    process up, and lose the alert when a dashboard load flushed first). Gated jobs are left out of the outage list.
+    cash-alerts clears only when both checks are off (an enabled check that is "unchanged" may still owe a retry).
+  - **Follow-ons:** run the watchdog first after a load that finds a gap; a frozen-and-resumed process isn't detected;
+    job-watchdog's outcome is memory-only; the outage signature dedup hides a second long sleep with no normal wake
+    between. OPERATOR: before re-enabling Keep Alive, confirm SERVER_URL + API_KEY secrets (a wrong key now fails every
+    run); expect one "Scheduled jobs missed" push after a boot following 36 h+ asleep.
+- **Cycle 9 Batch 1 (DONE, 2026-11-13) — backups and CI can't-wait:** block `.cycle/blocks/9-batch1-broad-implement.md`.
+  F1 (db-backup.yml verifies by decrypting to a file, then `pg_restore --list` — the pipe failed on every real-size dump),
+  F9 (backup.sh enforces gpg's exit status), F12 (pg_dump's message withheld from logs; a CALENDAR_FEED_TOKEN under 24
+  characters is an operator-check warning), F59 (six date-dependent test files — `npm test` would have gone red on
+  2026-11-20). New tests/cycle9-b1.test.js runs both backup scripts in bash. npm test 3216 (also under eight shifted
+  clocks), contract 340 on a local Postgres, e2e not run. Net −1 (1 fix − 2 Low). /calendar.ics rate limit left out on
+  purpose (follow-on).
+  - **Where I left off:** Batch 1 and its `/sync-docs` committed and pushed on `claude/gracious-maxwell-li0vm7` (no PR
+    yet). Docs synced 2026-11-17: CLAUDE.md (the two-step backup verify in Operator state item 4 and deploy/vps, the
+    calendar-token check, tests/cycle9-b1.test.js, counts 3216 / 178 files / Perfin 2473, two new Key Design Decisions —
+    calendar-proof tests and never piping a verify — a cycle-9 Known Open Issues entry listing every open batch, INV-103 /
+    INV-126 wording, the Google Sheets env vars, and stale text fixed: the cosmic transition, SSO "on both apps", the
+    knowledge-reindex follow-on), README (counts, backups, 13 modules, archives, the dial), apps/per-sistant/CLAUDE.md
+    (offline support is not active — F51). Batch 2 followed (above). The scan's report (F1–F79, G1–G5, ST1–ST5,
+    Batches 1–10, E1–E3) is in the cycle-9 scan session; Batches 3–10 and the Deferred list (F7 F25 F29 F51 F57 F62
+    F64) are open.
+    OPERATOR: set the three backup secrets, re-enable Database Backup, run it once and do a restore drill.
+- **Cycle 9 scan (2026-11-09):** 79 findings, no Critical, two High (F1 the backup verify; F59 calendar-dependent
+  tests). Top by impact: F1, F59, F20 (a series detected as both subscription and transfer → double-billed forecast),
+  F39 / F40 (the insight audit's false criticals), F28 / F44 (a paycheck dropped on payday; quiet-hours holds that expire).
+  - **Open batch plan (the scan report itself was chat-only — this is the record):**
+    - **Batch 2 (DONE) — pre-auth and scheduler safety:** F3 (shell/middleware/auth.js `verify` / `handleLogin`: a non-string
+      session cookie `j:{}` or a PIN object with no toString throws in an async handler → hung request + false "New server
+      error"), F2 (the "Scheduled jobs missed" push can't fire: the runner ticks every job, then the watchdog flushes before
+      it reads — startup.js onCheck, job-health checkMissedJobs), F5 (a failed job outcome sticks once the job stops running
+      its body: a digest switched off after failing, notify-release after one failed push, a watchdog timeout), F4 (standalone
+      Perfin: `/api/….js|.css` skips the PIN gate when API_KEY is unset — teller/server.js:154), F10 (keep-alive.yml green
+      when its schedule call is rejected; keep-alive's fallback cached 6 h), F11 (shutdown during the runner's 20 s gap logs a
+      false "still running" error).
+    - **Batch 3 (DONE) — forecast and detection accuracy:** F20 (a series detected as BOTH subscription and transfer — the two
+      keyword lists differ — is billed twice in the forecast), F28 (the forecast starts tomorrow, so today's unlanded paycheck
+      is dropped → false low-cash alert; Teller per-enrollment sync doesn't refresh balances), F21 (price-rise watchdog:
+      prior_amount is the merchant's previous charge of any amount → false / monthly alerts), F22 (Utility → Subscription
+      reverted by the next detection), F23 (a manual subscription's next_expected never advances), F24 (exact rules store the
+      trimmed pattern, compare the untrimmed merchant).
+    - **Batch 4 (DONE) — AI audit trust:** F39 (false criticals: subscription total includes utilities, any % near "savings rate",
+      monthly-equivalent vs month-to-date), F40 (plan check: "per paycheck" bleeds to the next figure, contribution-room
+      figures missing, an invented amount passes when the plan recommends nothing), F41 (Ask's 12,000-char slice drops
+      what_if), F42 (entity check doesn't know account names; monthly totals fetched, never checked), F43 (an empty insight run
+      stamps insights_last_run).
+    - **Batch 5 (DONE) — notifications and settings:** F44 (quiet windows ≥ 12 h: early holds expire unpushed), F34 (rent push
+      tests only this month's window; item key names the wrong month), F45 (with linked tasks on, the rent lead-time reminder
+      reaches no one), F47 (GET /api/settings 200-with-defaults on a read error; toggle race; idle-timeout 7.5 → 500;
+      "false" → true), F46 (a transient push failure never retried), F48 (auto_closed not cleared on a hand reopen), F49
+      (standalone SSO non-string token; spring-forward release an hour late).
+    - **Batch 6 (DONE) — cash plan:** F30 (raise detection half-size + alert key churn), F31 (a ≥ 8% loan with no payment dropped →
+      "Invest"), F32 (spending average always ÷ 3; emergency date ignores the debt step), F33 (FIRE income averaged over
+      months with rows only), F37, F38 (smaller plan / forecast-label / payday-order / whats-new-count / year-end-cancel items).
+    - **Batch 7 (DONE) — bank-sync recovery:** F13 (a Teller reconnect strands the old enrollment), F14 (a manual account with
+      transactions can't be deleted — FK → 500), F15 (generic CSV with separate Debit / Credit columns), F17 (investments-only
+      unlink leaves accounts; guard refuses the re-link), F16, F18, F19, F35 (goal re-link resets progress), F36 (budget alert
+      rollover depends on an activity-gated snapshot).
+    - **Batch 8 (DONE) — Per-sistant:** F52 (task edit wipes the month-end anchor), F53 (Job Radar profile save clears all fit
+      scores), F50 (frontmatter privacy value on the next line fails open — needs one reindex), F65–F72 (mini-calendar reads
+      `ev.date`; automation / webhook toggles send the current state; "Use template" opens an empty form; bulk checkbox opens
+      the editor; single-key shortcuts ignore Ctrl / Cmd; Theme select does nothing; vault error hidden; quick parsers), F54,
+      F55, F56, F58, F26, F27.
+    - **Batch 9 (DONE) — Perfin UI:** F73 (Settle Up treats a failed leg as $0), F74 (card limit / APR typing wiped by the
+      re-render), F76 (Perfin entry overlay has no pageshow handler), F75 (`hidden` overridden by the element's own display
+      rule ×2), F77, F78, F79.
+    - **Batch 10 (DONE) — test honesty, docs, hygiene:** F61 (tests/api.test.js 29 of 33 replica tests; Sheets pins weak), F60 (doc
+      drift), F6 (three script pools ignore PGSSLMODE=disable — before any VPS cutover), F8 (18 dependency advisories), F63.
+    - **Deferred:** F7 (no timeout on push sends / queries — ST4), F25 (= G2), F29 (= G1), F51 (Per-sistant's service worker
+      is never registered — product decision, ST3), F57 (= G4), F62 (POST /api/cleanup — keep with a confirm or remove), F64
+      (frozen legacy Plaid server has no auth).
+    - **Expansion:** E1 = G1 (manual bills in the forecast) + G2 (a due month for quarterly / yearly manual bills); E2 = ST1
+      (the audit checks what the model was shown) + ST2 (a shared test clock + shifted-date CI job); E3 = ST4 (timeouts) +
+      ST5 (dependency check in CI) + G3 (a restore drill). Not batched: ST3, G4 (attachments UI), G5 (Job Radar preferences).
 - **Seams audit #4 REFLECT (2026-11-04):** block `.cycle/blocks/8-b-reflect.md`, metrics row appended, `.cycle/estimates.csv`
   started. Net +1 = 7 production fixes − 6 Low new failure modes; 1 capability (opening screen); 18 defensive. Corrected the
   summaries' 9 fixes / 4 failure modes (S4 and S5 → defensive; B1's Plaid timeout and S4's post-link warning added).
@@ -2371,7 +2767,7 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 0 (Seams & Invariants audit #4, 2026-11-02 — record below; audit #3 2026-10-22 and #2 June 2026 below it.)
+- **Subsystem cycles since last Seams audit:** 1 (cycle 9's reflect, 2026-11-19; Seams & Invariants audit #4, 2026-11-02 — record below; audit #3 2026-10-22 and #2 June 2026 below it.)
 
 ### Seams & Invariants audit #4 (2026-11-02 — counter reset to 0)
 Four parallel read-only reviews of cycle 8's seams (cross-app, scheduler/ops/migrations, shared

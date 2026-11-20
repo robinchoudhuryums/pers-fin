@@ -126,6 +126,15 @@ describe("Tax documents checklist (T3.3 K2) on real Postgres", { skip: SKIP }, (
   });
 
   it("linked tasks: each open form past its usual date opens a task; received or dismissed closes it", async () => {
+    // A form's usual date is in the year AFTER its tax year (Jan 31; Feb 15 for
+    // a 1099-B) and a task opens only once the form is PAST it — so from Jan 1
+    // to Feb 15 some of last year's forms aren't yet, and this test failed then
+    // (cycle-9 F59). Any open form not yet past its date is moved to yesterday,
+    // through the app's own route; the rest of the year this changes nothing.
+    const today = fq.todayStr();
+    const yesterday = require("../../teller/services/cadence").addDaysStr(today, -1);
+    const notDue = (await q("SELECT id FROM tax_documents WHERE received_at IS NULL AND dismissed_at IS NULL AND expected_by >= $1::date", [today])).rows;
+    for (const d of notDue) await supertest(app).patch("/api/tax/documents/" + d.id).send({ expected_by: yesterday }).expect(200);
     await supertest(app).patch("/api/settings").send({ linked_tasks_enabled: true }).expect(200);
     const s = (await supertest(app).get("/api/settings").expect(200)).body;
     assert.equal(s.linked_tasks_sources.tax_documents, true, "on by default");

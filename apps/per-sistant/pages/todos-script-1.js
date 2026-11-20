@@ -57,7 +57,8 @@ async function load() {
   else if (curStatus === 'done') q.push('completed=true');
   if (curPriority) q.push('priority='+curPriority);
   if (curCategory) q.push('category='+curCategory);
-  var todos = await fetch('/api/todos'+(q.length?'?'+q.join('&'):'')).then(r=>r.json());
+  var todos = await fetchList('/api/todos'+(q.length?'?'+q.join('&'):''));
+  if (!todos) { document.getElementById('todo-list').innerHTML = loadFailedHtml('your tasks'); return; } // F79
   if (!todos.length) {
     document.getElementById('todo-list').innerHTML = emptyState(q.length
       ? { title: 'No tasks match these filters', text: 'Change a filter above, or add a task.', action: { label: '+ New task', click: 'add-task-btn' } }

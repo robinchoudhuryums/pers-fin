@@ -428,11 +428,25 @@ function factsToDocument(rows) {
 // questions don't ship account data to the model. Schema-drift safe (any error
 // → null, no finance context).
 // ---------------------------------------------------------------------------
+// Cycle-9 F58: the gate used to fire on ordinary words — "Bill's phone
+// number" (bills?), "my GitHub account" (accounts?), "passport renewal"
+// (renew), "extra credit" (credit), any "$" — which put net worth and balances
+// in the prompt and skipped the answer cache for a question that had nothing
+// to do with money. Words that are about money on their own stay; the
+// ambiguous ones count only in a finance phrase.
 const FINANCE_RE =
-  /\b(afford|cost|costs?|price[ds]?|pay|paid|payments?|budget|balances?|owe[ds]?|spend(?:ing|t)?|money|accounts?|subscriptions?|premiums?|renew(?:al)?|bills?|cash|savings|credit|debt|expenses?|income|salary|loan|mortgage)\b|\$/i;
+  /\b(afford|costs?|price[ds]?|pay|paid|payments?|paychecks?|budgets?|balances?|owe[ds]?|spend(?:ing|s)?|spent|money|subscriptions?|premiums?|cash|savings|debts?|expenses?|income|salary|loans?|mortgage|net worth)\b|\$\s?\d/i;
+const FINANCE_CREDIT_RE = /\bcredit (?:cards?|limits?|lines?|scores?|union|utili[sz]ation)\b/i;
+const FINANCE_ACCOUNT_RE =
+  /\b(?:bank|checking|brokerage|investment|retirement|credit|card|ira|401k|hsa|joint|financial|money market) accounts?\b|\bmy accounts\b/i;
+// "bills" (plural, not a possessive), or "bill" after a determiner with at most
+// one word between ("the phone bill", "my bill") — never "Bill's" or a bare name.
+const FINANCE_BILL_RE =
+  /\bbills\b(?!['\u2019])|\b(?:my|the|a|an|this|that|our|your|last|next|latest|monthly|annual)\s+(?:[a-z-]+\s+)?bill\b(?!['\u2019])/i;
 
 function looksFinancial(q) {
-  return FINANCE_RE.test(String(q || ""));
+  const s = String(q || "");
+  return FINANCE_RE.test(s) || FINANCE_CREDIT_RE.test(s) || FINANCE_ACCOUNT_RE.test(s) || FINANCE_BILL_RE.test(s);
 }
 
 function money(v) {

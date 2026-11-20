@@ -1,3 +1,7 @@
+---
+description: "Test quality assessment + failure resolution"
+---
+
 Read CLAUDE.md before starting.
 
 [PASTE THE IMPLEMENTATION SUMMARY from the cycle, if available]

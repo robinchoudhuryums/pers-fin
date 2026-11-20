@@ -60,14 +60,15 @@ const tellerReq = (header, raw = TELLER_BODY) => ({ headers: header == null ? {}
 
 // ---------------------------------------------------------------------------
 describe("W2 — Plaid JWT verification", () => {
-  it("a valid delivery verifies, keyed by the JWT hash, with only short event fields", async () => {
+  it("a valid delivery verifies, keyed by the hash of the JWT's signed bytes, with only short event fields", async () => {
     const client = fakePlaidClient();
     const v = verify.createPlaidVerifier({ getClient: () => client });
     assert.equal(v.configured(), true);
     const token = plaidJwt({ body: PLAID_BODY });
     const r = await v.verify(plaidReq(token));
     assert.equal(r.ok, true);
-    assert.equal(r.dedupeKey, "jwt:" + crypto.createHash("sha256").update(token).digest("hex"));
+    // header.payload — not the signature, which has more than one valid encoding (cycle-9 F19).
+    assert.equal(r.dedupeKey, "jwt:" + crypto.createHash("sha256").update(token.split(".").slice(0, 2).join(".")).digest("hex"));
     assert.deepEqual(r.event, { type: "TRANSACTIONS", code: "SYNC_UPDATES_AVAILABLE", subject: "item-1", error_code: null });
   });
 

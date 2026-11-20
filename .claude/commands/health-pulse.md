@@ -1,3 +1,7 @@
+---
+description: "Quick directional health check (both axes)"
+---
+
 Read CLAUDE.md (Cycle Workflow Config) before starting. Do not make any
 changes to any files during this session.
 

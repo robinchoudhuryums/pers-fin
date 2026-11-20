@@ -106,8 +106,9 @@ describe("cycle-8 Batch 3 on real Postgres", { skip: SKIP }, () => {
     await tx("gym_big", "chk", 80, "GYMCO", add(-1));
     const r1 = await subs.runSubscriptionWatchdog(pool);
     assert.equal(r1.price_rises, 1);
-    const hulu = (await q("SELECT price_alerted_amount FROM detected_subscriptions WHERE merchant_key='HULU'")).rows[0];
-    assert.equal(Number(hulu.price_alerted_amount), 17.99);
+    // Cycle-9 F21: the early alert keeps its own memory column.
+    const hulu = (await q("SELECT early_price_alerted_amount FROM detected_subscriptions WHERE merchant_key='HULU'")).rows[0];
+    assert.equal(Number(hulu.early_price_alerted_amount), 17.99);
     const note = (await q("SELECT title FROM notification_log WHERE title LIKE 'HULU went up%'")).rows;
     assert.equal(note.length, 1);
     assert.match(note[0].title, /from \$15\.49 to \$17\.99/);

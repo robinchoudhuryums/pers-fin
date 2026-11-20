@@ -93,7 +93,10 @@ function sign(value) {
 }
 
 function verify(signed) {
-  if (!signed || !process.env.SHELL_SECRET) return null;
+  // A string only (cycle-9 F3): cookie-parser turns a cookie value "j:{…}"
+  // into an OBJECT, and signed.lastIndexOf then threw inside the async gate —
+  // a hung request and a false "New server error" from anyone, signed out.
+  if (typeof signed !== "string" || !signed || !process.env.SHELL_SECRET) return null;
   const idx = signed.lastIndexOf(".");
   if (idx < 0) return null;
   const value = signed.slice(0, idx);
@@ -268,8 +271,12 @@ function loginFailure(req, res, status, error, returnTo) {
 }
 
 async function handleLogin(req, res) {
-  const body = req.body || {};
-  const submitted = String(body.pin || "");
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  // A string or a number only (cycle-9 F3): String() of a JSON PIN like
+  // {"toString": null} throws, and this handler is async — the request hung
+  // and the rejection was logged as a server error. Anything else is "".
+  const submitted = typeof body.pin === "string" ? body.pin
+    : typeof body.pin === "number" ? String(body.pin) : "";
   const expected = process.env.SHELL_PIN || "";
   const returnTo = body.return_to;
 

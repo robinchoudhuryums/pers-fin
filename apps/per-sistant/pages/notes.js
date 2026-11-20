@@ -130,7 +130,9 @@ async function suggestTags() {
 }
 
 async function load() {
-  var notes = await fetch('/api/notes').then(r=>r.json());
+  var notes = await fetchList('/api/notes');
+  // F79: a failed load is not "No notes yet".
+  if (!notes) { document.getElementById('notes-grid').innerHTML = '<div style="grid-column:1/-1">' + loadFailedHtml('your notes') + '</div>'; return; }
   if (!notes.length) { document.getElementById('notes-grid').innerHTML = '<div style="grid-column:1/-1">' + emptyState({ title: 'No notes yet', text: 'Notes can be pinned, tagged, written in Markdown and kept private.', action: { label: '+ New note', click: 'new-note-btn' } }) + '</div>'; return; }
   document.getElementById('notes-grid').innerHTML = notes.map(n => {
     var borderStyle = n.pinned ? 'border-left-color:'+(colorMap[n.color]||'var(--accent)') : (n.color!=='default'?'border-left:2px solid '+colorMap[n.color]:'');
@@ -262,6 +264,9 @@ bindEvents([
 ]);
 document.getElementById('n-tag-input').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();addTag();}});
 document.addEventListener('click',function(e){
+  // Cycle-9 F68: the bulk-select checkbox sits inside the card, which is the
+  // open-note click target — every tick opened the editor.
+  if(e.target.closest('.note-bulk-check'))return;
   var btn=e.target.closest('[data-action]');
   if(!btn)return;
   var act=btn.dataset.action,id=parseInt(btn.dataset.id);

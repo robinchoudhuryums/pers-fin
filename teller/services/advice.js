@@ -579,8 +579,12 @@ function allocateDebts(debts, extraMonthly, today, ppy) {
   const byId = new Map(av.map((s) => [s.id, s]));
   const rows = [...debts].sort(AVALANCHE).map((d) => {
     const s = byId.get(d.id);
-    const minOnly = minimumOnlyInterest(d);
+    // No payment on file (cycle-9 F31): the simulation ran with a $0 payment,
+    // so its payoff month and interest would be wrong — left blank.
+    const unknown = !!d.minimum_unknown;
+    const minOnly = unknown ? null : minimumOnlyInterest(d);
     const thisMonth = money(s.firstPayment);
+    const months = unknown ? null : s.months;
     return {
       id: d.id,
       name: d.name,
@@ -591,15 +595,16 @@ function allocateDebts(debts, extraMonthly, today, ppy) {
       extra_monthly: money(Math.max(0, thisMonth - d.minimum)),
       payment_monthly: thisMonth,
       per_period: money((thisMonth * 12) / ppy),
-      months_to_payoff: s.months,
-      payoff_month: s.months == null ? null : addMonthsYm(today, s.months),
-      interest: s.months == null ? null : money(s.interest),
-      interest_saved: minOnly == null || s.months == null ? null : money(Math.max(0, minOnly - s.interest)),
-      minimum_never_pays_off: minOnly == null,
+      months_to_payoff: months,
+      payoff_month: months == null ? null : addMonthsYm(today, months),
+      interest: months == null ? null : money(s.interest),
+      interest_saved: minOnly == null || months == null ? null : money(Math.max(0, minOnly - s.interest)),
+      minimum_never_pays_off: !unknown && minOnly == null,
+      ...(unknown ? { minimum_unknown: true } : {}),
     };
   });
   let snowball = null;
-  if (debts.length > 1 && av.every((s) => s.months != null)) {
+  if (debts.length > 1 && !debts.some((d) => d.minimum_unknown) && av.every((s) => s.months != null)) {
     const sb = simulatePayoff(debts, extraMonthly, SNOWBALL);
     if (sb.every((s) => s.months != null)) {
       const cost = money(sb.reduce((t, s) => t + s.interest, 0) - av.reduce((t, s) => t + s.interest, 0));
@@ -709,8 +714,9 @@ const within = (x, center, share) => Math.abs(x - center) <= share * center;
 
 // Pure: a payer whose deposits stepped up to a new, steady level — the last
 // RAISE_MIN_AFTER+ deposits each above every one of the RAISE_MIN_BEFORE steady
-// deposits before them, at least RAISE_MIN_SHARE and RAISE_MIN_MONTHLY a month
-// more, first seen within RAISE_RECENT_DAYS.
+// deposits before them AND each at least RAISE_MIN_SHARE above the old level,
+// at least RAISE_MIN_MONTHLY a month more, first seen within RAISE_RECENT_DAYS.
+// `since` is the first deposit at the new level.
 function detectRaises(deposits, today, streams) {
   const out = [];
   for (const [key, all] of depositsBySource(deposits)) {
@@ -724,7 +730,11 @@ function detectRaises(deposits, today, streams) {
       if (!before.every((d) => within(d.amount, from, RAISE_CLUSTER))) continue;
       if (!run.every((d) => within(d.amount, to, RAISE_CLUSTER))) continue;
       if (Math.min(...run.map((d) => d.amount)) <= Math.max(...before.map((d) => d.amount))) continue;
-      if (to < from * (1 + RAISE_MIN_SHARE)) continue;
+      // The whole run is at the new level (cycle-9 F30). Paychecks differ by
+      // cents, so an old-level deposit a few cents above the ones before it
+      // used to open the run: one raised deposit was reported as a raise of
+      // half its size, dated to that old-level paycheck.
+      if (run.some((d) => d.amount < from * (1 + RAISE_MIN_SHARE))) continue;
       if (dayGap(run[0].date, today) > RAISE_RECENT_DAYS || dayGap(run[run.length - 1].date, today) > RAISE_LIVE_DAYS) continue;
       const ppy = depositsPerYear(key, list, streams, to);
       if (!ppy) continue;
@@ -1124,6 +1134,16 @@ function contributionRoom(source, today, { unit = "month", ppy = 12, step = null
 
 // ---------------------------------------------------------------- the plan
 
+// Of `extra` a month, the part these debts can't take in the first month —
+// their balances (with a month's interest) are smaller than their minimums
+// plus the extra. 0 while any of them is still owed after that month.
+function unplaced(debts, rows, extra) {
+  if (!(extra > 0)) return 0;
+  const minimums = debts.reduce((t, d) => t + d.minimum, 0);
+  const paid = rows.reduce((t, r) => t + r.payment_monthly, 0);
+  return money(Math.min(extra, Math.max(0, extra + minimums - paid)));
+}
+
 function buildAdvicePlan(inputs) {
   const today = inputs.today || todayStr();
   const errors = inputs.errors || [];
@@ -1141,7 +1161,16 @@ function buildAdvicePlan(inputs) {
   const floorStored = inputs.settings ? num(inputs.settings.cash_alert_threshold) : null;
   const floor = floorStored != null ? floorStored : DEFAULT_CASH_FLOOR;
   const months = surplusMonths(inputs.months, today);
-  const avgSpending = money(months.reduce((t, m) => t + m.spending, 0) / months.length);
+  // Averaged over the completed months that HAVE data (cycle-9 F32): dividing
+  // by 3 regardless read a new or CSV-only user's one month as a third of
+  // their spending, so the buffer and the emergency fund looked reached.
+  const spendMonths = months.filter((m) => m.has_data);
+  const avgSpending = spendMonths.length ? money(spendMonths.reduce((t, m) => t + m.spending, 0) / spendMonths.length) : 0;
+  if (spendMonths.length < SURPLUS_MONTHS) {
+    notes.push(spendMonths.length
+      ? `Your average spending is from ${spendMonths.length} complete month${spendMonths.length === 1 ? "" : "s"} of history, so the cash targets may move as more arrives.`
+      : "No complete month of spending is on record yet, so the cash targets are your floor alone.");
+  }
   const spendable = money(num(inputs.cash.starting_balance) || 0);
   const starterTarget = money(floor + STARTER_BUFFER_MONTHS * avgSpending);
   const emergencyTarget = money(Math.max(EMERGENCY_MONTHS * avgSpending, starterTarget));
@@ -1156,7 +1185,12 @@ function buildAdvicePlan(inputs) {
     if (d.type === "loan" && d.minimum == null) notes.push(`${d.name}: monthly payment unknown — set it on the loan card.`);
     if (d.carry_reason === "unknown") notes.push(`${d.name}: no recent activity, so it's treated as paid in full each month.`);
   }
-  const planned = debts.filter((d) => d.minimum != null);
+  // A carried debt with no payment on file (a loan — a card's minimum is
+  // estimated) stays in the high-interest step when its APR puts it there
+  // (cycle-9 F31: it dropped out, and the plan said "Invest"). Its payment
+  // counts as $0 here; its payoff figures are left blank.
+  const planned = debts.filter((d) => d.minimum != null || d.tier === "high")
+    .map((d) => (d.minimum != null ? d : { ...d, minimum: 0, minimum_unknown: true }));
   const required = money(planned.reduce((t, d) => t + d.minimum, 0));
   const high = planned.filter((d) => d.tier === "high");
   const medium = planned.filter((d) => d.tier === "medium");
@@ -1232,22 +1266,43 @@ function buildAdvicePlan(inputs) {
     if (recommended > 0) headline += `: put ${per(recommended)} toward it.`;
     else headline += ".";
   } else if (current.key === "high_interest_debt") {
-    allocation.debt_extra_monthly = recommended;
     const a = allocateDebts(high, recommended, today, ppy);
+    // What the high-interest debts can't take this month goes to the step
+    // after them (cycle-9 F37: the headline promised a small debt the whole
+    // amount and the remainder went nowhere) — the emergency fund while it
+    // isn't reached, else investing.
+    const left = unplaced(high, a.rows, recommended);
+    const next = steps.find((s) => !s.done && s !== current);
+    const nextKey = next && next.key === "emergency_fund" ? "emergency_fund" : "invest";
+    allocation.debt_extra_monthly = money(recommended - left);
+    if (left > 0) allocation[nextKey === "emergency_fund" ? "emergency_monthly" : "invest_monthly"] = left;
     allocation.debts = [...a.rows, ...minimumRows(planned.filter((d) => d.tier !== "high"))];
     allocation.snowball = a.snowball;
     const top = a.rows[0];
-    headline = recommended > 0
-      ? `Pay down ${top.name} first: ${per(recommended)} on top of its minimum.`
-      : `Pay down ${top.name} first (${top.apr}% APR) once there's a surplus.`;
+    const onTopOf = top.minimum_unknown ? "its regular payment" : "its minimum";
+    const capped = recommended > 0 && !top.minimum_unknown && top.extra_monthly < recommended - 0.01;
+    const restTo = a.rows[1] ? a.rows[1].name : stepTarget(nextKey);
+    if (capped && top.extra_monthly > 0) {
+      headline = `Pay off ${top.name}: ${per(top.extra_monthly)} on top of ${onTopOf} finishes it; the rest of your ${per(recommended)} goes to ${restTo}.`;
+    } else if (capped) {
+      headline = `${top.name} is paid off by its next minimum payment; your ${per(recommended)} goes to ${restTo}.`;
+    } else {
+      headline = recommended > 0
+        ? `Pay down ${top.name} first: ${per(recommended)} on top of ${onTopOf}.`
+        : `Pay down ${top.name} first (${top.apr}% APR) once there's a surplus.`;
+    }
   } else if (current.key === "medium_interest_debt") {
-    const debtShare = money(recommended * MEDIUM_DEBT_SHARE);
+    let debtShare = money(recommended * MEDIUM_DEBT_SHARE);
+    const a = allocateDebts(medium, debtShare, today, ppy);
+    // The part of the debt half the medium-interest debts can't take is invested (F37).
+    debtShare = money(debtShare - unplaced(medium, a.rows, debtShare));
     allocation.debt_extra_monthly = debtShare;
     allocation.invest_monthly = money(recommended - debtShare);
-    const a = allocateDebts(medium, debtShare, today, ppy);
     allocation.debts = [...a.rows, ...minimumRows(planned.filter((d) => d.tier !== "medium"))];
     allocation.snowball = a.snowball;
-    headline = recommended > 0
+    headline = recommended > 0 && debtShare <= 0
+      ? `${a.rows[0].name} is paid off by its next minimum payment; invest ${per(allocation.invest_monthly)} more.`
+      : recommended > 0
       ? `Split your extra: ${per(debtShare)} to ${a.rows[0].name}, ${per(allocation.invest_monthly)} to investing.`
       : `Split extra between ${a.rows[0].name} and investing once there's a surplus.`;
   } else {
@@ -1273,6 +1328,17 @@ function buildAdvicePlan(inputs) {
   if (!emergency.reached) {
     if (minimumsShort || recommended <= 0) {
       emergency.note = "Nothing is going toward it right now.";
+    } else if (current.key === "starter_buffer" && high.length) {
+      // The high-interest debt step comes between the buffer and the emergency
+      // fund (cycle-9 F32 — the date used to ignore it): the buffer's months,
+      // the debts' payoff at this pace, then the rest of the fund.
+      const payoffs = allocateDebts(high, recommended, today, ppy).rows.map((r) => r.months_to_payoff);
+      if (payoffs.every((x) => x != null)) {
+        const m = Math.ceil(current.remaining / recommended) + Math.max(...payoffs) +
+          Math.ceil(Math.max(0, emergencyTarget - starterTarget) / recommended);
+        emergency.projection = { months: m, month: addMonthsYm(today, m) };
+      }
+      emergency.note = "It comes after your starter buffer and your high-interest debt.";
     } else if (current.key === "starter_buffer" || current.key === "emergency_fund") {
       const m = Math.ceil(emergencyRemaining / recommended);
       emergency.projection = { months: m, month: addMonthsYm(today, m) };
@@ -1356,8 +1422,11 @@ function buildAdvicePlan(inputs) {
         let room = Math.max(0, num(lowest.balance) - floor);
         moves = moves.map((m) => {
           if (!m.leaves_cash) return m;
-          const v = Math.floor(Math.min(m.amount, room) / IDLE_ROUND_TO) * IDLE_ROUND_TO;
-          room -= v;
+          // A line the cap doesn't cut keeps its amount (cycle-9 F37: every
+          // line was rounded down to $100, so a $1,234.56 debt got $1,200 and
+          // a debt under $100 got nothing); a line it cuts is rounded down.
+          const v = m.amount <= room ? m.amount : Math.floor(room / IDLE_ROUND_TO) * IDLE_ROUND_TO;
+          room = money(room - v);
           return { ...m, amount: v };
         }).filter((m) => m.amount > 0);
       }
@@ -1427,6 +1496,7 @@ function buildAdvicePlan(inputs) {
       spendable,
       floor: money(floor),
       avg_monthly_spending: avgSpending,
+      spending_months: spendMonths.length,
       starter_target: starterTarget,
       emergency_target: emergencyTarget,
       lowest: lowest ? { date: lowest.date, balance: money(lowest.balance) } : null,

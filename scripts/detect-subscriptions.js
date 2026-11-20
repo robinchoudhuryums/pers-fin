@@ -20,7 +20,12 @@
 // ============================================================================
 
 const { Pool } = require("pg");
+const { pgSsl } = require("./pg-ssl");
 const { nextOccurrence, parseYmd } = require("../teller/services/cadence");
+// The transfer detector's own classifier (cycle-9 F20): a row it takes is not
+// a subscription charge. (detect-transfers.js requires THIS module, so the
+// shared lists live in a third file.)
+const { classifyTransfer, classifyTransferTxn } = require("./transfer-keywords");
 
 // Stale gate (DC-2): a series whose last charge is older than
 // max(120 days, 1.5 × cadence) has stopped. Detection reads 36 months of
@@ -51,11 +56,40 @@ function findAnchorAmount(sortedTxns, tolerance, minCluster) {
   return findModeAmount(amounts, tolerance);
 }
 
+// Two amounts that are the same price (a cent, or half a percent for tax).
+function samePrice(a, b) {
+  return Math.abs(a - b) <= Math.max(0.01, 0.005 * Math.max(Math.abs(b), 0.01));
+}
+
+// Cycle-9 F21: is `newAmount` another plan billed under the same merchant key
+// rather than a new price? One row holds a (merchant, cadence), so a key that
+// carries two plans (Apple, Google: $0.99 storage and $10.99 music) re-anchors
+// on whichever charged last, and every upward flip read as "went up". A real
+// price change REPLACES the old price; a second plan was already being charged
+// while the old price still was — within the two cadences up to the old
+// price's most recent charge.
+function isOtherPlan(merchantTxns, oldAmount, newAmount, cadenceDays) {
+  if (!(oldAmount > 0) || !(newAmount > 0) || samePrice(oldAmount, newAmount)) return false;
+  let lastOld = null;
+  for (const t of merchantTxns) {
+    if (samePrice(parseFloat(t.amount), oldAmount)) {
+      const d = new Date(t.date).getTime();
+      if (lastOld === null || d > lastOld) lastOld = d;
+    }
+  }
+  if (lastOld === null) return false;
+  const from = lastOld - 2 * cadenceDays * 86400000;
+  return merchantTxns.some((t) => {
+    const d = new Date(t.date).getTime();
+    return d <= lastOld && d >= from && samePrice(parseFloat(t.amount), newAmount);
+  });
+}
+
 async function detectSubscriptions(externalPool) {
   const ownPool = !externalPool;
   const pool = externalPool || new Pool({
     connectionString: process.env.NEON_DATABASE_URL,
-    ssl: { rejectUnauthorized: true },
+    ssl: pgSsl(),
     max: 2,
     connectionTimeoutMillis: 10000,
   });
@@ -86,6 +120,20 @@ async function detectSubscriptions(externalPool) {
       ORDER BY merchant_key, date
     `);
 
+    // Cycle-9 F20: a merchant whose recurring TRANSFER the user dismissed
+    // ("this isn't a transfer") stays a subscription candidate — otherwise
+    // dismissing the duplicate would have left the series in neither list.
+    let dismissedTransferKeys = new Set();
+    try {
+      const d = await pool.query(
+        "SELECT merchant_key FROM recurring_transfers WHERE is_dismissed = true AND direction = 'outgoing'");
+      dismissedTransferKeys = new Set(((d && d.rows) || []).map((r) => r.merchant_key));
+    } catch (err) {
+      console.error("detect-subscriptions: could not read dismissed transfers:", err.message);
+    }
+    const isTransferRow = (key, rawDescription) =>
+      !dismissedTransferKeys.has(key) && !!classifyTransferTxn(key, rawDescription);
+
     // ------------------------------------------------------------------
     // 2. Group by merchant_key
     // ------------------------------------------------------------------
@@ -98,6 +146,10 @@ async function detectSubscriptions(externalPool) {
       // the merchant key alone made monthly rent via Zelle a "John Smith"
       // subscription (the DD-2 class).
       if (isExcludedDescription(txn.raw_description)) continue;
+      // F20: a row the transfer detector takes (a mortgage payment, a brokerage
+      // contribution, a savings transfer) belongs to it alone — both detectors
+      // used to keep it, and the forecast billed the series twice.
+      if (isTransferRow(key, txn.raw_description)) continue;
       if (!groups[key]) groups[key] = [];
       groups[key].push(txn);
     }
@@ -112,6 +164,16 @@ async function detectSubscriptions(externalPool) {
     const MIN_OCCURRENCES_LONG = 2; // 60+ day cadences (bi-monthly/quarterly/yearly) only need 2
 
     const detected = [];
+
+    // The stored price of each series, to tell a price change from a second
+    // plan under the same key (F21).
+    const storedAmount = new Map();
+    try {
+      const st = await pool.query("SELECT merchant_key, cadence_days, amount FROM detected_subscriptions");
+      for (const r of (st && st.rows) || []) storedAmount.set(r.merchant_key + "|" + r.cadence_days, parseFloat(r.amount));
+    } catch (err) {
+      console.error("detect-subscriptions: could not read stored prices:", err.message);
+    }
 
     for (const [merchantKey, merchantTxns] of Object.entries(groups)) {
       // Skip merchant groups that match non-subscription patterns
@@ -177,13 +239,19 @@ async function detectSubscriptions(externalPool) {
           // re-activated by the upsert); the stale sweep below retires it.
           if (isStale(lastTxn.date, targetCadence)) break;
           const latestAmount = parseFloat(lastTxn.amount);
-          // Prior amount = the merchant's previous charge overall, so a new
-          // price cluster (DC-7) reports amount_changed against the old price.
-          const lastIdx = merchantTxns.indexOf(lastTxn);
-          const priorAmount =
-            lastIdx > 0
-              ? parseFloat(merchantTxns[lastIdx - 1].amount)
-              : null;
+          // Prior amount = the previous charge of THIS series (cycle-9 F21).
+          // It used to be the merchant's previous charge of any amount, so a
+          // new subscription at a merchant with other purchases (an $80 order,
+          // then a $14.99 plan) was first stored as "went up from …" and
+          // alerted at once. It is only used for a NEW row; an existing row's
+          // prior price is its stored amount (the upsert below).
+          const priorAmount = filtered.length >= 2
+            ? parseFloat(filtered[filtered.length - 2].amount)
+            : null;
+          // A stored price that is still being charged beside the new anchor
+          // is a second plan under this key, not a price change (F21).
+          const stored = storedAmount.get(merchantKey + "|" + targetCadence);
+          const otherPlan = stored != null && isOtherPlan(merchantTxns, stored, latestAmount, targetCadence);
 
           detected.push({
             merchant_key: merchantKey,
@@ -200,6 +268,7 @@ async function detectSubscriptions(externalPool) {
             amount_changed:
               priorAmount !== null &&
               Math.abs(latestAmount - priorAmount) > 0.01,
+            other_plan: otherPlan,
           });
 
           // Don't check longer cadences for the same merchant if 30-day matched
@@ -218,7 +287,27 @@ async function detectSubscriptions(externalPool) {
       SET is_active = false, updated_at = now()
       WHERE last_charged < CURRENT_DATE - GREATEST(INTERVAL '120 days', (cadence_days * 1.5) * INTERVAL '1 day')
         AND source != 'manual'
+        AND is_active = true -- cycle-9 F27: only rows this changes (every stale row's updated_at was rewritten each run)
     `);
+
+    // F20: rows detected before the detectors shared one classifier — a
+    // subscription keyed on a transfer merchant (and not one whose transfer
+    // the user dismissed) is retired, so the forecast stops billing it beside
+    // its recurring-transfer row. User state (notes, cancelled) is kept.
+    try {
+      const live = await pool.query(
+        "SELECT id, merchant_key FROM detected_subscriptions WHERE is_active = true AND source != 'manual'");
+      const overlap = ((live && live.rows) || [])
+        .filter((r) => !dismissedTransferKeys.has(r.merchant_key) && classifyTransfer(r.merchant_key))
+        .map((r) => r.id);
+      if (overlap.length) {
+        await pool.query(
+          "UPDATE detected_subscriptions SET is_active = false, updated_at = now() WHERE id = ANY($1::int[])", [overlap]);
+        console.log(`Retired ${overlap.length} subscription row(s) that are recurring transfers.`);
+      }
+    } catch (err) {
+      console.error("detect-subscriptions: could not retire transfer rows:", err.message);
+    }
 
     for (const sub of detected) {
       await pool.query(
@@ -235,7 +324,10 @@ async function detectSubscriptions(externalPool) {
            -- erased the change on the next run with no new charge — the
            -- watchdog's failed price-rise alert was never retried and the
            -- PRICE UP badge lasted one detection run.
-           prior_amount   = CASE WHEN EXCLUDED.amount <> detected_subscriptions.amount
+           -- $11 (cycle-9 F21): the new anchor is another plan billed under
+           -- the same key, still charged beside the stored one — the amount
+           -- follows the latest charge, but it is not a price change.
+           prior_amount   = CASE WHEN EXCLUDED.amount <> detected_subscriptions.amount AND NOT $11::boolean
                                  THEN detected_subscriptions.amount
                                  ELSE detected_subscriptions.prior_amount END,
            amount         = EXCLUDED.amount,
@@ -251,7 +343,7 @@ async function detectSubscriptions(externalPool) {
                               WHEN detected_subscriptions.is_dismissed = true THEN false
                               ELSE true
                             END,
-           amount_changed = CASE WHEN EXCLUDED.amount <> detected_subscriptions.amount THEN true
+           amount_changed = CASE WHEN EXCLUDED.amount <> detected_subscriptions.amount THEN NOT $11::boolean
                                  WHEN EXCLUDED.last_charged > detected_subscriptions.last_charged THEN false
                                  ELSE detected_subscriptions.amount_changed END,
            is_new         = false,
@@ -267,6 +359,7 @@ async function detectSubscriptions(externalPool) {
           sub.next_expected,
           sub.is_active,
           sub.amount_changed,
+          !!sub.other_plan,
         ]
       );
     }
@@ -385,4 +478,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { detectSubscriptions, findModeAmount, findAnchorAmount, isStale, addDays, isExcludedMerchant, isExcludedDescription, EXCLUSION_PATTERNS };
+module.exports = { detectSubscriptions, findModeAmount, findAnchorAmount, isStale, addDays, isExcludedMerchant, isExcludedDescription, isOtherPlan, samePrice, EXCLUSION_PATTERNS };

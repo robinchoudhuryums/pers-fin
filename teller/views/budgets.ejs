@@ -158,11 +158,11 @@
             (b.is_ai_suggested ? '<span class="ai-badge">AI suggested</span>' : '') +
             (b.budget_type === 'one_time' ? '<span class="ai-badge">' + esc(b.effective_month || '') + ' only</span>' : '') +
             (b.rollover_enabled ? '<span class="ai-badge">Rolls over</span>' : '') + '</div>' +
-            '<div class="budget-meta"><span>$' + b.spent.toFixed(2) + ' of $' + limit.toFixed(2) +
-              (rollover > 0 ? ' <span style="color:var(--text-muted);font-size:11px;">($' + parseFloat(b.monthly_limit).toFixed(2) + ' + $' + rollover.toFixed(2) + ' rolled over)</span>' : '') + '</span>' +
+            '<div class="budget-meta"><span>' + fmt(b.spent) + ' of ' + fmt(limit) +
+              (rollover > 0 ? ' <span style="color:var(--text-muted);font-size:11px;">(' + fmt(parseFloat(b.monthly_limit)) + ' + ' + fmt(rollover) + ' rolled over)</span>' : '') + '</span>' +
             '<span style="color:' + color + ';font-weight:500;">' + pct + '%</span></div>' +
             '<div class="budget-bar"><div class="budget-fill" style="width:' + Math.min(100, pct) + '%;background:' + color + ';"></div></div>' +
-            '<div class="budget-meta"><span>' + (remaining >= 0 ? '$' + remaining.toFixed(2) + ' remaining' : '<span style="color:var(--red);">$' + Math.abs(remaining).toFixed(2) + ' over budget</span>') + '</span>' +
+            '<div class="budget-meta"><span>' + (remaining >= 0 ? fmt(remaining) + ' remaining' : '<span style="color:var(--red);">' + fmt(Math.abs(remaining)) + ' over budget</span>') + '</span>' +
             (b.notes ? '<span>' + esc(b.notes) + '</span>' : '') + '</div>' +
             '<div class="budget-actions">' +
               '<button class="btn-sm" data-action="edit" data-id="' + b.id + '" data-limit="' + parseFloat(b.monthly_limit) + '">Edit</button>' +
@@ -182,9 +182,9 @@
       if (!budgets.length) { el.innerHTML = ''; return; }
       var pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
       var color = pct >= 100 ? 'var(--red)' : pct >= 75 ? 'var(--warm)' : 'var(--green)';
-      el.innerHTML = '<div class="summary-stat"><div class="label">Total Budget</div><div class="value">$' + totalBudget.toFixed(0) + '</div></div>' +
-        '<div class="summary-stat"><div class="label">Spent ' + (viewMonth === thisMonth ? 'This Month' : 'in ' + esc(monthName(viewMonth))) + '</div><div class="value" style="color:' + color + ';">$' + totalSpent.toFixed(0) + '</div></div>' +
-        '<div class="summary-stat"><div class="label">Remaining</div><div class="value">' + (totalBudget - totalSpent >= 0 ? '$' + (totalBudget - totalSpent).toFixed(0) : '<span style="color:var(--red);">-$' + Math.abs(totalBudget - totalSpent).toFixed(0) + '</span>') + '</div></div>' +
+      el.innerHTML = '<div class="summary-stat"><div class="label">Total Budget</div><div class="value">' + fmt(totalBudget) + '</div></div>' +
+        '<div class="summary-stat"><div class="label">Spent ' + (viewMonth === thisMonth ? 'This Month' : 'in ' + esc(monthName(viewMonth))) + '</div><div class="value" style="color:' + color + ';">' + fmt(totalSpent) + '</div></div>' +
+        '<div class="summary-stat"><div class="label">Remaining</div><div class="value">' + (totalBudget - totalSpent >= 0 ? fmt(totalBudget - totalSpent) : '<span style="color:var(--red);">' + fmt(totalBudget - totalSpent) + '</span>') + '</div></div>' +
         (overCount > 0 ? '<div class="summary-stat"><div class="label">Over Budget</div><div class="value" style="color:var(--red);">' + overCount + '</div></div>' : '');
     }
 

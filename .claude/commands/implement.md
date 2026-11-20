@@ -1,3 +1,8 @@
+---
+description: "Execute the implementation plan"
+argument-hint: "[paste the IMPLEMENTATION HANDOFF BLOCK first if it is not in this session]"
+---
+
 If $ARGUMENTS is empty AND no IMPLEMENTATION HANDOFF BLOCK exists earlier
 in this session, respond with exactly this and stop:
 
@@ -75,5 +80,14 @@ DOCUMENTATION UPDATES NEEDED:
    .cycle/blocks/<cycle>-<version-or-scope>-implement.md so §4v and §6a
    can read it in a fresh session. Set Phase: implement; never change
    Cycle — the audit's CYCLE OPEN step owns it. Skip both if no .cycle/.
+   If STATE.md's sections still describe an EARLIER cycle (its Scope line
+   says so), this is the new cycle's first checkpoint: move the old "In
+   progress" and "Completed this cycle" entries to .cycle/HISTORY.md under a
+   heading naming that cycle (create the file if needed), keep any pending
+   item, follow-on or decision that is still live, and drop the note from
+   the Scope line.
+   Never overwrite a block: if that name is taken (a second batch under the
+   same version or scope), add the batch number before the command name —
+   <cycle>-<version-or-scope>-2-implement.md.
 
 Suggest /regression, /reflect, /test-sync, /sync-docs as applicable.

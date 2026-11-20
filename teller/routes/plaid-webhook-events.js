@@ -72,7 +72,9 @@ function createPlaidEventHandler({
     if (!result || !result.ok) return { status: "ignored" };
     // Rows a partly failed run did add still get named + checked.
     await postSync(result.added || 0);
-    if (result.failed) throw new Error("Plaid item sync failed");
+    // A partial sync (the cursor walk halted — errors[] says so) is not "done"
+    // either (cycle-9 F18).
+    if (result.failed || (Array.isArray(result.errors) && result.errors.length)) throw new Error("Plaid item sync failed");
     return { status: "done" };
   }
 

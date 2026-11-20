@@ -58,7 +58,8 @@ describe("ST2: merchant rename rules", () => {
   const rename = require("../teller/routes/merchant-rename");
 
   it("a rule matches the RAW merchant (never the override), with LIKE metacharacters escaped", () => {
-    assert.match(rename.ruleCondition("exact"), /^LOWER\(COALESCE\(t\.merchant_name, t\.name, ''\)\) = LOWER\(\$1\)$/);
+    // Cycle-9 F24: both sides trimmed (the pattern is stored trimmed).
+    assert.match(rename.ruleCondition("exact"), /^TRIM\(LOWER\(COALESCE\(t\.merchant_name, t\.name, ''\)\)\) = LOWER\(TRIM\(\$1\)\)$/);
     assert.match(rename.ruleCondition("starts_with"), /ESCAPE '\\'$/);
     assert.match(rename.ruleCondition("contains"), /LIKE '%' \|\| REPLACE\(REPLACE\(REPLACE/);
     assert.doesNotMatch(rename.ruleCondition("contains"), /user_merchant_name/);

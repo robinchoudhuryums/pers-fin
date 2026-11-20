@@ -76,7 +76,9 @@ function housingDueSuffix(h) {
   return ` (due in ${d} day${d === 1 ? "" : "s"})`;
 }
 
-async function housingDue(perfinPool, today = todayStr()) {
+// { due: computeHousingDue's result (or null), periods: every unpaid month }
+// — or null when the ledger is off or the read failed.
+async function readHousingDue(perfinPool, today = todayStr()) {
   if (!perfinPool) return null;
   try {
     const cfgR = await perfinPool.query("SELECT housing_config FROM user_settings WHERE id = 1");
@@ -92,14 +94,20 @@ async function housingDue(perfinPool, today = todayStr()) {
               (SELECT o.period FROM payee_obligations o WHERE o.status='unpaid' AND o.payee = $1
                 ORDER BY o.period, o.due_day NULLS LAST LIMIT 1) AS oldest_period,
               (SELECT o.due_day FROM payee_obligations o WHERE o.status='unpaid' AND o.payee = $1
-                ORDER BY o.period, o.due_day NULLS LAST LIMIT 1) AS oldest_due_day
+                ORDER BY o.period, o.due_day NULLS LAST LIMIT 1) AS oldest_due_day,
+              ARRAY_AGG(DISTINCT period) AS periods
          FROM payee_obligations WHERE status='unpaid' AND payee = $1`,
       [cfg.payee_name]
     );
     const row = bal.rows[0];
     const oldest = row.oldest_period ? { period: row.oldest_period, due_day: row.oldest_due_day } : null;
-    return computeHousingDue(cfg, parseFloat(row.balance), parseInt(row.n, 10), today, oldest);
+    const periods = (Array.isArray(row.periods) ? row.periods : []).filter((p) => /^\d{4}-\d{2}$/.test(String(p)));
+    return { due: computeHousingDue(cfg, parseFloat(row.balance), parseInt(row.n, 10), today, oldest), periods };
   } catch { return null; }
+}
+async function housingDue(perfinPool, today = todayStr()) {
+  const r = await readHousingDue(perfinPool, today);
+  return r ? r.due : null;
 }
 
 // One unpaid rent used to be nudged on up to four surfaces at once (cycle-8
@@ -116,18 +124,30 @@ function housingItem(h, today = todayStr()) {
   return "housing:" + (h.due_date ? h.due_date.slice(0, 7) : today.slice(0, 7));
 }
 
-async function housingTaskOpen(pool, item) {
-  if (!pool || !item) return false;
+// Cycle-9 F45: "open" here means open AND showing — due today or earlier
+// (openLinkedItems' surfacingOn). During the rent lead window the task isn't
+// due yet and says nothing, so the line stays; from the due date the task is
+// the reminder.
+// `item` may be a list — true when any of them has a showing task.
+async function housingTaskOpen(pool, item, today = todayStr()) {
+  const items = (Array.isArray(item) ? item : [item]).filter(Boolean);
+  if (!pool || !items.length) return false;
   const { openLinkedItems } = require("../services/linked-tasks");
-  return (await openLinkedItems(pool, [item])).has(item);
+  return (await openLinkedItems(pool, items, { surfacingOn: today })).size > 0;
 }
 
-// housingDue with its `item`, or null while that item's linked task is open.
+// housingDue with its `item`, or null while a linked task for that debt is
+// showing: the item's own task, or the task of any other UNPAID month — the
+// line is the whole balance, so each unpaid month's task is a reminder of it
+// (the oldest month's may have been ticked off by hand while a later month's
+// still shows). A task for a month that isn't owed never hides it (E3e).
 async function housingDueUnlessTask(perfinPool, pool, today = todayStr()) {
-  const h = await housingDue(perfinPool, today);
+  const r = await readHousingDue(perfinPool, today);
+  const h = r ? r.due : null;
   if (!h) return h;
   const item = housingItem(h, today);
-  return (await housingTaskOpen(pool, item)) ? null : { ...h, item };
+  const others = r.periods.map((p) => "housing:" + p).filter((k) => k !== item);
+  return (await housingTaskOpen(pool, [item, ...others], today)) ? null : { ...h, item };
 }
 
 module.exports = { housingDue, housingDueUnlessTask, housingTaskOpen, housingItem, computeHousingDue, housingDueSuffix };

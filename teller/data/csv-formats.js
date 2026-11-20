@@ -34,6 +34,33 @@ function parseMoney(raw) {
   return isNaN(n) ? NaN : sign * n;
 }
 
+// A generic file with separate money-out and money-in columns (cycle-9 F15).
+// Column names are matched whole, ignoring case and spacing.
+const DEBIT_COLUMN_RE = /^(debits?|debit amount|amount debit|withdrawals?|withdrawal amount|money out|paid out)$/i;
+const CREDIT_COLUMN_RE = /^(credits?|credit amount|amount credit|deposits?|deposit amount|money in|paid in)$/i;
+
+// The file's debit and credit column names — { debit, credit } — or null when
+// it isn't a two-column file: both columns must exist and there must be no
+// "Amount" column (a file with one keeps using it).
+function twoColumnKeys(headers) {
+  const keys = (headers || []).map((h) => String(h));
+  if (keys.some((k) => k.trim().toLowerCase() === "amount")) return null;
+  const debit = keys.find((k) => DEBIT_COLUMN_RE.test(k.trim()));
+  const credit = keys.find((k) => CREDIT_COLUMN_RE.test(k.trim()));
+  return debit && credit ? { debit, credit } : null;
+}
+const isTwoColumnGeneric = (headers) => !!twoColumnKeys(headers);
+
+// A two-column row's amount in this app's debit-positive convention: money out
+// minus money in, each column read by size (some banks print the debit column
+// negative). NaN when both cells are blank — an unparseable row, as before.
+function twoColumnAmount(row, cols) {
+  const d = parseMoney(row[cols.debit]);
+  const c = parseMoney(row[cols.credit]);
+  if (isNaN(d) && isNaN(c)) return NaN;
+  return Math.round(((isNaN(d) ? 0 : Math.abs(d)) - (isNaN(c) ? 0 : Math.abs(c))) * 100) / 100;
+}
+
 const CSV_FORMATS = {
   chase: {
     detect: (headers) => headers.includes("Transaction Date") && headers.includes("Post Date") && headers.includes("Description"),
@@ -148,11 +175,18 @@ const CSV_FORMATS = {
     parse: (row, _headers, opts = {}) => {
       const date = row["Date"] || row["Transaction Date"] || Object.values(row)[0];
       const merchant = row["Description"] || row["Merchant"] || row["Name"] || Object.values(row)[1];
+      const category = row["Category"] || "";
+      // Separate Debit / Credit columns (cycle-9 F15): the one-column read
+      // below took "Debit" alone, so every credit row fell through to the
+      // third column — $0 ("unparseable") or, with Credit first, a paycheck
+      // imported as spending. The columns say which way the money went, so
+      // positiveMeans doesn't apply.
+      const cols = twoColumnKeys(Object.keys(row));
+      if (cols) return { date, merchant_name: merchant, amount: twoColumnAmount(row, cols), category };
       // Shared parseMoney (F6) — handles "(45.00)" parenthesized negatives,
       // "$", and thousands separators, where the old parseFloat returned NaN.
       const raw = parseMoney(row["Amount"] || row["Debit"] || Object.values(row)[2] || "0");
       const amount = opts.positiveMeans === "deposits" && raw !== 0 ? -raw : raw;
-      const category = row["Category"] || "";
       return { date, merchant_name: merchant, amount, category };
     },
   },
@@ -282,6 +316,8 @@ module.exports = {
   INSTITUTION_LABELS,
   detectCsvFormat,
   guessGenericSign,
+  twoColumnKeys,
+  isTwoColumnGeneric,
   POSITIVE_MEANS,
   parseDate,
   csvTransactionId,

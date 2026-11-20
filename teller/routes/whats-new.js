@@ -68,7 +68,9 @@ async function gatherWhatsNew(since, opts = {}) {
       `SELECT t.transaction_id, t.date, t.amount,
               COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
               COALESCE(t.user_category, t.category[1]) AS category,
-              la.name AS account_name
+              la.name AS account_name,
+              -- Every matching row, counted before the LIMIT (cycle-9 F38).
+              COUNT(*) OVER() AS total_count
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE ${byId ? "t.id > $1::bigint AND t.id <= $3::bigint" : "t.created_at > $1"} AND t.pending = false
@@ -146,12 +148,14 @@ async function gatherWhatsNew(since, opts = {}) {
   return {
     since: since.toISOString(),
     counts: {
-      transactions: newTxns.rows.length,
+      // The list is capped at NEW_TXN_LIMIT; the count isn't (cycle-9 F38 —
+      // 60 new transactions read "25").
+      transactions: newTxns.rows.length ? Math.max(newTxns.rows.length, parseInt(newTxns.rows[0].total_count, 10) || 0) : 0,
       subscriptions: newSubs.rows.length,
       notifications: newNotifs.rows.length,
       balance_changes: balanceWindow.rows.length,
     },
-    transactions: newTxns.rows,
+    transactions: newTxns.rows.map(({ total_count, ...t }) => t),
     subscriptions: newSubs.rows,
     notifications: newNotifs.rows,
     balance_changes: balanceWindow.rows.map(r => {

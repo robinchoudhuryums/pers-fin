@@ -368,10 +368,17 @@ function renderReminders(list) {
 var widgetNames = {search:'Search',cards:'Stats Cards',reminders:'Reminders',briefing:'AI Briefing',suggestions:'Smart Suggestions',tasks:'Task Overview',upcoming_emails:'Upcoming & Emails',mini_cal:'Mini Calendar',perfin:'Perfin',shortcuts:'Shortcuts'};
 var dashLayout = {widgets:['search','cards','reminders','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
 var wdragSrcWidget = null;
+// Cycle-9 follow-on: the layout is saved whole. When the stored one couldn't be
+// read, a change would save the default layout over it — so only Reset (which
+// replaces it on purpose) saves until a load has succeeded.
+var layoutLoaded = false;
 
 async function loadLayout() {
   try {
-    var settings = await fetch('/api/settings').then(r=>r.json());
+    var layoutRes = await fetch('/api/settings');
+    if (!layoutRes.ok) throw new Error('settings ' + layoutRes.status);
+    var settings = await layoutRes.json();
+    layoutLoaded = true;
     if (settings.dashboard_layout) {
       dashLayout = settings.dashboard_layout;
       // Drop any retired widgets (tree, ai_query) from saved layout
@@ -425,11 +432,15 @@ function toggleCustomize() {
 function resetLayout() {
   dashLayout = {widgets:['search','cards','reminders','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
   applyLayout();
-  saveLayout();
+  saveLayout(true);
 }
 
-async function saveLayout() {
-  await writeOk(await tryFetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({dashboard_layout:dashLayout})}), 'Could not save the layout');
+async function saveLayout(replace) {
+  if (!layoutLoaded && !replace) {
+    showUndo("Your layout couldn't be loaded, so this change isn't saved — reload the page.", '', '', 'info');
+    return;
+  }
+  if (await writeOk(await tryFetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({dashboard_layout:dashLayout})}), 'Could not save the layout')) layoutLoaded = true;
 }
 
 function wdragStart(e,w) { wdragSrcWidget = (w||e.target.closest('.dash-widget')).dataset.widget; (w||e.target.closest('.dash-widget')).style.opacity = '0.4'; }
@@ -481,7 +492,7 @@ async function renderMiniCal() {
   for (var d = 1; d <= daysInMonth; d++) {
     var isToday = (d === today.getDate() && miniCalMonth === today.getMonth() && miniCalYear === today.getFullYear());
     var dateStr = miniCalYear + '-' + String(miniCalMonth+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
-    var hasEvents = miniCalEvents.some(function(ev) { return ev.date === dateStr; });
+    var hasEvents = miniCalEvents.some(function(ev) { return calEventDay(ev) === dateStr; });
     var style = 'padding:4px 0;cursor:pointer;border-radius:2px;font-family:var(--mono);font-variant-numeric:tabular-nums;';
     if (isToday) style += 'color:var(--accent);font-weight:600;';
     if (hasEvents) style += 'text-decoration:underline;';
@@ -500,11 +511,22 @@ async function renderMiniCal() {
   }
 }
 
+// The local calendar day of a /api/calendar event (cycle-9 F65). The API
+// returns event_date — the mini-calendar read ev.date, which doesn't exist, so
+// no day was ever marked and every day said "Nothing on this day". A task's
+// event_date is a DATE (a calendar day); an email's / note reminder's is a
+// timestamp, shown on its local day — the Calendar page's rule (F109).
+function calEventDay(ev) {
+  if (!ev || !ev.event_date) return '';
+  var d = ev.type === 'todo' ? parseCalDate(ev.event_date) : new Date(ev.event_date);
+  return d && !isNaN(d.getTime()) ? ymdOfLocal(d) : '';
+}
+
 function showMiniCalEvents(day) {
   miniCalSelectedDay = day;
   var dateStr = miniCalYear + '-' + String(miniCalMonth+1).padStart(2,'0') + '-' + String(day).padStart(2,'0');
   var eventsEl = document.getElementById('mini-cal-events');
-  var dayEvents = miniCalEvents.filter(function(ev) { return ev.date === dateStr; });
+  var dayEvents = miniCalEvents.filter(function(ev) { return calEventDay(ev) === dateStr; });
 
   var grid = document.getElementById('mini-cal-grid');
   if (grid) {
@@ -544,6 +566,9 @@ function miniCalNext() {
 // Keyboard shortcuts
 document.addEventListener('keydown', function(e) {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  // Cycle-9 F69: a single-key shortcut is the key alone — Cmd/Ctrl+C used to
+  // open the Calendar and Cmd/Ctrl+R the Review instead of copying / reloading.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); document.getElementById('global-search').focus(); }
   else if (e.key === 'n' || e.key === 'N') { location.href = BP + '/todos'; }
   else if (e.key === 'e' || e.key === 'E') { location.href = BP + '/emails'; }

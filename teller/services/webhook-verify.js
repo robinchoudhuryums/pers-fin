@@ -143,7 +143,12 @@ function createPlaidVerifier({
       const body = req.body || {};
       return {
         ok: true,
-        dedupeKey: "jwt:" + sha256Hex(token),
+        // The SIGNED bytes (header.payload), not the whole token (cycle-9 F19):
+        // an ES256 signature has more than one valid encoding (s ↔ n − s, or a
+        // re-encoded base64url tail), so a captured delivery could be replayed
+        // inside the 5-minute window under a different token hash. Any change
+        // to the signed part itself fails the signature above.
+        dedupeKey: "jwt:" + sha256Hex(`${parts[0]}.${parts[1]}`),
         // error_code: an ITEM / ERROR (or USER_PERMISSION_REVOKED) event's
         // Plaid error code — the only field of its error object the handler reads.
         event: {

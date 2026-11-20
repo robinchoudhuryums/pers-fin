@@ -283,7 +283,7 @@ router.post("/api/persistent/webhook/send", async (req, res) => {
 async function queryPersistentStats(persistentPool, today = todayStr()) {
   const [todos, emails, notes] = await Promise.all([
     persistentPool.query(
-      "SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT auto_closed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL",
+      "SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false) AND NOT COALESCE(skipped, false) AND NOT auto_closed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL",
       [today]
     ),
     persistentPool.query(
@@ -458,8 +458,11 @@ const ssoLimiter = require("express-rate-limit")({
 router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
   if (!AUTH_SECRET) return res.status(400).json({ error: "Auth not configured." });
   if (!SSO_SECRET) return res.status(500).json({ error: "SSO_SECRET not configured." });
-  const { token } = req.body;
+  const token = req.body ? req.body.token : undefined;
   if (!token) return res.status(400).json({ error: "Token required." });
+  // Cycle-9 F49: a JSON number / object / array has no .split — the throw was an
+  // unhandled rejection in this async handler, which ends a standalone process.
+  if (typeof token !== "string") return res.status(400).json({ error: "Token must be a string." });
   // Token format: sso:<timestamp>:<nonce>:<signature>
   const parts = token.split(":");
   if (parts.length !== 4 || parts[0] !== "sso") return res.status(401).json({ error: "Invalid token format." });

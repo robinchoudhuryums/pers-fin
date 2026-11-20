@@ -97,11 +97,19 @@ module.exports = function ({ pool, config }) {
       if (horizon !== undefined) { fields.push(`horizon = $${idx++}`); params.push(horizon); }
       if (category !== undefined) { fields.push(`category = $${idx++}`); params.push(category); }
       if (due_date !== undefined) {
-        fields.push(`due_date = $${idx++}`); params.push(due_date || null);
         // An explicit due-date edit sets a NEW schedule: drop the stored
-        // month-end anchor so the next instance follows the new day (PD-2).
+        // month-end anchor (PD-2) and the pre-snooze date (F55) so the next
+        // instance follows the new day — but only when the date actually
+        // CHANGED (cycle-9 F52). The edit dialog always sends the due date, so
+        // any save (a new title) used to clear the anchor: a task anchored on
+        // the 31st, edited in February, moved to the 28th for good. Every SET
+        // expression reads the row as it was before this UPDATE.
         // (Snooze changes due_date via its own route and keeps the anchor.)
-        fields.push("recurrence_anchor_day = NULL");
+        const p = idx++;
+        params.push(due_date || null);
+        fields.push(`due_date = $${p}`);
+        fields.push(`recurrence_anchor_day = CASE WHEN due_date IS DISTINCT FROM $${p}::date THEN NULL ELSE recurrence_anchor_day END`);
+        fields.push(`snoozed_from = CASE WHEN due_date IS DISTINCT FROM $${p}::date THEN NULL ELSE snoozed_from END`);
       }
       if (sort_order !== undefined) { fields.push(`sort_order = $${idx++}`); params.push(sort_order); }
       if (recurring !== undefined) { fields.push(`recurring = $${idx++}`); params.push(recurring); }
@@ -117,6 +125,9 @@ module.exports = function ({ pool, config }) {
       if (completed !== undefined) {
         fields.push(`completed = $${idx++}`); params.push(completed);
         fields.push(`completed_at = $${idx++}`); params.push(completed ? new Date().toISOString() : null);
+        // A hand change of the completed state ends a skip (cycle-9 F55): a
+        // skipped instance that is reopened and then finished is a completion.
+        fields.push("skipped = false");
       }
       if (!fields.length) return res.status(400).json({ error: "No fields to update." });
       params.push(req.params.id);
@@ -222,7 +233,18 @@ module.exports = function ({ pool, config }) {
     try {
       const { until } = req.body;
       if (!until) return res.status(400).json({ error: "Snooze date (until) is required." });
-      const r = await pool.query("UPDATE todos SET snoozed_until = $1, due_date = $1 WHERE id = $2 AND deleted_at IS NULL RETURNING *", [until, req.params.id]);
+      // F55: remember the date this instance was due BEFORE its first snooze —
+      // the next instance steps from it (nextDueAfter), so postponing one
+      // occurrence doesn't move or skip the schedule. A monthly task due Jan 31
+      // snoozed to Feb 3 used to step to Mar 31. The chain's day of month is
+      // stored too, so the snoozed day never becomes the anchor.
+      const r = await pool.query(
+        `UPDATE todos SET snoozed_until = $1, due_date = $1,
+                snoozed_from = COALESCE(snoozed_from, due_date),
+                recurrence_anchor_day = COALESCE(recurrence_anchor_day,
+                  CASE WHEN recurring AND recurrence_rule IN ('monthly', 'custom_months', 'yearly') AND due_date IS NOT NULL
+                       THEN EXTRACT(DAY FROM due_date)::int END)
+          WHERE id = $2 AND deleted_at IS NULL RETURNING *`, [until, req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
     } catch (err) { serverError(res, err); }
@@ -380,7 +402,7 @@ async function lockRecurring(client, id) {
   const r = await client.query("SELECT * FROM todos WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [id]);
   if (!r.rows.length) return { status: 404, error: "Not found." };
   const todo = r.rows[0];
-  if (!todo.recurring || !todo.recurrence_rule) return { status: 400, error: "Not a recurring task." };
+  if (!todo.recurring || !todo.recurrence_rule) return { status: 400, error: "Not a recurring task.", todo };
   if (todo.completed) return { status: 400, error: "Task already completed." };
   return { todo };
 }
@@ -390,7 +412,18 @@ async function completeRecurringTodo(pool, id) {
   try {
     await client.query("BEGIN");
     const lock = await lockRecurring(client, id);
-    if (lock.error) { await client.query("ROLLBACK"); return lock; }
+    // F55: a task flagged recurring with NO rule has no next instance to make.
+    // Complete it as a plain task — the pages send every recurring-flagged
+    // task here, so the 400 meant it could never be completed.
+    if (lock.error && lock.todo && lock.todo.recurring && !lock.todo.recurrence_rule && !lock.todo.completed) {
+      const done = await client.query("UPDATE todos SET completed = true, completed_at = now() WHERE id = $1 RETURNING *", [lock.todo.id]);
+      await client.query("COMMIT");
+      const row = done.rows[0] || { ...lock.todo, completed: true };
+      fireWebhooks('todo_completed', row).catch((e) => console.error("todo_completed webhook:", e.message));
+      runAutomations('todo_completed', row, 'todo').catch((e) => console.error("todo_completed automation:", e.message));
+      return { completed: row, next: null, streak: lock.todo.streak_count || 0, best_streak: lock.todo.best_streak || 0 };
+    }
+    if (lock.error) { await client.query("ROLLBACK"); return { status: lock.status, error: lock.error }; }
     const todo = lock.todo;
     // Calculate streak: check if completed on time (before or on due date).
     // "Today" in APP_TIMEZONE (PD-4): the UTC date made a 6pm-Pacific
@@ -427,10 +460,13 @@ async function skipRecurringTodo(pool, id) {
   try {
     await client.query("BEGIN");
     const lock = await lockRecurring(client, id);
-    if (lock.error) { await client.query("ROLLBACK"); return lock; }
+    if (lock.error) { await client.query("ROLLBACK"); return { status: lock.status, error: lock.error }; }
     const todo = lock.todo;
-    // Mark as completed but increment skip counter (streak preserved but not incremented)
-    await client.query("UPDATE todos SET completed = true, completed_at = now(), skipped_count = COALESCE(skipped_count,0) + 1 WHERE id = $1", [todo.id]);
+    // The instance leaves the active list (completed = true) but is NOT a
+    // completion (cycle-9 F55): completed_at stays NULL and skipped = true, so
+    // analytics, the weekly review, /api/stats and Ask don't count it as done.
+    // The streak is kept, not incremented.
+    await client.query("UPDATE todos SET completed = true, completed_at = NULL, skipped = true, skipped_count = COALESCE(skipped_count,0) + 1 WHERE id = $1", [todo.id]);
     const anchor = recurrenceAnchorDay(todo); // PD-2
     const nextDue = nextDueAfter(todo, todayStr()); // PD-3
     const n = await client.query(INSERT_NEXT,
@@ -454,7 +490,7 @@ async function undoCompleteRecurringTodo(pool, id, nextId) {
     const cur = await client.query("SELECT * FROM todos WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [id]);
     if (!cur.rows.length) { await client.query("ROLLBACK"); return { status: 404, error: "Not found." }; }
     const todo = cur.rows[0];
-    if (!todo.recurring || !todo.completed || todo.missed) { await client.query("ROLLBACK"); return { status: 400, error: "That task isn't a completed recurring task." }; }
+    if (!todo.recurring || !todo.completed || todo.missed || todo.skipped) { await client.query("ROLLBACK"); return { status: 400, error: "That task isn't a completed recurring task." }; }
     const chain = todo.recurrence_parent_id || todo.id;
     // The generated instance: same chain, still open and unedited-by-completion.
     const del = await client.query(

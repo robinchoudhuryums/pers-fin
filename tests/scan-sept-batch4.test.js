@@ -141,7 +141,8 @@ describe("DC-7 — a price increase is reported at the new price", () => {
     // upsert compares EXCLUDED.amount to the previous run's 15.49).
     const upsert = log.find(q => /INSERT INTO detected_subscriptions/.test(q.sql));
     assert.equal(upsert.params[2], 17.99);
-    assert.match(upsert.sql, /amount_changed = CASE WHEN EXCLUDED\.amount <> detected_subscriptions\.amount THEN true/);
+    // Cycle-9 F21: true unless the new anchor is another plan under the same key ($11).
+    assert.match(upsert.sql, /amount_changed = CASE WHEN EXCLUDED\.amount <> detected_subscriptions\.amount THEN NOT \$11::boolean/);
   });
   it("at the transition charge the in-memory row reports the old price as prior", async () => {
     const amounts = [...Array(18).fill(15.49), ...Array(3).fill(17.99)];
@@ -474,6 +475,7 @@ describe("DC-15 — manual bills, manual cash, categorize", () => {
   });
   it("the AI categorize batch sends the user's merchant rename to Claude", () => {
     const src = read("teller", "routes", "categorize.js");
-    assert.match(src, /SELECT transaction_id, COALESCE\(user_merchant_name, merchant_name, name\) AS merchant, amount, date, category/);
+    // (cycle-9 F26 added txn_day — the plain date sent in the prompt.)
+    assert.match(src, /SELECT transaction_id, COALESCE\(user_merchant_name, merchant_name, name\) AS merchant, amount, date,\s+to_char\(date, 'YYYY-MM-DD'\) AS txn_day, category/);
   });
 });

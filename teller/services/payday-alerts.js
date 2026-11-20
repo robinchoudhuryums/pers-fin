@@ -102,7 +102,7 @@ async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
        AND ${win.where}
        AND date >= $4::date
        AND ${INCOME_PREDICATE}
-     ORDER BY id`,
+     ORDER BY transactions.id`, // the numeric column — a bare "id" is the text alias above ("10" before "9", cycle-9 F38)
     [watermark, s.last_income_alert_at, mark.id, addDaysStr(today, -LANDED_MAX_AGE_DAYS)]);
   if (!rows.length) {
     await pool.query(advanceSql("last_income_alert_txn_id", "last_income_alert_at"), [mark.id, mark.at]);

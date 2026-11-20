@@ -312,7 +312,12 @@ function themeScript() {
     function getUI() { try { return JSON.parse(localStorage.getItem('ps-ui') || '{}'); } catch { return {}; } }
     function setUI(u) { localStorage.setItem('ps-ui', JSON.stringify(u)); }
     function applyPalette(p) { document.body && document.body.setAttribute('data-palette', p); }
-    function applyMode(m) { document.body && document.body.setAttribute('data-mode', m); }
+    // 'auto' (Settings → Theme, cycle-9 F70) follows the system setting.
+    function effectiveMode(m) {
+      if (m === 'auto') return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      return m === 'dark' ? 'dark' : 'light';
+    }
+    function applyMode(m) { document.body && document.body.setAttribute('data-mode', effectiveMode(m)); }
     function applyCollapsed(c) { document.body && document.body.classList.toggle('sidebar-collapsed', !!c); }
 
     function paint() {
@@ -335,7 +340,16 @@ function themeScript() {
     document.addEventListener('DOMContentLoaded', function() {
       paint();
       var mt = document.getElementById('mode-toggle');
-      if (mt) mt.textContent = (getUI().mode === 'dark') ? 'Dark' : 'Light';
+      if (mt) mt.textContent = effectiveMode(getUI().mode) === 'dark' ? 'Dark' : 'Light';
+      // While the choice is Auto, follow a system change without a reload.
+      try {
+        var mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+        if (mq && mq.addEventListener) mq.addEventListener('change', function() {
+          if (getUI().mode !== 'auto') return;
+          paint();
+          if (mt) mt.textContent = effectiveMode('auto') === 'dark' ? 'Dark' : 'Light';
+        });
+      } catch (e) {}
 
       var btn = document.getElementById('sidebar-collapse-btn');
       if (btn) btn.addEventListener('click', function() {
@@ -352,7 +366,7 @@ function themeScript() {
 
       if (mt) mt.addEventListener('click', function() {
         var s = getUI();
-        var next = s.mode === 'dark' ? 'light' : 'dark';
+        var next = effectiveMode(s.mode) === 'dark' ? 'light' : 'dark';
         s.mode = next; setUI(s);
         applyMode(next);
         mt.textContent = next === 'dark' ? 'Dark' : 'Light';
@@ -372,13 +386,13 @@ function themeScript() {
       if (!cur.palette && s.palette && PALETTES.indexOf(s.palette) >= 0) {
         cur.palette = s.palette; applyPalette(s.palette); changed = true;
       }
-      if (!cur.mode && (s.theme === 'dark' || s.theme === 'light')) {
+      if (!cur.mode && (s.theme === 'dark' || s.theme === 'light' || s.theme === 'auto')) {
         cur.mode = s.theme; applyMode(s.theme); changed = true;
       }
       if (changed) {
         setUI(cur);
         var mt = document.getElementById('mode-toggle');
-        if (mt) mt.textContent = cur.mode === 'dark' ? 'Dark' : 'Light';
+        if (mt) mt.textContent = effectiveMode(cur.mode) === 'dark' ? 'Dark' : 'Light';
       }
     }).catch(function(){});
   })();

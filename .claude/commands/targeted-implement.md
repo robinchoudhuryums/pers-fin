@@ -1,3 +1,8 @@
+---
+description: "Implement from the Tier 2 handoff block"
+argument-hint: "[paste the TIER 2 HANDOFF BLOCK first if it is not in this session]"
+---
+
 If $ARGUMENTS is empty or missing AND no TIER 2 HANDOFF BLOCK exists
 earlier in this session, respond with exactly this and stop:
 
@@ -79,9 +84,18 @@ off" line. This lets /cycle-resume continue cleanly in a fresh session
 if context runs out. Set Phase: implement; leave Cycle exactly as the
 audit's CYCLE OPEN step set it — implement sessions never increment it.
 If .cycle/ does not exist, skip this step.
+If STATE.md's sections still describe an EARLIER cycle (its Scope line
+says so), this is the new cycle's first checkpoint: move the old "In
+progress" and "Completed this cycle" entries to .cycle/HISTORY.md under a
+heading naming that cycle (create the file if needed), keep any pending
+item, follow-on or decision that is still live, and drop the note from
+the Scope line.
 
 ALSO write the summary block VERBATIM to
 .cycle/blocks/<cycle>-<version-or-scope>-targeted-implement.md (create the
 directory if needed) — §4v and §6a read these in a fresh session.
+Never overwrite a block: if that name is taken (a second batch under the
+same version or scope), add the batch number before the command name —
+<cycle>-<version-or-scope>-2-targeted-implement.md.
 
 Suggest /test-sync and /sync-docs if applicable.

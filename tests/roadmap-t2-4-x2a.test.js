@@ -87,7 +87,8 @@ describe("housing helpers shared with the payment-due reminder", () => {
     const src = require("fs").readFileSync(require.resolve("../teller/routes/housing"), "utf8");
     const start = src.indexOf("async function runHousingReminders");
     const body = src.slice(start, src.indexOf("\n// Routes", start));
-    assert.match(body, /rentReminderOpen\(today\.slice\(0, 7\), cfg, today\)/);
+    // The oldest unpaid month's window (cycle-9 F34 — it was this month's only).
+    assert.match(body, /rentReminderOpen\(oldest, cfg, today\)/);
     assert.match(body, /if \(!utilityAmountDue\(o, today\)\) continue;/);
     assert.doesNotMatch(body, /dom >= cfg\.rent_due_day/);
   });

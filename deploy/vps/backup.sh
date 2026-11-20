@@ -7,7 +7,8 @@
 # pg_restore steps apply; restore into the compose Postgres per RUNBOOK.md's
 # restore drill): pg_dump custom format → gpg symmetric AES-256
 # (<db>-YYYY-MM-DD.dump.gpg). Each file is VERIFIED before it counts: decrypted
-# and read back with `pg_restore --list`. Then it is copied offsite with rclone
+# in full (gpg's integrity check — a damaged or truncated file fails), then
+# read back with `pg_restore --list`. Then it is copied offsite with rclone
 # and old copies are pruned locally and remotely. The time of each verified run
 # is stamped in user_settings.last_backup_at, which Operator Checks reads.
 #
@@ -50,9 +51,19 @@ for db in perfin persistent; do
   docker compose exec -T db pg_dump -U postgres -Fc --no-owner --no-acl "$db" \
     | gpg --batch --yes --pinentry-mode loopback --passphrase-file "$PASSFILE" \
           --symmetric --cipher-algo AES256 -o "$tmp"
-  # Verify: decrypts (gpg's integrity check) and is a readable archive.
-  entries="$(gpg --batch --quiet --pinentry-mode loopback --passphrase-file "$PASSFILE" -d "$tmp" \
-    | docker compose exec -T db pg_restore --list | grep -c ' TABLE ' || true)"
+  # Verify in two steps, never a pipe (cycle-9 F9). Piping gpg into
+  # `pg_restore --list` needed `|| true` (pg_restore stops reading after the
+  # table of contents, so gpg dies on a broken pipe) — and that threw away
+  # gpg's exit status: a TRUNCATED file still listed its tables and counted as
+  # verified. Decrypt the whole file first, so gpg's integrity check decides,
+  # then read the archive's table of contents.
+  plain="$out.plain.partial"
+  if ! gpg --batch --yes --quiet --pinentry-mode loopback --passphrase-file "$PASSFILE" \
+         -o "$plain" -d "$tmp" 2>/dev/null; then
+    fail "the encrypted file did not decrypt cleanly (damaged or truncated)"
+  fi
+  entries="$(docker compose exec -T db pg_restore --list < "$plain" | grep -c ' TABLE ' || true)"
+  rm -f "$plain"
   [ "${entries:-0}" -gt 0 ] || fail "verification read no tables"
   mv "$tmp" "$out"
   echo "$(date -u +%FT%TZ) $db: $(du -h "$out" | cut -f1), $entries table entries"

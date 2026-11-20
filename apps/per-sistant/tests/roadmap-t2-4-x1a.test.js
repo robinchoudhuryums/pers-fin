@@ -199,7 +199,10 @@ describe("db/030_linked_tasks.sql", () => {
   it("is idempotent (every statement re-runnable — the migration test runs it twice)", () => {
     const stmts = sql.replace(/--[^\n]*/g, "").split(/;\s*(?=\n|$)/).map((s) => s.trim()).filter(Boolean);
     for (const s of stmts) {
-      assert.ok(/IF NOT EXISTS|IF EXISTS|CREATE OR REPLACE|^\$\$|^END|^RETURN|^BEGIN|^NEW\./.test(s) || /^CREATE TRIGGER/.test(s), s.slice(0, 60));
+      // The one data statement (cycle-9 F48) clears a flag its own WHERE
+      // requires, so a second run matches nothing.
+      const repair = /^UPDATE todos SET auto_closed = false\s+WHERE source_key IS NOT NULL AND source_detached AND auto_closed$/.test(s);
+      assert.ok(/IF NOT EXISTS|IF EXISTS|CREATE OR REPLACE|^\$\$|^END|^RETURN|^BEGIN|^NEW\./.test(s) || /^CREATE TRIGGER/.test(s) || repair, s.slice(0, 60));
     }
     assert.match(sql, /DROP TRIGGER IF EXISTS trg_todos_detach_linked ON todos;\s*CREATE TRIGGER trg_todos_detach_linked/);
   });

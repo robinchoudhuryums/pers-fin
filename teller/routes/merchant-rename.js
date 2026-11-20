@@ -34,9 +34,12 @@ const DETECT_KEY = "TRIM(COALESCE(t.user_merchant_name, t.merchant_name, LOWER(R
 const ESC_PAT = "REPLACE(REPLACE(REPLACE(LOWER($1), '\\', '\\\\'), '%', '\\%'), '_', '\\_')";
 const MATCH_TYPES = ["exact", "starts_with", "contains"];
 
-// SQL condition on `t` for a rule's pattern ($1).
+// SQL condition on `t` for a rule's pattern ($1). An exact rule compares the
+// TRIMmed merchant with the trimmed pattern (cycle-9 F24): a rule is stored
+// trimmed, so one made from a bank name with a trailing space ("HULU ")
+// matched nothing — and still reported success.
 function ruleCondition(matchType) {
-  if (matchType === "exact") return `${RAW_MERCHANT} = LOWER($1)`;
+  if (matchType === "exact") return `TRIM(${RAW_MERCHANT}) = LOWER(TRIM($1))`;
   if (matchType === "starts_with") return `${RAW_MERCHANT} LIKE ${ESC_PAT} || '%' ESCAPE '\\'`;
   return `${RAW_MERCHANT} LIKE '%' || ${ESC_PAT} || '%' ESCAPE '\\'`;
 }
@@ -346,13 +349,21 @@ router.delete("/api/merchant-rename-rules/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid id" });
   try {
-    const del = await pool.query("DELETE FROM merchant_rename_rules WHERE id = $1 RETURNING id", [id]);
-    if (!del.rows.length) return res.status(404).json({ error: "Not found" });
-    const reverted = await pool.query(
-      "UPDATE transactions SET user_merchant_name = NULL, user_merchant_rule_id = NULL WHERE user_merchant_rule_id = $1",
-      [id]);
-    const renamed = await applyRenameRules();
-    res.json({ ok: true, reverted: reverted.rowCount, renamed });
+    // One transaction (cycle-9 F27): the rule's delete, the revert of its rows
+    // and the other rules' re-apply were three separate statements — a failure
+    // after the first left rows tagged with a rule that no longer exists,
+    // still carrying its name.
+    const out = await inTransaction(pool, async (db) => {
+      const del = await db.query("DELETE FROM merchant_rename_rules WHERE id = $1 RETURNING id", [id]);
+      if (!del.rows.length) return { error: "Not found", status: 404 };
+      const reverted = await db.query(
+        "UPDATE transactions SET user_merchant_name = NULL, user_merchant_rule_id = NULL WHERE user_merchant_rule_id = $1",
+        [id]);
+      const renamed = await applyRenameRules(db);
+      return { ok: true, reverted: reverted.rowCount, renamed };
+    });
+    if (out.error) return res.status(out.status || 400).json({ error: out.error });
+    res.json(out);
   } catch (err) {
     console.error("rename rule delete error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -365,3 +376,4 @@ module.exports.createRenameRule = createRenameRule;
 module.exports.createRuleFromTransaction = createRuleFromTransaction;
 module.exports.updateRenameRule = updateRenameRule;
 module.exports.ruleCondition = ruleCondition;
+module.exports.inTransaction = inTransaction;

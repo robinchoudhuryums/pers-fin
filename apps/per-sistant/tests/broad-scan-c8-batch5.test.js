@@ -93,9 +93,10 @@ describe("F18 — an auto-close isn't your completion", () => {
     assert.match(analytics, /FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND created_at >= \$1 GROUP BY category/);
     assert.match(read("routes/review.js"), /FROM todos WHERE deleted_at IS NULL AND NOT auto_closed AND completed_at >= \$1/);
     const ai = read("routes/ai.js");
-    assert.match(ai, /NOT COALESCE\(missed, false\) AND NOT auto_closed\) AS todos_done/);
+    // cycle-9 F55: a skipped instance isn't done either.
+    assert.match(ai, /NOT COALESCE\(missed, false\) AND NOT COALESCE\(skipped, false\) AND NOT auto_closed\) AS todos_done/);
     assert.match(ai, /t\.auto_closed\?'closed by Perfin'/);
-    assert.match(read("routes/settings.js"), /NOT COALESCE\(missed, false\) AND NOT auto_closed\) as done/);
+    assert.match(read("routes/settings.js"), /NOT COALESCE\(missed, false\) AND NOT COALESCE\(skipped, false\) AND NOT auto_closed\) as done/);
   });
 });
 
@@ -159,7 +160,9 @@ describe("F23 — the open task is the rent reminder", () => {
   // Since cycle-8 E3e only the line's own item (housing:<month of its due date>) hides it.
   const ps = (open) => ({ query: async (sql, params) => {
     assert.match(sql, /source_key = ANY\(\$1::text\[\]\) AND NOT completed AND deleted_at IS NULL/);
-    assert.deepEqual(params, [["perfin:housing:2026-10"]]);
+    // Cycle-9 F45: only a task SHOWING today (due today or earlier) hides the line.
+    assert.match(sql, /AND due_date IS NOT NULL AND due_date <= \$2::date/);
+    assert.deepEqual(params, [["perfin:housing:2026-10"], "2026-10-01"]);
     return { rows: open ? [{ source_key: "perfin:housing:2026-10" }] : [] };
   } });
 

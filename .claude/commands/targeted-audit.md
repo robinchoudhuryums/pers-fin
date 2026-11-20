@@ -1,3 +1,8 @@
+---
+description: "Scoped subsystem audit + plan"
+argument-hint: "<subsystem-name>"
+---
+
 If $ARGUMENTS is empty or missing, respond with exactly this and stop:
 
 Usage: /targeted-audit <subsystem-name>
@@ -19,14 +24,28 @@ Use the Subsystems section of CLAUDE.md's Cycle Workflow Config to
 identify the relevant files for this subsystem.
 
 CYCLE OPEN (optional — only if .cycle/STATE.md exists): this audit opens
-a new cycle, and this is the ONLY file write the session may make. Unless
-STATE.md's Phase is already "audit" (a parallel or re-run audit of a
-cycle that is already open — then leave Cycle alone and say so),
-increment its Cycle field by 1 (treat a missing or non-numeric value as
-0, so a project's first audit is Cycle 1) and set Phase: audit, Scope to
-this audit's scope, and Updated to today's date. Every later phase of
-this cycle carries that number; none of them increments it. Skip if
-.cycle/STATE.md does not exist.
+a new cycle, and this is the ONLY file write the session may make.
+Increment STATE.md's Cycle field by 1 (treat a missing or non-numeric
+value as 0, so a project's first audit is Cycle 1) and set Phase: audit,
+Scope to this audit's scope, and Updated to today's date — unless this
+is the SAME audit round: Phase is already "audit" and Updated is within
+the last 7 days (a parallel or re-run audit of a cycle that is already
+open). Then leave Cycle alone, add this audit's scope to the Scope line
+if it is not there, and say so. An older "Phase: audit" is an audit that
+led to no implementation; it does not hold the number — increment past
+it. Every later phase of this cycle carries that number; none of them
+increments it. When you increment:
+- if STATE.md's other sections still describe the cycle you are leaving,
+  do not edit them — end the Scope line with "(sections below still
+  describe Cycle N)", N being that cycle; the first implement CHECKPOINT
+  of the new cycle rolls them into .cycle/HISTORY.md;
+- if .cycle/metrics.csv has a phase=reflect row for cycle N and no
+  phase=synthesis row — while some earlier cycle has one, so this is a
+  project that synthesizes — say at the TOP of your output that cycle N
+  was reflected but never verified or synthesized, and that its
+  verification inputs must now be requested for cycle N by number,
+  because the Cycle field has moved on.
+Skip if .cycle/STATE.md does not exist.
 
 If $ARGUMENTS names a subsystem listed in `Frozen Subsystems`:
 print this banner at the top of your output before continuing, then

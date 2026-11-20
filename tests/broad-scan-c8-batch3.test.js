@@ -155,7 +155,8 @@ describe("F41 — a new rename rule", () => {
 describe("F46 / F47 — price changes", () => {
   it("the detection upsert keeps prior_amount and the flag until a later charge", () => {
     const src = read("scripts", "detect-subscriptions.js");
-    assert.match(src, /prior_amount\s+= CASE WHEN EXCLUDED\.amount <> detected_subscriptions\.amount\s+THEN detected_subscriptions\.amount\s+ELSE detected_subscriptions\.prior_amount END/);
+    // Cycle-9 F21: "AND NOT $11" — a second plan under the same key isn't a price change.
+    assert.match(src, /prior_amount\s+= CASE WHEN EXCLUDED\.amount <> detected_subscriptions\.amount AND NOT \$11::boolean\s+THEN detected_subscriptions\.amount\s+ELSE detected_subscriptions\.prior_amount END/);
     assert.match(src, /WHEN EXCLUDED\.last_charged > detected_subscriptions\.last_charged THEN false\s+ELSE detected_subscriptions\.amount_changed END/);
   });
   it("the watchdog's early rise: 10–50% above, not a utility, once per charged amount", () => {
@@ -199,7 +200,11 @@ describe("F43 — a reconcile renames the rows it recovers", () => {
   const ranRules = () => log.some((s) => /FROM merchant_rename_rules WHERE is_active = true/.test(s));
 
   it("the Teller reconcile applies the rules after recovering a row — and never the anomaly check", async () => {
-    rows = [{ id: "t1", account_id: "a1", amount: "-12.00", date: "2026-10-20", description: "NETFLIX.COM", status: "posted" }];
+    // Dated from the clock (cycle-9 F59): reconcileTeller(30) keeps rows from the
+    // last 30 days of the REAL date, so a literal "2026-10-20" fell out of the
+    // window — and failed this test for good — on 2026-11-20.
+    const recent = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10);
+    rows = [{ id: "t1", account_id: "a1", amount: "-12.00", date: recent, description: "NETFLIX.COM", status: "posted" }];
     const r = await enr.reconcileTeller(30);
     assert.equal(r.transactions_added, 1);
     assert.ok(ranRules());

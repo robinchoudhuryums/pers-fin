@@ -128,4 +128,29 @@ function computeLoanPayoff({ balance = 0, aprPct = 0, monthlyPayment = 0, today 
   return out; // > 100 years — treat as never (months_to_payoff null)
 }
 
-module.exports = { computeFireProjection, computeRunwayMonths, computeLoanPayoff, monthlyRate, addMonthsYm, addMonthsYmd };
+// Average monthly income and spending for the FIRE projection, over the SAME
+// months (cycle-9 F33): every completed month that has an income row or a
+// spending row. Each used to be averaged over its own rows — getMonthlyIncome
+// returns no row for a month without income — so irregular income (3 paid
+// months of 6) was divided by 3 while spending was divided by 6, and the
+// savings figure read high. `thisMonth` ('YYYY-MM', the month in progress) is
+// left out. Rows: [{ month, total_income }] and [{ month, total_spend }].
+function fireAverages(incomeRows, spendingRows, thisMonth) {
+  const months = new Set();
+  const sum = (rows, key) => {
+    let total = 0;
+    for (const r of rows || []) {
+      const m = String(r.month).slice(0, 7);
+      if (m === thisMonth) continue;
+      months.add(m);
+      total += parseFloat(r[key]) || 0;
+    }
+    return total;
+  };
+  const income = sum(incomeRows, "total_income");
+  const spending = sum(spendingRows, "total_spend");
+  const n = months.size;
+  return { months: n, avg_income: n ? income / n : 0, avg_spending: n ? spending / n : 0 };
+}
+
+module.exports = { computeFireProjection, computeRunwayMonths, computeLoanPayoff, monthlyRate, addMonthsYm, addMonthsYmd, fireAverages };

@@ -204,13 +204,18 @@ async function findDuplicateInvestmentItem({ itemId, institutionId, institutionN
   const { rows } = await pool.query(
     `SELECT pii.id, ia.institution AS institution_name
      FROM investment_accounts ia
-     LEFT JOIN plaid_investment_items pii
+     -- An inner join (cycle-9 F17): a match needs a registered investments-only
+     -- connection at that institution. Accounts left active with no connection
+     -- (an unlink that couldn't read its token) used to match too, so the bank
+     -- could never be linked again — and the 409 named a connection that the
+     -- Accounts page doesn't list.
+     JOIN plaid_investment_items pii
        ON LOWER(pii.institution_name) = LOWER(ia.institution) AND pii.item_id <> $1
      WHERE ia.is_active AND ia.plaid_account_id IS NOT NULL
        AND NOT (ia.plaid_account_id = ANY($2::text[]))
        AND LOWER(ia.institution) = LOWER($3::text)
        AND (ia.mask || '|' || ia.account_type) = ANY($4::text[])
-     ORDER BY pii.id NULLS LAST
+     ORDER BY pii.id
      LIMIT 1`,
     [itemId, inv.map(a => a.account_id), institutionName,
      inv.map(a => `${a.mask}|${a.subtype || "brokerage"}`)]
@@ -915,7 +920,12 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
         if (up && up.rowCount === 0) {
           await pool.query("UPDATE deleted_transactions SET bank_changed_at = now() WHERE transaction_id = $1", [txn.transaction_id]);
         }
-        totalModified++;
+        // A row this delivery INSERTED (a pending→posted re-delivery with no
+        // row here) is a new transaction (cycle-9 F16): counted as modified
+        // only, it left `added` at 0, so the rename rules, the anomaly check
+        // and "Paycheck landed" never ran for it.
+        if (up && up.rows && up.rows[0] && up.rows[0].inserted) totalAdded++;
+        else totalModified++;
       } catch (err) {
         console.error("Plaid txn update error:", err.message, txn.transaction_id);
         pageFailed = true;
@@ -1980,6 +1990,29 @@ router.delete("/api/plaid/investment-items/:id", async (req, res) => {
     let deactivated = 0;
     try {
       await db.query("BEGIN");
+      if (!accountIds.size) {
+        // The account list couldn't be read (the token won't decrypt, Plaid
+        // isn't configured, accountsGet failed) — cycle-9 F17: the accounts
+        // used to stay active with their last balances, with no connection
+        // left to unlink them through. Fall back to the institution: the
+        // active Plaid investment accounts under this Item's institution name,
+        // unless another connection there could own them (then nothing is
+        // guessed).
+        const others = await db.query(
+          `SELECT 1 FROM plaid_investment_items WHERE id <> $1 AND LOWER(institution_name) = LOWER($2::text)
+           UNION ALL
+           SELECT 1 FROM plaid_items WHERE status = 'GOOD' AND item_id <> $3 AND LOWER(institution_name) = LOWER($2::text)
+           LIMIT 1`,
+          [item.id, item.institution_name, item.item_id]
+        );
+        if (!others.rows.length && item.institution_name) {
+          const byName = await db.query(
+            "SELECT plaid_account_id FROM investment_accounts WHERE is_active AND plaid_account_id IS NOT NULL AND LOWER(institution) = LOWER($1::text)",
+            [item.institution_name]
+          );
+          for (const r of byName.rows) accountIds.add(r.plaid_account_id);
+        }
+      }
       if (accountIds.size) {
         const ids = [...accountIds];
         await db.query("DELETE FROM investment_holdings WHERE plaid_account_id = ANY($1::text[])", [ids]);

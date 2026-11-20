@@ -1,3 +1,7 @@
+---
+description: "Architectural overview (run once per project)"
+---
+
 Read CLAUDE.md and README before starting. Do not make any changes to any
 files during this session. Do not run audits or recommendations — this
 session only maps architecture.

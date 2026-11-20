@@ -114,7 +114,9 @@ describe("F26 — a generic CSV's sign", () => {
   it("both upload forms show the sign choice only for a generic file and send it once chosen", () => {
     for (const [file, sel] of [["accounts.ejs", "csvSign"], ["dashboard.ejs", "csvSign"]]) {
       const src = read("teller", "views", file);
-      assert.match(src, new RegExp(`${sel}(Field)?\\.hidden = (d|data)\\.format_detected !== 'generic'`), file);
+      // Since cycle-9 F15 "generic with an unknown sign": a Debit / Credit file reports positive_means null.
+      assert.match(src, /var signUnknown = (d|data)\.format_detected === 'generic' && (d|data)\.positive_means != null;/, file);
+      assert.match(src, new RegExp(`${sel}(Field)?\\.hidden = !signUnknown`), file);
       assert.match(src, /append\('positive_means', csvSign\.value\)/, file);
       assert.match(src, /csvSign\.value = (d|data)\.sign_guess \|\| 'charges'/, file);
     }

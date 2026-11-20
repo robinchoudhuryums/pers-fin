@@ -1,3 +1,7 @@
+---
+description: "Post-implementation regression check"
+---
+
 Read CLAUDE.md before starting. Do not make any changes to any files
 during this session.
 

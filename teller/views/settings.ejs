@@ -880,7 +880,12 @@
     }
     async function loadSettings() {
       try {
-        const res = await apiFetch('/api/settings'); if (!res.ok) return;
+        const res = await apiFetch('/api/settings');
+        if (!res.ok) {
+          // F47: say so — the controls below still show the page's defaults.
+          showMsg("Your settings couldn't be loaded — reload the page before changing anything.", false);
+          return;
+        }
         const s = await res.json();
         document.getElementById('theme-select').value = s.theme || 'dark';
         document.getElementById('months-select').value = s.dashboard_months || 6;
@@ -1116,14 +1121,13 @@
         loadSettings(); // refresh the "$X of $Y cap" line with the new cap
       });
     })();
+    // F47: send only the switch that changed — the server merges it into the
+    // stored map. (Reading the whole map first and sending it back let two
+    // quick toggles overwrite each other.)
     async function toggleModule(key, enabled) {
       try {
-        const res = await apiFetch('/api/settings');
-        if (!res.ok) { showMsg("Couldn't read your settings — try again.", false); return false; }
-        const s = await res.json();
-        var mods = s.insight_modules || {};
-        mods[key] = enabled;
-        return await updateSetting('insight_modules', mods);
+        var one = {}; one[key] = enabled;
+        return await updateSetting('insight_modules', one);
       } catch (e) { showMsg(e.message, false); return false; }
     }
     async function logout() {
@@ -1413,6 +1417,21 @@
       } catch (e) { showMsg(e.message, false); }
     }
     // Push notifications
+    // Cycle-9 F79: navigator.serviceWorker.ready never settles when no worker
+    // is registered for this page (a profile where registration failed or was
+    // blocked), so "Enable" span forever. Ask for the registration first and
+    // give `ready` a deadline; both callers report the failure.
+    var PUSH_SW_WAIT_MS = 8000;
+    async function pushRegistration() {
+      var existing = await navigator.serviceWorker.getRegistration();
+      if (!existing) throw new Error('This app\'s service worker isn\'t registered in this browser — reload the page and try again.');
+      return await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise(function(_, reject) {
+          setTimeout(function() { reject(new Error('The service worker didn\'t start — reload the page and try again.')); }, PUSH_SW_WAIT_MS);
+        }),
+      ]);
+    }
     async function checkPushStatus() {
       var btn = document.getElementById('push-btn');
       var testBtn = document.getElementById('test-push-btn');
@@ -1422,17 +1441,21 @@
         return;
       }
       try {
-        var reg = await navigator.serviceWorker.ready;
+        var reg = await pushRegistration();
         var sub = await reg.pushManager.getSubscription();
         if (sub) { btn.textContent = 'Disable'; testBtn.disabled = false; desc.textContent = 'Push notifications are enabled'; }
         else { btn.textContent = 'Enable'; testBtn.disabled = true; desc.textContent = 'Get alerts for anomalies, upcoming charges, and goal milestones'; }
-      } catch { btn.disabled = true; desc.textContent = 'Error checking push status'; }
+      } catch (e) {
+        // The button stays usable: pressing it tries again and shows the reason.
+        btn.textContent = 'Enable'; testBtn.disabled = true;
+        desc.textContent = 'Push isn\'t ready in this browser — reload the page, then press Enable.';
+      }
     }
     async function togglePush() {
       var btn = document.getElementById('push-btn');
       btnLoading(btn, true, btn.textContent);
       try {
-        var reg = await navigator.serviceWorker.ready;
+        var reg = await pushRegistration();
         var sub = await reg.pushManager.getSubscription();
         if (sub) {
           var delRes = await apiFetch('/api/notifications/subscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
@@ -1993,14 +2016,9 @@
       (async function() {
         var ok = false;
         try {
-          var res = await apiFetch('/api/settings');
-          if (!res.ok) showMsg("Couldn't read your settings — try again.", false);
-          else {
-            var s = await res.json();
-            var widgets = s.dashboard_widgets || {};
-            widgets[key] = enabled;
-            ok = await updateSetting('dashboard_widgets', widgets);
-          }
+          // F47: one key — merged server-side (see toggleModule).
+          var one = {}; one[key] = enabled;
+          ok = await updateSetting('dashboard_widgets', one);
         } catch (e) { showMsg(e.message, false); }
         if (!ok) box.checked = !enabled;
       })();
@@ -2158,7 +2176,16 @@
         var btn = ev.target.closest('[data-resolve-error]');
         if (!btn) return;
         btn.disabled = true;
-        var res = await apiFetch('/api/errors/' + encodeURIComponent(btn.getAttribute('data-resolve-error')) + '/resolve', { method: 'POST' });
+        // Cycle-9 F77: a request that never reached the server rejected here,
+        // outside any catch — the button stayed disabled with nothing said.
+        var res = null;
+        try {
+          res = await apiFetch('/api/errors/' + encodeURIComponent(btn.getAttribute('data-resolve-error')) + '/resolve', { method: 'POST' });
+        } catch (e) {
+          showMsg('Resolve error: ' + (e && e.message ? e.message : 'no connection'), false);
+          btn.disabled = false;
+          return;
+        }
         if (await writeOk(res, 'Resolve error')) { showMsg('Resolved — it will reappear if it happens again.', true); loadRecentErrors(); }
         else btn.disabled = false;
       });

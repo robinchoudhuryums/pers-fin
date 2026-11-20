@@ -98,11 +98,25 @@ function parseFrontmatter(text) {
   const meta = {};
   let listKey = null; // key whose empty value may be followed by `- item` lines
   for (const line of m[1].split(/\r?\n/)) {
+    // cycle-9 F50: a blank line doesn't end a key's block — `sensitivity:`,
+    // a blank line, then `- secret` used to drop the list and resolve normal.
+    if (line.trim() === "") continue;
     const item = listKey !== null && line.match(/^\s*-\s+(.*)$/);
     if (item) {
       const v = stripYamlComment(item[1].trim()).replace(/^["']|["']$/g, "");
       if (!Array.isArray(meta[listKey])) meta[listKey] = [];
       if (v) meta[listKey].push(v);
+      continue;
+    }
+    // cycle-9 F50: a privacy key with an empty value followed by an INDENTED
+    // line carries its value there (`sensitivity:` then `  secret`, a folded
+    // scalar, a nested `  level: secret`, a `  -secret` typo). That line was
+    // skipped, so the file resolved to normal — embedded and sent to the
+    // model. Each such line is now a value of the key: a tier name is honoured
+    // and anything else fails closed in resolveSensitivity.
+    if (listKey !== null && PRIVACY_KEYS.has(listKey) && /^[ \t]/.test(line)) {
+      const v = stripYamlComment(line.trim()).replace(/^["']|["']$/g, "");
+      if (v) setMetaValue(meta, listKey, v);
       continue;
     }
     listKey = null;
@@ -188,8 +202,9 @@ const CHUNKING_VERSION = 2;
 // Perfin's operator checks (cycle-7 ST4) ask for one full reindex while the
 // stored value is older. 2 = the cycle-7 F132 rules ("--- " delimiters,
 // repeated privacy keys fail closed). 3 = cycle-8 F49 (quoted keys read, an
-// unreadable privacy-key line fails closed).
-const VAULT_PARSE_VERSION = 3;
+// unreadable privacy-key line fails closed). 4 = cycle-9 F50 (a privacy
+// value on the line after its key, and a block list after a blank line).
+const VAULT_PARSE_VERSION = 4;
 const DEFAULT_MAX_TOKENS = 480;   // comfortably inside voyage-3.5's window
 const DEFAULT_OVERLAP_TOKENS = 60;
 
