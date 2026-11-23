@@ -18,6 +18,12 @@ Updated: 2026-11-19
 /targeted-audit or /audit increments Cycle by 1 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Docs + commands synced (2026-11-23):** `.claude/commands/` at claude-workflow-tools v1.56.0 (audits save their
+  full report to `.cycle/blocks/`; follow-ons take `FO-<cycle>-<n>` IDs — this file has no "Open follow-on items"
+  section yet, cycle 9's are prose per batch below). /sync-docs promoted INV-161–165 (cycle-9 reflect) and the
+  never-promoted cycle-6 candidates INV-98–102 to the library, recorded the CI `e2e` runner pin (ubuntu-24.04) and
+  moved T4.1 out of Priority Next Features (no next feature priority is set — the operator's choice).
+
 - **Cycle 9 REFLECT (2026-11-19):** block `.cycle/blocks/9-a-reflect.md`, metrics row appended. Net −2 = 17 production
   fixes (1 High — F59, CI only; 3 Medium — F20 F28 F39; 13 Low) − 19 new failure modes (1 Medium — F8's nodemailer 10
   unverified against the real SMTP provider; 18 Low); 0 capabilities; 62 defensive. Corrected the summaries' 11 fixes /
