@@ -1,14 +1,15 @@
 ---
 description: "Implement selected findings from a broad scan"
-argument-hint: "<finding IDs, a batch name, or G/ST expansion IDs>"
+argument-hint: "<finding IDs, a batch name, G/ST expansion IDs, or FO follow-on IDs>"
 ---
 
 If $ARGUMENTS is empty or missing, respond with exactly this and stop:
 
-Usage: /broad-implement <finding IDs, G/ST expansion IDs, or description of fixes to implement>
+Usage: /broad-implement <finding IDs, G/ST expansion IDs, FO follow-on IDs, or description of fixes to implement>
 Example: /broad-implement F03, F07, F12
 Example: /broad-implement Batch 2   (every finding in that batch of the scan's plan)
 Example: /broad-implement G2, ST1   (or an expansion batch: E1)
+Example: /broad-implement FO-8-3, FO-8-5   (follow-on items, by their IDs in .cycle/STATE.md)
 
 Paste or reference the findings from a prior /broad-scan session.
 
@@ -23,11 +24,18 @@ Read CLAUDE.md (especially Common Gotchas) before starting.
 Rules:
 - Implement ONLY the findings specified above — nothing else
 - A batch name ("Batch 2", "E1") means every item the scan's plan lists
-  under it. Read the list from the scan report; if the report is not in
-  this session, ask for it rather than guessing what the batch held
+  under it. Read the list from the scan report — this session's, or the
+  scan's report file .cycle/blocks/<cycle>-scan.md (the newest, if a
+  re-run has a -2); if neither is in reach, ask for it rather than
+  guessing what the batch held. A finding named by ID is read the same way
 - G (completeness gap) and ST (strategic suggestion) items from the
   scan's EXPANSION PLAN are in scope only when named above, by ID or by
   their E-batch. They are new capability, not fixes — see REFLECT
+- FO-<cycle>-<n> items (follow-on items an earlier session recorded) are
+  in scope only when named above by ID. Read each from the "Open follow-on
+  items" in .cycle/STATE.md, or from the summary block that reported it; if
+  neither is in this session, ask for it. List it under Findings
+  implemented by its FO ID
 - Do not fix, refactor, or improve anything outside this scope even if
   you notice other issues — note them at the end
 - If a fix is more complex than expected, stop and describe what you
@@ -110,13 +118,30 @@ subsystem, the command(s) to run, one line per subsystem; else
 the deploy step is confirmed.)
 
 FOLLOW-ON ITEMS:
-- [anything noticed but not fixed, out of scope]
+- FO-[cycle]-[n] | [File: area] — [anything noticed but not fixed, out of scope] | → [this cycle | next audit | roadmap | decision | won't do (reason)]
 (or "None")
 
 DOCUMENTATION UPDATES NEEDED:
 - [any CLAUDE.md, README, or inline doc changes needed]
 (or "None")
 ---END BROAD SCAN IMPLEMENTATION SUMMARY---
+
+FOLLOW-ON IDS (every follow-on item this session reports): number each
+FO-<cycle>-<n>, with <cycle> from .cycle/STATE.md's Cycle field and <n> one
+above the highest FO number already used for that cycle in STATE.md and
+.cycle/blocks/ (FO-<n> if the project keeps no .cycle/). Give each exactly
+one disposition:
+- this cycle — a later implement session takes it by its ID
+- next audit — the next audit whose scope covers it re-checks it, as a
+  lead and not as a finding
+- roadmap — too large for one session; /sync-docs proposes a roadmap item
+- decision — only the operator can settle it; name the choice
+- won't do (reason) — closed now, and the reason is the record
+"Noted" is not a disposition. Only if a .cycle/ directory exists: add
+every item that is not "won't do" to the "Open follow-on items" in .cycle/STATE.md, one
+line each with its ID and disposition, and remove each open item this
+session finished or closed — including one marked "confirmed as" a
+finding this session implemented.
 
 6. CHECKPOINT (optional — only if the project uses .cycle/ state)
 If a .cycle/ directory exists at the project root, create or update

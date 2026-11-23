@@ -7,7 +7,7 @@ Usage: /health-synthesis [cycle number]   (default: the cycle owed
 synthesis — see step 1). Run it in a fresh session, after /verify.
 
 This is Health Synthesis as a command. It gathers its own inputs, then
-follows the canonical prompt below without changing it. Do steps 1–5
+follows the canonical prompt below without changing it. Do steps 1–6
 before reading on.
 
 1. CYCLE — $ARGUMENTS names the cycle if given. Otherwise use
@@ -20,9 +20,19 @@ before reading on.
    with that cycle's number: each implementation summary, the Cycle
    Summary Block (…-reflect.md), the Verification Block
    (…-verification.md), a Seams block (…-seams.md) if one ran, and the
-   audit's handoff if one was saved. If there is no Verification Block,
+   audit's saved report: …-scan.md for a Tier 1 cycle (its FINAL REPORT
+   and batch plan stand in for the Session Handoff Block), or
+   …-audit-<subsystem>.md / …-targeted-audit-<subsystem>.md. If an audit
+   saved none, say so. If there is no Verification Block,
    say so at the top and follow the prompt's rule for a missing one — do
-   not verify the cycle yourself in this session.
+   not verify the cycle yourself in this session. If there are several
+   (…-verification.md, …-verification-2.md), the newest is the input and
+   the others are named as superseded.
+   NO REFLECT BLOCK — if none of that cycle's files is a …-reflect.md
+   block, /reflect has not run, so the cycle has no Cycle Summary Block
+   and no reflect row for its net score: say so at the top of your output
+   and ask the operator whether to synthesize anyway or to run /reflect
+   first. Do not go on until they answer.
 3. PRIOR SCORES — read PROJECT_HEALTH.md: Current Standing and the newest
    Score History entry are the prior synthesis, for the delta and for the
    policy triggers.
@@ -34,9 +44,18 @@ before reading on.
 5. PLAYBOOKS — the prompt offers per-category policy playbooks as starting
    points. Where none is supplied for a category, write the prescribed fix
    from that category's own definition and this cycle's evidence.
+6. DERIVED FIGURES — if the project has scripts/synthesis-pack.mjs, run it
+   for the cycle (node scripts/synthesis-pack.mjs --cycle N). Take the
+   net-score reconciliation, the missing-verification flag, the releases
+   no reflection or verification covers, the prior-score series, the
+   cycles with no synthesis, the score at which each policy clause fires
+   and, for a Tier 1 cycle, the batch plan against what shipped from it —
+   do not add them up by eye. Where your judgment departs
+   from a figure it derived, say so and why. Without the script, derive
+   the same figures from the blocks, metrics.csv and PROJECT_HEALTH.md.
 
 Wherever the prompt below shows a bracketed line saying something is
-pasted or injected, use what steps 1–5 gave you.
+pasted or injected, use what steps 1–6 gave you.
 
 The prompt's opening rule (no file changes beyond step 8) stands, with one
 more exception:
@@ -45,7 +64,11 @@ PROJECT HEALTH — after producing the section 6 update block, show it and
 ask the operator to approve it. On approval, replace the Current Standing
 section of PROJECT_HEALTH.md with it and add the new Cycle entry at the
 top of Score History, keeping every field label exactly as the block gives
-it. Without approval, leave the file alone; the block in chat is the
+it. Then, if the project has scripts/synthesis-pack.mjs, run it with
+--check: the metrics row, Current Standing and the new entry must agree on
+the cycle, the lowest Axis B category and score, Category D, Overall and
+the triggered policy clauses. Fix any disagreement it reports before you
+finish. Without approval, leave the file alone; the block in chat is the
 record.
 
 ═══════════════════════════════════════════

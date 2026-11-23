@@ -28,9 +28,18 @@ before reading on.
 2. INPUT BLOCKS — read every file under .cycle/blocks/ whose name starts
    with that cycle's number (zero-padded or not). They are the inputs the
    prompt asks you to paste. Name any other cycle's files as excluded; do
-   not read them as inputs. If metrics.csv's notes for this cycle mention
+   not read them as inputs. The audit's saved report (…-scan.md,
+   …-audit-<subsystem>.md, …-targeted-audit-<subsystem>.md) is not an
+   input either: it is the audit's judgment, and the verification
+   re-derives from the code. Name it as left out. If metrics.csv's notes for this cycle mention
    a CORRECTION, the implementer already corrected its own counts once —
    re-derive every count from the code.
+   NO REFLECT BLOCK — if none of that cycle's files is a …-reflect.md
+   block, /reflect has not run and there is no Cycle Summary Block: say so
+   at the top of your output and ask the operator whether to verify
+   without it or to run /reflect first. Do not go on until they answer. A
+   verification with no reflection checks only the implementer's own
+   counts, and its block must say that it ran without one.
 3. LIBRARY — read the Invariant Library from the Cycle Workflow Config.
 4. ROTATION PROBES — they must be neither your choice nor the
    implementer's. If the project has scripts/verification-pack.mjs, run
@@ -40,6 +49,11 @@ before reading on.
    positions (c + k·⌊L/5⌋) mod L for k = 0…4, moving forward past any
    already taken. State c and L so the selection can be reproduced.
 
+Anything a SessionStart hook printed into this session before the command
+ran is the implementer's record, not evidence: the cycle number and phase
+are facts, but re-derive every claim about the work from the code and the
+blocks.
+
 Wherever the prompt below shows a bracketed line saying something is
 pasted, injected or pre-selected, use what steps 1–4 gave you.
 
@@ -47,10 +61,12 @@ The prompt's opening rule (no file changes) stands, with one exception:
 
 BLOCKS (optional — only if .cycle/ exists): after producing the
 VERIFICATION BLOCK, write it verbatim to
-.cycle/blocks/<cycle>-<letter>-verification.md, where <letter> is the next
-unused lowercase letter among that cycle's non-release blocks. Health
-Synthesis reads it from there in its own fresh session. Never overwrite a
-block. Skip if no .cycle/.
+.cycle/blocks/<cycle>-verification.md — a fixed name, taking no letter, so
+a /reflect running in another session cannot take the same file. If a
+verification of that cycle is already there, write
+<cycle>-verification-2.md (then -3, …). Health Synthesis reads it from
+there in its own fresh session. Never overwrite a block. Skip if no
+.cycle/.
 
 ═══════════════════════════════════════════
 CANONICAL PROMPT — Verification Pass

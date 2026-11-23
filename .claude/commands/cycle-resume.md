@@ -23,7 +23,8 @@ TWO MEMORY CHANNELS — observe the boundary:
 - Do NOT treat the prior session's findings or severity judgments as
   authoritative. You are continuing agreed work, not re-auditing. If
   you notice something that looks like a new finding outside the
-  pending work, record it as a follow-on item — do not expand scope.
+  pending work, record it as a follow-on item (FOLLOW-ON IDS, below) —
+  do not expand scope.
 
 Continue the pending actions listed in STATE.md, in order, under the
 same scope discipline as /implement:
@@ -36,4 +37,22 @@ When pending work is complete (or you must stop), update
 .cycle/STATE.md (Phase: implement; never change Cycle), run the test step per CLAUDE.md's Test Command (or walk
 the Regression Scenarios if `manual`), then emit the same
 implementation summary block the original implement command would have.
+
+FOLLOW-ON IDS (every follow-on item this session reports): number each
+FO-<cycle>-<n>, with <cycle> from .cycle/STATE.md's Cycle field and <n> one
+above the highest FO number already used for that cycle in STATE.md and
+.cycle/blocks/ (FO-<n> if the project keeps no .cycle/). Give each exactly
+one disposition:
+- this cycle — a later implement session takes it by its ID
+- next audit — the next audit whose scope covers it re-checks it, as a
+  lead and not as a finding
+- roadmap — too large for one session; /sync-docs proposes a roadmap item
+- decision — only the operator can settle it; name the choice
+- won't do (reason) — closed now, and the reason is the record
+"Noted" is not a disposition. Only if a .cycle/ directory exists: add
+every item that is not "won't do" to the "Open follow-on items" in .cycle/STATE.md, one
+line each with its ID and disposition, and remove each open item this
+session finished or closed — including one marked "confirmed as" a
+finding this session implemented.
+
 Suggest /regression, /reflect, /test-sync, and /sync-docs as applicable.

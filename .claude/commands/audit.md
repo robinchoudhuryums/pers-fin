@@ -13,7 +13,8 @@ Workflow Config.
 
 Read CLAUDE.md (especially Common Gotchas, Key Design Decisions, and the
 Cycle Workflow Config) before starting. Do not make any changes to any
-files during this session, other than the optional CYCLE OPEN step below.
+files during this session, other than the optional CYCLE OPEN,
+FOLLOW-ON REVIEW and SAVE REPORT steps below.
 
 This session's scope: $ARGUMENTS
 
@@ -28,7 +29,8 @@ Config, print the FROZEN SUBSYSTEM banner (see /targeted-audit) before
 continuing, then proceed.
 
 CYCLE OPEN (optional — only if .cycle/STATE.md exists): this audit opens
-a new cycle, and this is the ONLY file write the session may make.
+a new cycle, and this is one of the session's three permitted file writes
+(the others are FOLLOW-ON REVIEW and SAVE REPORT, below).
 Increment STATE.md's Cycle field by 1 (treat a missing or non-numeric
 value as 0, so a project's first audit is Cycle 1) and set Phase: audit,
 Scope to this audit's scope, and Updated to today's date — unless this
@@ -51,6 +53,38 @@ increments it. When you increment:
   because the Cycle field has moved on.
 Skip if .cycle/STATE.md does not exist.
 
+FOLLOW-ON REVIEW (optional — only if .cycle/STATE.md exists): read the
+"Open follow-on items" in .cycle/STATE.md. Each item marked "next audit"
+whose area falls in this audit's scope is a LEAD, not a finding: re-check
+it with fresh eyes and close it as exactly one of —
+- confirmed: it becomes a finding; give the finding its own ID and cite
+  the FO ID beside it;
+- already fixed: say what you checked;
+- still open: keep it, and say why it is not a finding yet.
+List every reviewed item under a FOLLOW-ON REVIEW heading at the end of
+your output. Then move the items closed as already fixed from
+.cycle/STATE.md to .cycle/HISTORY.md with what you checked, and in STATE.md
+change a confirmed item's disposition to "confirmed as <finding
+ID> (Cycle <N>)" — it stays open until the session that implements that
+finding removes it. Items with any other disposition are not this audit's
+to close. Skip this step if .cycle/STATE.md does not exist.
+
+SAVE REPORT (optional — only if .cycle/STATE.md exists): when your output
+is complete, write all of it VERBATIM to .cycle/blocks/ — the third of the
+session's permitted file writes. Name the file by the command that ran:
+<cycle>-scan.md for /broad-scan, <cycle>-audit-<subsystem>.md for /audit,
+<cycle>-targeted-audit-<subsystem>.md for /targeted-audit — <cycle> from
+STATE.md's Cycle field after CYCLE OPEN, <subsystem> in lower case with
+every run of other characters turned into one hyphen. If that name is
+taken (a re-run in the same round), add -2 (then -3, …) before .md; never
+overwrite a block. The saved report is what later sessions read: an
+implement session takes a batch, a finding or a handoff block from it,
+Health Synthesis reads a Tier 1 cycle's FINAL REPORT and batch plan from
+it, and the synthesis pack checks the batch plan against what shipped.
+Write it in full, security findings included; whether .cycle/blocks/ is
+committed to a public repository is the operator's decision. Skip this
+step if .cycle/STATE.md does not exist.
+
 Seams cadence check: read the Seams Audit Cadence (N) from the Cycle
 Workflow Config and "Subsystem cycles since last Seams audit" (K) from
 .cycle/STATE.md (treat a missing counter or cadence as 0 / default 4). If
@@ -60,7 +94,15 @@ with this audit normally.
 
 Audit this subsystem across these focus areas:
 1. Bugs and logic errors in currently-reachable code paths
-2. Dead code / unused exports (only if they create confusion)
+2. Dead or superseded artifacts — code, exports, styles/classes, markup,
+   config, feature flags, exemptions — but ONLY where the thing is
+   actively misleading: it hides a live defect, contradicts what the code
+   does now, or survives a change that replaced it. Volume is not a
+   finding; concealment is. For each, state how you verified it is
+   unreferenced, and mark it SAFE (mechanically verified — no reference in
+   any code path, template string, or generated markup) or PROPOSE (looks
+   unused, but dynamic or generated references cannot be ruled out).
+   PROPOSE items are questions for the operator, never removals.
 3. Test gaps (missing coverage on load-bearing paths)
 4. Stale artifacts (TODOs, comments, docs that mislead)
 5. Hardcoded values that should be config/env
@@ -81,6 +123,9 @@ For each finding:
 
 DO NOT flag style preferences or speculative "could be cleaner"
 refactoring unless the current code is actively wrong.
+Removing something is a change like any other and needs the same evidence
+a fix needs. If you cannot name the check that proves nothing references
+it, it is a PROPOSE, not a finding.
 
 Finding IDs in the handoff block are SESSION-LOCAL labels (F1, F2, …) —
 not invariant-library IDs. INV-N IDs are assigned only when a rule is

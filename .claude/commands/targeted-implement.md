@@ -4,7 +4,9 @@ argument-hint: "[paste the TIER 2 HANDOFF BLOCK first if it is not in this sessi
 ---
 
 If $ARGUMENTS is empty or missing AND no TIER 2 HANDOFF BLOCK exists
-earlier in this session, respond with exactly this and stop:
+earlier in this session or in an audit report file
+(.cycle/blocks/<cycle>-targeted-audit-<subsystem>.md) for the current
+cycle, respond with exactly this and stop:
 
 Usage (same session): /targeted-implement — run after /targeted-audit
 Usage (new session): Paste the TIER 2 HANDOFF BLOCK first, then run
@@ -13,7 +15,11 @@ Usage (new session): Paste the TIER 2 HANDOFF BLOCK first, then run
 
 Read CLAUDE.md (especially Common Gotchas) before starting.
 
-You are implementing the actions from the TIER 2 HANDOFF BLOCK above.
+You are implementing the actions from the TIER 2 HANDOFF BLOCK above. If
+it is not in this session, read it from the newest report file
+.cycle/blocks/<cycle>-targeted-audit-<subsystem>.md for the subsystem
+$ARGUMENTS names (or the only one this cycle), and say which file you
+used.
 
 Rules:
 - Implement ONLY the actions in the handoff block, in order
@@ -69,12 +75,29 @@ Deploy: [Deploy Command for the touched subsystem if configured, else
 the deploy step is confirmed.)
 
 FOLLOW-ON ITEMS:
-- [File: area] — [what to check and why]
+- FO-[cycle]-[n] | [File: area] — [what to check and why] | → [this cycle | next audit | roadmap | decision | won't do (reason)]
 (or "None")
 
 DOCUMENTATION UPDATES NEEDED:
 - [updates or "None"]
 ---END TARGETED IMPLEMENTATION SUMMARY---
+
+FOLLOW-ON IDS (every follow-on item this session reports): number each
+FO-<cycle>-<n>, with <cycle> from .cycle/STATE.md's Cycle field and <n> one
+above the highest FO number already used for that cycle in STATE.md and
+.cycle/blocks/ (FO-<n> if the project keeps no .cycle/). Give each exactly
+one disposition:
+- this cycle — a later implement session takes it by its ID
+- next audit — the next audit whose scope covers it re-checks it, as a
+  lead and not as a finding
+- roadmap — too large for one session; /sync-docs proposes a roadmap item
+- decision — only the operator can settle it; name the choice
+- won't do (reason) — closed now, and the reason is the record
+"Noted" is not a disposition. Only if a .cycle/ directory exists: add
+every item that is not "won't do" to the "Open follow-on items" in .cycle/STATE.md, one
+line each with its ID and disposition, and remove each open item this
+session finished or closed — including one marked "confirmed as" a
+finding this session implemented.
 
 7. CHECKPOINT (optional — only if the project uses .cycle/ state)
 If a .cycle/ directory exists at the project root, create or update
