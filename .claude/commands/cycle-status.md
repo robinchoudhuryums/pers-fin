@@ -19,7 +19,10 @@ Produce a CYCLE STATUS report:
   truth; flag if any metrics.csv row's cycle disagrees with it]
 - In-progress work: [what's partially done + the next concrete step,
   or "none"]
-- Open follow-on items: [list, or "none"]
+- Open follow-on items: [count by disposition — this cycle, next audit,
+  roadmap, decision, confirmed — with the IDs of any marked "this cycle",
+  which an implement session takes by ID; flag any line with no FO ID or
+  no disposition; or "none"]
 - Trend: [direction from metrics.csv if present, or "n/a"]
 - Seams cadence: [K of N subsystem cycles since the last Seams audit —
   K from STATE.md's "Subsystem cycles since last Seams audit", N from the

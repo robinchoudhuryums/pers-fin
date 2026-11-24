@@ -30,7 +30,9 @@ Detect (and, with approval, fix) documentation drift via six checks:
    marked in progress or queued for a cycle that has already run, and a
    stated top priority that names finished work. Propose the status edits.
    Choosing the next priority is the operator's decision: say that the
-   stated one is spent and ask, do not pick one.
+   stated one is spent and ask, do not pick one. Also propose a roadmap
+   item for each follow-on in .cycle/STATE.md marked "roadmap" that the
+   roadmap does not carry yet, citing its FO ID.
 
 Produce a list of proposed doc edits (file → what changes and why), then
 ask for approval before writing any files.

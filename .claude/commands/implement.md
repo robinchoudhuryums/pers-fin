@@ -67,11 +67,29 @@ Deploy: [Deploy Command for any touched subsystem if configured, else "N/A — n
 (Not complete in production until blocking operator actions are done AND the deploy step is confirmed.)
 
 FOLLOW-ON ITEMS:
-- [out-of-scope items to add to the backlog] (or "None")
+- FO-[cycle]-[n] | [File: area] — [out-of-scope item for the backlog] | → [this cycle | next audit | roadmap | decision | won't do (reason)]
+(or "None")
 
 DOCUMENTATION UPDATES NEEDED:
 - [CLAUDE.md / README / inline] (or "None")
 ---END IMPLEMENTATION SUMMARY BLOCK---
+
+FOLLOW-ON IDS (every follow-on item this session reports): number each
+FO-<cycle>-<n>, with <cycle> from .cycle/STATE.md's Cycle field and <n> one
+above the highest FO number already used for that cycle in STATE.md and
+.cycle/blocks/ (FO-<n> if the project keeps no .cycle/). Give each exactly
+one disposition:
+- this cycle — a later implement session takes it by its ID
+- next audit — the next audit whose scope covers it re-checks it, as a
+  lead and not as a finding
+- roadmap — too large for one session; /sync-docs proposes a roadmap item
+- decision — only the operator can settle it; name the choice
+- won't do (reason) — closed now, and the reason is the record
+"Noted" is not a disposition. Only if a .cycle/ directory exists: add
+every item that is not "won't do" to the "Open follow-on items" in .cycle/STATE.md, one
+line each with its ID and disposition, and remove each open item this
+session finished or closed — including one marked "confirmed as" a
+finding this session implemented.
 
 3. CHECKPOINT (optional — only if .cycle/ exists): create/update
    .cycle/STATE.md (completed/pending actions, follow-ons, decisions,

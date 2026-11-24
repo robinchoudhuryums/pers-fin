@@ -4,7 +4,8 @@ argument-hint: "[paste the SESSION HANDOFF BLOCK first if it is not in this sess
 ---
 
 If $ARGUMENTS is empty AND no SESSION HANDOFF BLOCK exists earlier in
-this session, respond with exactly this and stop:
+this session or in a report file (.cycle/blocks/<cycle>-audit-<subsystem>.md)
+for the current cycle, respond with exactly this and stop:
 
 Usage (same session): /plan — run after /audit
 Usage (new session): paste the SESSION HANDOFF BLOCK first, then run
@@ -16,6 +17,11 @@ Do not make any changes to any files during this session.
 
 [PASTE SESSION HANDOFF BLOCK HERE IF FRESH SESSION]
 [PASTE SYSTEMS MAP SUMMARY HERE]
+
+If the SESSION HANDOFF BLOCK is not in this session, read it from the
+newest report file .cycle/blocks/<cycle>-audit-<subsystem>.md for the
+scope $ARGUMENTS names (or the only one this cycle), and say which file
+you used.
 
 Produce a prioritized action plan for the scope in the handoff block.
 

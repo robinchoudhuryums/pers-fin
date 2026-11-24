@@ -17,10 +17,9 @@ changing it. Do steps 1–4 before reading on.
    otherwise derive a 3–5 bullet summary from the Subsystems section and
    the entry points, and say that it is derived.
 4. AXIS B — read the project's Horizontal (Axis B) Categories from the
-   Cycle Workflow Config. Where Part 4 and the output block name five
-   default categories, report on the project's configured categories
-   instead — one line each, under its own name. A project that configures
-   none uses the five named.
+   Cycle Workflow Config; Part 4 and the output block report on each of
+   them under its own name. A project that configures none uses the five
+   defaults the body names.
 
 Wherever the prompt below shows a bracketed line saying something is
 pasted or injected, use what steps 1–4 gave you. Number each proposed
@@ -97,7 +96,7 @@ For each proposed invariant:
 Also review the Common Gotchas section of CLAUDE.md and the Operator State Checklist for any rules that should be promoted to formal invariants.
 
 PART 4 — HORIZONTAL BUG-SHAPE OBSERVATIONS
-Provide cross-cutting observations relevant to the five Axis B categories from Health Synthesis. This is not a score — it is evidence for the next synthesis:
+Provide cross-cutting observations for each of the project's Axis B categories — the Horizontal (Axis B) Categories in the Cycle Workflow Config — one per category, under its own name. This is not a score — it is evidence for the next synthesis. A project that configures no categories uses the five defaults:
 - Silent Degradation: any new silent-failure paths discovered at seams
 - Startup Ordering: any ordering dependencies between subsystems that lack validation
 - Operator-Only State Gaps: any manual steps that affect multiple subsystems but have no automated check
@@ -129,7 +128,8 @@ Proposed retirements:
 [INV-XX] | [reason — stale, subsumed, or no longer applicable]
 (or "None")
 
-HORIZONTAL OBSERVATIONS (evidence for next Axis B scoring):
+HORIZONTAL OBSERVATIONS (evidence for next Axis B scoring — one line per Axis B category in the Cycle Workflow Config, under its own name; the five below are the defaults, for a project that configures none):
+[Axis B category]: [observations]
 Silent Degradation: [observations]
 Startup Ordering: [observations]
 Operator-Only Gaps: [observations]
